@@ -2196,7 +2196,10 @@ async function cameraLoop() {
           throw new Error('eye markers that are not a list: ' + eyesHeader);
         }
         cameraSeq = seq;
-        cameraFrame = { width: width, height: height, bytes: bytes, eyes: eyes };
+        /* The session time the frame was read at; the Trial view says how
+         * long before the running trial that was. */
+        const t = Number(response.headers.get('X-Frame-Time'));
+        cameraFrame = { width: width, height: height, bytes: bytes, eyes: eyes, t: t };
         cameraArrivals.push(performance.now());
         cameraProblem = '';
       } else if (response.status !== 204) {
@@ -2210,6 +2213,7 @@ async function cameraLoop() {
       retryMs = 1000;
     }
     queueCameraPaint();
+    paintTrialCamera();
     if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
   }
 }
@@ -2858,11 +2862,15 @@ function renderSections(entries) {
   });
   /* A remembered group that this session has no panels for would leave the
    * grid empty with no way back except the sidebar the reader is looking at. */
-  if (section !== 'all' && !counts.has(section)) section = 'all';
+  if (section !== 'all' && !counts.has(section) && !(section === 'trial' && STATIC_STATE === null)) {
+    section = 'all';
+  }
 
   const list = byId('sections');
   list.replaceChildren();
   const rows = [['all', 'All panels', entries.length], ...[...counts].map((c) => [c[0], c[0], c[1]])];
+  /* The Trial view, on the live page: the running trial's screen and gaze. */
+  if (STATIC_STATE === null) rows.splice(1, 0, ['trial', 'Trial', '']);
   rows.forEach(([key, label, count]) => {
     const item = htmlEl('li', null, null, list);
     const button = htmlEl('button', null, null, item);
@@ -2945,6 +2953,15 @@ function render() {
   renderSections(panels);
   const shown = panels.filter((entry) => section === 'all' || entry.section === section);
   byId('grid').replaceChildren(...shown.map((entry) => entry.card));
+  /* The Trial view is not rebuilt here; it is only shown or hidden, and only
+   * on the live page (the saved copy has no trial running). */
+  const wasHidden = byId('trial-view').hasAttribute('hidden');
+  setShown(byId('trial-view'), trialViewShown());
+  if (STATIC_STATE === null) {
+    if (wasHidden && trialViewShown()) drawTrialStage();
+    paintTrialCamera();
+    paintGaze();
+  }
   /* Attached now, so every panel can be measured before it is drawn. Only the
    * shown ones: an element that is not in the document has no width, and a
    * chart drawn against that width would be drawn wrong. */
@@ -2977,6 +2994,461 @@ new ResizeObserver(() => {
   cancelAnimationFrame(resizeHandle);
   resizeHandle = requestAnimationFrame(() => panels.forEach(paintPanel));
 }).observe(document.body);
+
+/* ------------------------------------------------------------------ */
+/* Trial view                                                          */
+/* ------------------------------------------------------------------ */
+
+/* The running trial's screen, in degrees of visual angle, with the eye's
+ * position over it. Two long polls feed it, each on its own channel, so a
+ * trial publish never waits behind a state snapshot and the gaze never waits
+ * behind either:
+ *
+ *   /api/trial ──▶ trialView.view  (once per trial: screen size, shapes)
+ *   /api/gaze  ──▶ trialView.samples (batches of [trial, t, x, y], ~60 Hz)
+ *
+ * The picture is rebuilt only when a new trial arrives or the box resizes;
+ * the gaze layer alone is redrawn, at most once per display frame. Nothing
+ * here touches the panel grid, and render() never rebuilds this block. */
+
+const trialView = {
+  view: null,      /* the running trial's picture (task/schematic.py) */
+  seq: 0,          /* its number on the server */
+  gazeSeq: 0,      /* the newest gaze sample's number */
+  gazeTrial: null, /* the trial the samples below belong to */
+  samples: [],     /* [t, x, y] of that trial, x and y null for a gap */
+  missed: 0,       /* samples the server had already dropped */
+  problem: '',     /* why a stream is failing, said in the status line */
+  fit: null,       /* the px mapping the picture was drawn with */
+  paintQueued: false,
+};
+/* The most samples kept for one trial: 2 minutes at 60 Hz. A trail is a few
+ * seconds; "whole trial" of a very long trial keeps its most recent part. */
+const TRIAL_SAMPLES_KEPT = 7200;
+/* A gaze this old (by the page's clock) is no longer "now". */
+const GAZE_STALE_MS = 500;
+let trailSeconds = 1;
+try {
+  const saved = localStorage.getItem('alhazen-trail');
+  if (saved !== null && Number.isFinite(Number(saved))) trailSeconds = Number(saved);
+} catch (e) { /* private mode */ }
+/* The page clock when the last gaze batch arrived. */
+let gazeArrivedAt = 0;
+
+/** Scale a screen of `widthDva` × `heightDva` into a box `boxWidth` px wide
+ *  and at most `maxHeight` px high, keeping its aspect: px per degree, and
+ *  the drawing's size. */
+function trialFit(widthDva, heightDva, boxWidth, maxHeight) {
+  const scale = Math.max(1e-6, Math.min(boxWidth / widthDva, maxHeight / heightDva));
+  return { scale: scale, width: widthDva * scale, height: heightDva * scale,
+    widthDva: widthDva, heightDva: heightDva };
+}
+
+/** A point in dva (centred, y up) to the drawing's px (top left, y down). */
+function trialMap(fit, x, y) {
+  return [(x + fit.widthDva / 2) * fit.scale, (fit.heightDva / 2 - y) * fit.scale];
+}
+
+/** The trail to draw: the samples within `seconds` of the newest one (all of
+ *  them when `seconds` is 0), as runs of points broken at every gap, and the
+ *  current point — null when the newest sample is a gap (a blink, a lost
+ *  eye), because there is then no position to show. Each sample is
+ *  [t, x, y] in dva; x and y are null for a gap. */
+function trailSegments(samples, seconds) {
+  if (!samples.length) return { segments: [], current: null };
+  const newest = samples[samples.length - 1];
+  const from = seconds > 0 ? newest[0] - seconds : -Infinity;
+  const segments = [];
+  let run = [];
+  for (const [t, x, y] of samples) {
+    if (t < from) continue;
+    if (x === null || y === null) {
+      if (run.length) segments.push(run);
+      run = [];
+    } else {
+      run.push([x, y]);
+    }
+  }
+  if (run.length) segments.push(run);
+  const current = newest[1] === null || newest[2] === null ? null : [newest[1], newest[2]];
+  return { segments: segments, current: current };
+}
+
+/** Take a batch from /api/gaze: start a new trail at a new trial, drop a
+ *  sample from an older trial (a late batch), and keep the rest. */
+function takeGaze(batch) {
+  trialView.gazeSeq = batch.seq;
+  trialView.missed += batch.missed || 0;
+  for (const [trial, t, x, y] of batch.samples || []) {
+    if (trialView.gazeTrial === null || trial > trialView.gazeTrial) {
+      trialView.gazeTrial = trial;
+      trialView.samples = [];
+    } else if (trial < trialView.gazeTrial) {
+      continue;
+    }
+    trialView.samples.push([t, x, y]);
+  }
+  if (trialView.samples.length > TRIAL_SAMPLES_KEPT) {
+    trialView.samples.splice(0, trialView.samples.length - TRIAL_SAMPLES_KEPT);
+  }
+}
+
+/** Show or hide an element through its `hidden` attribute. */
+function setShown(element, shown) {
+  if (!element) return;
+  if (shown) element.removeAttribute('hidden');
+  else element.setAttribute('hidden', '');
+}
+
+/** The trial's title and its condition, in the head. */
+function drawTrialHead(view) {
+  byId('trial-title').textContent = view ? 'Trial ' + view.trial_index : 'Trial';
+  if (!view) {
+    byId('trial-meta').textContent = 'Waiting for the first trial…';
+    return;
+  }
+  const parts = [];
+  if (view.attempt > 1) parts.push('attempt ' + view.attempt);
+  Object.entries(view.condition || {}).forEach(([key, value]) => {
+    parts.push(key.replace(/_/g, ' ') + ' ' + fmtCondition(value));
+  });
+  byId('trial-meta').textContent = parts.join(' · ');
+}
+
+/** A condition's value as the head prints it: a whole number as one (a
+ *  factor level such as hemifield −1 or 1, not 1.00), anything else as the
+ *  panels print numbers. */
+function fmtCondition(value) {
+  if (typeof value === 'number') return minus(Number.isInteger(value) ? String(value) : fmt(value));
+  return String(value);
+}
+
+/** Draw one schematic shape (task/schematic.py's payload) into `parent`. */
+function drawTrialShape(parent, fit, shape) {
+  const cls = 'trial-shape role-' + (shape.role || 'stimulus') + (shape.approximate ? ' approximate' : '');
+  const s = fit.scale;
+  let element = null;
+  if (shape.kind === 'circle') {
+    const [cx, cy] = trialMap(fit, shape.center[0], shape.center[1]);
+    element = svgEl('circle', { class: cls, cx: cx, cy: cy, r: Math.max(1, shape.radius * s) }, parent);
+  } else if (shape.kind === 'rect') {
+    const [w, h] = shape.size;
+    const a = ((shape.angle_deg || 0) * Math.PI) / 180;
+    const corners = [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([dx, dy]) =>
+      trialMap(fit, shape.center[0] + dx * Math.cos(a) - dy * Math.sin(a),
+        shape.center[1] + dx * Math.sin(a) + dy * Math.cos(a)));
+    element = svgEl('polygon', { class: cls, points: corners.map((p) => p.join(',')).join(' ') }, parent);
+  } else if (shape.kind === 'polygon') {
+    const points = shape.points.map(([x, y]) => trialMap(fit, x, y).join(','));
+    element = svgEl('polygon', { class: cls, points: points.join(' ') }, parent);
+  } else if (shape.kind === 'line') {
+    const [x1, y1] = trialMap(fit, shape.start[0], shape.start[1]);
+    const [x2, y2] = trialMap(fit, shape.end[0], shape.end[1]);
+    element = svgEl('line', { class: cls, x1: x1, y1: y1, x2: x2, y2: y2 }, parent);
+  } else if (shape.kind === 'dots') {
+    element = svgEl('g', { class: cls }, parent);
+    const r = Math.max(1, shape.radius * s);
+    shape.points.forEach(([x, y]) => {
+      const [cx, cy] = trialMap(fit, x, y);
+      svgEl('circle', { cx: cx, cy: cy, r: r }, element);
+    });
+  } else if (shape.kind === 'label') {
+    const [x, y] = trialMap(fit, shape.at[0], shape.at[1]);
+    element = svgEl('text', { class: cls, x: x, y: y, 'text-anchor': 'middle', 'dominant-baseline': 'middle' }, parent);
+    element.textContent = shape.text;
+  }
+  if (element && shape.name) {
+    /* The name on hover: a label on every shape would crowd the picture. */
+    const title = svgEl('title', {}, element);
+    title.textContent = shape.name + (shape.role === 'region' ? ' window' : '') +
+      (shape.approximate ? ' (approximate)' : '');
+  }
+}
+
+/** A degree grid every 5°, the screen's centre lines and a scale bar: the
+ *  measure the picture is read against. */
+function drawTrialGrid(svg, fit) {
+  const step = 5;
+  const half = [fit.widthDva / 2, fit.heightDva / 2];
+  for (let x = step; x < half[0]; x += step) {
+    [x, -x].forEach((v) => {
+      const [px] = trialMap(fit, v, 0);
+      svgEl('line', { class: 'trial-grid', x1: px, y1: 0, x2: px, y2: fit.height }, svg);
+    });
+  }
+  for (let y = step; y < half[1]; y += step) {
+    [y, -y].forEach((v) => {
+      const [, py] = trialMap(fit, 0, v);
+      svgEl('line', { class: 'trial-grid', x1: 0, y1: py, x2: fit.width, y2: py }, svg);
+    });
+  }
+  const [cx, cy] = trialMap(fit, 0, 0);
+  svgEl('line', { class: 'trial-axis', x1: cx, y1: 0, x2: cx, y2: fit.height }, svg);
+  svgEl('line', { class: 'trial-axis', x1: 0, y1: cy, x2: fit.width, y2: cy }, svg);
+  const x0 = 12;
+  const y0 = fit.height - 12;
+  svgEl('line', { class: 'trial-scale', x1: x0, y1: y0, x2: x0 + step * fit.scale, y2: y0 }, svg);
+  const label = svgEl('text', { class: 'trial-scale-text', x: x0, y: y0 - 6 }, svg);
+  label.textContent = step + '°';
+}
+
+/** Build the picture for the current trial: the screen, its grid, the
+ *  shapes, and an empty gaze layer that paintGaze fills. */
+function drawTrialStage() {
+  const host = byId('trial-stage');
+  if (!host) return;
+  host.replaceChildren();
+  const view = trialView.view;
+  drawTrialHead(view);
+  if (!view) {
+    trialView.fit = null;
+    htmlEl('div', 'empty', 'The picture of each trial appears here when it starts.', host);
+    drawTrialLegend(null);
+    return;
+  }
+  const width = host.clientWidth || 640;
+  const fit = trialFit(view.screen.width_dva, view.screen.height_dva, width,
+    Math.max(240, Math.round(window.innerHeight * 0.62) || 480));
+  trialView.fit = fit;
+  const svg = svgEl('svg', {
+    viewBox: '0 0 ' + fit.width + ' ' + fit.height,
+    width: fit.width,
+    height: fit.height,
+    role: 'img',
+    'aria-label': 'Trial ' + view.trial_index + ': the screen in degrees, with the gaze',
+  }, host);
+  svgEl('rect', { class: 'trial-screen', x: 0.5, y: 0.5, width: fit.width - 1, height: fit.height - 1 }, svg);
+  drawTrialGrid(svg, fit);
+  const shapes = svgEl('g', { class: 'trial-shapes' }, svg);
+  /* Regions over stimuli, so a window is never hidden under a filled disc. */
+  const order = { stimulus: 0, annotation: 1, region: 2 };
+  [...(view.shapes || [])]
+    .sort((a, b) => (order[a.role] || 0) - (order[b.role] || 0))
+    .forEach((shape) => drawTrialShape(shapes, fit, shape));
+  svgEl('g', { class: 'trial-gaze-layer' }, svg);
+  drawTrialLegend(view);
+  paintGaze();
+}
+
+function drawTrialLegend(view) {
+  const legend = byId('trial-legend');
+  legend.replaceChildren();
+  /* A stimulus that cannot describe its own outline is not guessed at; it is
+   * named here instead, so an empty spot is never read as an empty screen. */
+  const undrawn = (view && view.undrawn) || [];
+  byId('trial-undrawn').textContent = undrawn.length
+    ? 'Not drawn, no outline available: ' + undrawn.join(', ') + '.'
+    : '';
+  if (!view) return;
+  const roles = new Set((view.shapes || []).map((s) => (s.approximate ? 'approx' : s.role)));
+  const items = [];
+  if (view.gaze) items.push(['gaze', 'Gaze'], ['trail', 'Trail']);
+  if (roles.has('stimulus')) items.push(['stimulus', 'Stimulus']);
+  if (roles.has('region')) items.push(['window', 'Gaze window']);
+  if (roles.has('approx')) items.push(['approx', 'Approximate outline']);
+  items.forEach(([cls, text]) => {
+    const item = htmlEl('span', null, null, legend);
+    htmlEl('i', cls, null, item);
+    htmlEl('span', null, text, item);
+  });
+}
+
+/** Redraw the gaze layer and the status line from the samples. */
+function paintGaze() {
+  trialView.paintQueued = false;
+  const view = trialView.view;
+  const fit = trialView.fit;
+  const stage = byId('trial-stage');
+  const layer = stage ? stage.querySelector('g.trial-gaze-layer') : null;
+  if (layer) layer.replaceChildren();
+  const status = byId('trial-status');
+  if (!view) {
+    if (status) status.textContent = trialView.problem;
+    return;
+  }
+  const own = trialView.gazeTrial === view.trial_index ? trialView.samples : [];
+  const { segments, current } = trailSegments(own, trailSeconds);
+  if (layer && fit) {
+    segments.forEach((run) => {
+      if (run.length < 2) return;
+      svgEl('polyline', {
+        class: 'trial-trail-line',
+        points: run.map(([x, y]) => trialMap(fit, x, y).join(',')).join(' '),
+      }, layer);
+    });
+    if (current) {
+      const [cx, cy] = trialMap(fit, current[0], current[1]);
+      svgEl('circle', { class: 'trial-gaze', cx: cx, cy: cy, r: 6 }, layer);
+    }
+  }
+  if (status) status.textContent = gazeStatus(view, own, current);
+}
+
+/** The status line under the picture: where the eye is, or why there is no
+ *  position. Plain words, one line. */
+function gazeStatus(view, own, current) {
+  if (trialView.problem) return trialView.problem;
+  if (!view.gaze) return 'No gaze: this rig has no eye tracker.';
+  const status = state ? state.status : 'running';
+  if (status === 'paused' || status === 'calibrating') {
+    /* A pause keyed between trials takes effect on the next trial's first
+     * frame, before anything is drawn: that trial's picture, and no trail. */
+    return own.length ? 'Paused. The trail is this trial’s, up to the pause.' : 'Paused.';
+  }
+  if (status !== 'running') return own.length ? 'The trail is the last one this trial drew.' : '';
+  if (!own.length) return 'Waiting for gaze samples…';
+  if (performance.now() - gazeArrivedAt > GAZE_STALE_MS) {
+    return 'Between trials. The trail is the last one this trial drew.';
+  }
+  if (!current) return 'No gaze sample: a blink, or the eye is lost.';
+  const rate = gazeRate(own);
+  return 'Gaze ' + minus(current[0].toFixed(1)) + '°, ' + minus(current[1].toFixed(1)) + '°' +
+    (rate === null ? '' : ' · ' + rate + ' samples/s');
+}
+
+/** Samples a second over the last second of this trial, by the samples' own
+ *  timestamps (gaps excluded), or null before there is a span to measure: a
+ *  trial a tenth of a second old has not shown its rate yet. */
+function gazeRate(samples) {
+  const real = samples.filter((s) => s[1] !== null);
+  if (real.length < 2) return null;
+  const newest = real[real.length - 1][0];
+  const window = real.filter((s) => s[0] >= newest - 1);
+  const span = newest - window[0][0];
+  if (window.length < 2 || span < 0.25) return null;
+  return Math.round((window.length - 1) / span);
+}
+
+function queueGazePaint() {
+  if (trialView.paintQueued) return;
+  trialView.paintQueued = true;
+  requestAnimationFrame(paintGaze);
+}
+
+/** The camera beside the picture. Never a live image during a trial — no
+ *  supported tracker can give one (task/schematic.py, docs/live_monitor.md)
+ *  — but the newest real frame from the last pause or calibration, with how
+ *  long before this trial it was taken, or the tracker's reason there is
+ *  none. While paused the camera streams, and this says so. */
+function paintTrialCamera() {
+  const host = byId('trial-camera');
+  const note = byId('trial-camera-note');
+  if (!host || !note) return;
+  const view = trialView.view;
+  const camera = (view && view.camera) || null;
+  const paused = !!state && (state.status === 'paused' || state.status === 'calibrating');
+  if (!camera) {
+    host.replaceChildren(htmlEl('div', 'trial-camera-empty', 'No camera information yet.'));
+    note.textContent = '';
+    return;
+  }
+  if (!camera.has_frames || !cameraFrame) {
+    host.replaceChildren(htmlEl('div', 'trial-camera-empty',
+      camera.has_frames ? 'No camera frame yet. Frames are read while paused or calibrating.'
+        : 'No camera image.'));
+    note.textContent = camera.reason;
+    return;
+  }
+  let canvas = host.querySelector('canvas');
+  if (!canvas) {
+    host.replaceChildren();
+    canvas = htmlEl('canvas', null, null, host);
+  }
+  const { width, height, bytes } = cameraFrame;
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  const context = canvas.getContext('2d');
+  const image = context.createImageData(width, height);
+  for (let i = 0, j = 0; i < bytes.length; i += 1, j += 4) {
+    image.data[j] = bytes[i];
+    image.data[j + 1] = bytes[i];
+    image.data[j + 2] = bytes[i];
+    image.data[j + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
+  note.textContent = cameraAgeText(camera, cameraFrame, view, paused);
+}
+
+/** What the camera box's frame is: live (paused), or how long before this
+ *  trial it was taken — both times on the session clock. */
+function cameraAgeText(camera, frame, view, paused) {
+  if (paused && cameraArrivals.length) return 'Live while paused.';
+  if (!Number.isFinite(frame.t) || !Number.isFinite(view.t)) {
+    return 'Last frame from a pause or calibration. ' + camera.reason;
+  }
+  const age = Math.max(0, view.t - frame.t);
+  const ago = age < 90 ? Math.round(age) + ' s' : Math.round(age / 60) + ' min';
+  return 'Last frame, taken ' + ago + ' before this trial (paused or calibrating). ' + camera.reason;
+}
+
+/** The trial channel: the picture of each trial as it starts. */
+async function trialLoop() {
+  for (;;) {
+    let retryMs = 0;
+    try {
+      const response = await fetch('/api/trial?token=' + encodeURIComponent(token) +
+        '&after=' + trialView.seq + '&wait_ms=2000');
+      if (response.status === 200) {
+        trialView.seq = Number(response.headers.get('X-Trial-Seq')) || trialView.seq + 1;
+        trialView.view = await response.json();
+        if (trialView.problem.startsWith('Trial stream')) trialView.problem = '';
+        drawTrialStage();
+        paintTrialCamera();
+      } else if (response.status !== 204) {
+        throw new Error('the server answered ' + response.status + ': ' + await response.text());
+      }
+    } catch (error) {
+      console.error('trial stream failed', error);
+      trialView.problem = 'Trial stream failed: ' + error.message;
+      queueGazePaint();
+      retryMs = 1000;
+    }
+    if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
+  }
+}
+
+/** The gaze channel: batches of samples while trials run. */
+async function gazeLoop() {
+  for (;;) {
+    let retryMs = 0;
+    try {
+      const response = await fetch('/api/gaze?token=' + encodeURIComponent(token) +
+        '&after=' + trialView.gazeSeq + '&wait_ms=2000');
+      if (response.status === 200) {
+        takeGaze(await response.json());
+        gazeArrivedAt = performance.now();
+        if (trialView.problem.startsWith('Gaze stream')) trialView.problem = '';
+      } else if (response.status !== 204) {
+        throw new Error('the server answered ' + response.status + ': ' + await response.text());
+      }
+    } catch (error) {
+      console.error('gaze stream failed', error);
+      trialView.problem = 'Gaze stream failed: ' + error.message;
+      retryMs = 1000;
+    }
+    queueGazePaint();
+    if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
+  }
+}
+
+/** Is the Trial view part of what the sidebar's choice shows? */
+function trialViewShown() {
+  return STATIC_STATE === null && (section === 'all' || section === 'trial');
+}
+
+byId('trial-trail').value = String(trailSeconds);
+byId('trial-trail').onchange = (event) => {
+  trailSeconds = Number(event.target.value) || 0;
+  try { localStorage.setItem('alhazen-trail', String(trailSeconds)); } catch (e) { /* private mode */ }
+  paintGaze();
+};
+new ResizeObserver(() => {
+  if (trialView.view) drawTrialStage();
+}).observe(byId('trial-stage'));
+
+/* ------------------------------------------------------------------ */
+/* end Trial view                                                      */
+/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /* Theme                                                               */
@@ -3262,4 +3734,6 @@ if (STATIC_STATE !== null) {
 } else {
   poll();
   cameraLoop();
+  trialLoop();
+  gazeLoop();
 }

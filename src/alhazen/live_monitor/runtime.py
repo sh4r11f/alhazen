@@ -15,6 +15,7 @@ import socketserver
 import threading
 import time
 import webbrowser
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -146,6 +147,15 @@ class LiveMonitorController:
         # taken for a pause-menu choice.
         self._settings: Any = ctx.Queue(maxsize=64)
         self._ready: Any = ctx.Queue(maxsize=1)
+        # --- Trial view (live_monitor/gaze.py, task/schematic.py) ----------
+        # Two more channels: the picture of the trial that is about to run,
+        # published once at its start, and batches of gaze samples while it
+        # runs. Neither waits for the child (publish_trial, publish_gaze).
+        self._trial: Any = ctx.Queue(maxsize=_TRIAL_VIEWS_QUEUED)
+        self._gaze: Any = ctx.Queue(maxsize=1)
+        self._gaze_down_reported = False
+        self._trial_full_reported = False
+        # --- end Trial view -------------------------------------------------
         self._stop: Any = ctx.Event()
         self._port = port
         self._auto_open = auto_open
@@ -180,6 +190,8 @@ class LiveMonitorController:
                 self._stop,
                 self._token,
                 self._port,
+                self._trial,
+                self._gaze,
             ),
             name="alhazen-live-monitor",
             daemon=True,
@@ -205,6 +217,11 @@ class LiveMonitorController:
             self.stop()
             raise SessionError(f"live monitor server failed to start: {result['error']}")
         self.url = f"http://127.0.0.1:{result['port']}/?token={self._token}"
+        # Start the gaze channel's feeder thread now, outside any trial: a
+        # multiprocessing queue starts that thread on its first put, and a
+        # thread start is not work for the middle of a trial's frames. An
+        # empty batch adds no sample.
+        self._gaze.put_nowait([])
         if self._auto_open and not webbrowser.open(self.url, new=1):
             log.warning("could not open live monitor browser; open %s", self.url)
         return self.url
@@ -297,6 +314,61 @@ class LiveMonitorController:
             # fifteenth of a second older than this one; the next frame
             # replaces it.
             log.debug("camera frame dropped: the queue refilled while it was being replaced")
+
+    # --- Trial view ------------------------------------------------------
+
+    def publish_trial(self, view: dict[str, Any]) -> None:
+        """Hand the server the picture of the trial about to run.
+
+        Called once per trial, before its first frame (session/runner.py).
+        Like publish(), it never blocks. Not a replace-in-one-slot like the
+        camera's: a multiprocessing queue cannot take back an item its feeder
+        thread has not yet written, so a replace could lose the NEWEST
+        picture. The channel holds a few instead, the child keeps the last
+        one it takes off, and a full channel (a child that stopped taking
+        them) drops the picture being offered.
+        """
+        if self._process is not None and not self._process.is_alive():
+            return
+        try:
+            self._trial.put_nowait(json.dumps(view, allow_nan=False))
+        except queue.Full:
+            # The child has not taken the last several pictures, so the page
+            # is showing an old trial. Said once in the session log (the page
+            # cannot be told: it is the child that stopped), and the next
+            # trial's picture tries again.
+            if not self._trial_full_reported:
+                log.warning(
+                    "live monitor: trial %s's picture not sent, the server has not collected "
+                    "the last %d; the Trial view shows an older trial until it does",
+                    view.get("trial_index"),
+                    _TRIAL_VIEWS_QUEUED,
+                )
+                self._trial_full_reported = True
+            return
+        self._trial_full_reported = False
+
+    def publish_gaze(self, samples: list[tuple[int, float, float | None, float | None]]) -> bool:
+        """Offer a batch of gaze samples (live_monitor/gaze.py ``GazeSample``).
+
+        True when the batch was taken, False when the child has not collected
+        the previous one: the caller keeps the samples and offers them again
+        with the next batch. Never blocks, and never raises for a full slot.
+        A dead child takes nothing, so True — there is nobody to keep them
+        for — and says so once.
+        """
+        if self._process is not None and not self._process.is_alive():
+            if not self._gaze_down_reported:
+                log.error("live monitor process exited; gaze is no longer sent")
+                self._gaze_down_reported = True
+            return True
+        try:
+            self._gaze.put_nowait(samples)
+        except queue.Full:
+            return False
+        return True
+
+    # --- end Trial view --------------------------------------------------
 
     def poll_commands(self) -> list[LiveMonitorCommand]:
         commands: list[LiveMonitorCommand] = []
@@ -480,6 +552,77 @@ class _CameraState:
             return self.seq, self.frame
 
 
+# --- Trial view (child side) --------------------------------------------
+
+# How many trial pictures wait for the child: far more than trials can start
+# between two of its reads (it takes them as they come, on its own thread).
+_TRIAL_VIEWS_QUEUED = 8
+
+
+class _TrialViewState:
+    """The child's newest trial picture, as JSON text, numbered."""
+
+    def __init__(self) -> None:
+        self.seq = 0
+        self.payload: str | None = None
+        self.condition = threading.Condition()
+
+    def set(self, payload: str) -> None:
+        with self.condition:
+            self.seq += 1
+            self.payload = payload
+            self.condition.notify_all()
+
+    def wait_after(self, seq: int, timeout: float) -> tuple[int, str] | None:
+        with self.condition:
+            if self.seq <= seq:
+                self.condition.wait(timeout)
+            if self.payload is None or self.seq <= seq:
+                return None
+            return self.seq, self.payload
+
+
+# How many gaze samples the child keeps: ten seconds at the feed's 60 Hz,
+# more than any trail the page draws, so a page that reloads mid-trial gets
+# the trial's trail back.
+_GAZE_KEPT = 600
+
+
+class _GazeState:
+    """The child's recent gaze samples, each numbered, oldest dropped first."""
+
+    def __init__(self, kept: int = _GAZE_KEPT) -> None:
+        self.seq = 0
+        self.samples: deque[tuple[int, Any]] = deque(maxlen=kept)
+        self.condition = threading.Condition()
+
+    def add(self, batch: Sequence[Any]) -> None:
+        with self.condition:
+            for sample in batch:
+                self.seq += 1
+                self.samples.append((self.seq, sample))
+            self.condition.notify_all()
+
+    def wait_after(self, seq: int, timeout: float) -> dict[str, Any] | None:
+        """The samples numbered after ``seq``, waiting up to ``timeout`` for
+        one; None when none came. ``missed`` counts those already dropped."""
+        with self.condition:
+            if self.seq <= seq:
+                self.condition.wait(timeout)
+            if self.seq <= seq:
+                return None
+            newer = [sample for number, sample in self.samples if number > seq]
+            oldest = self.samples[0][0] if self.samples else self.seq + 1
+            return {
+                "seq": self.seq,
+                "missed": max(0, oldest - seq - 1),
+                "samples": [list(sample) for sample in newer],
+            }
+
+
+# --- end Trial view (child side) ----------------------------------------
+
+
 def _query_params(query: str) -> dict[str, list[str]]:
     """A request's query string, parsed once, with every value of every key.
 
@@ -579,10 +722,15 @@ def _serve(
     stop: Any,
     token: str,
     port: int,
+    trial_updates: Any = None,
+    gaze_updates: Any = None,
 ) -> None:
     state = _State()
     camera = _CameraState()
     acks = _AckState()
+    # Trial view: the picture of the running trial, and its gaze.
+    trial_view = _TrialViewState()
+    gaze = _GazeState()
     # One memory of accepted request ids per queue (see _RecentRequestIds).
     seen_commands = _RecentRequestIds()
     seen_settings = _RecentRequestIds()
@@ -659,9 +807,11 @@ def _serve(
                     frame_headers["X-Frame-Eyes"] = eyes
                 self._send_bytes(HTTPStatus.OK, pixels, "application/octet-stream", frame_headers)
                 return
-            if path == "/api/commands":
-                # [workstream B] The session's acknowledgements, long-polled
-                # like the camera: 204 when nothing newer came in time.
+            # Long-polled channels, each answered like the camera: 204 when
+            # nothing newer came in time. [workstream B] /api/commands carries
+            # the session's acknowledgements; [trial view] /api/trial the
+            # picture of the running trial and /api/gaze its gaze samples.
+            if path in ("/api/commands", "/api/trial", "/api/gaze"):
                 if not self._authorized(params):
                     return
                 try:
@@ -673,14 +823,34 @@ def _serve(
                     )
                     return
                 wait_s = min(max(wait_ms, 0), _CAMERA_WAIT_MAX_MS) / 1000.0
-                record = acks.wait_after(after, wait_s)
-                if record is None:
+                if path == "/api/commands":
+                    record = acks.wait_after(after, wait_s)
+                    if record is None:
+                        self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/json")
+                        return
+                    seq, payload = record
+                    self._send(
+                        HTTPStatus.OK, f'{{"seq": {seq}, "commands": {payload}}}', "application/json"
+                    )
+                    return
+                if path == "/api/trial":
+                    newest_view = trial_view.wait_after(after, wait_s)
+                    if newest_view is None:
+                        self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/json")
+                        return
+                    seq, payload = newest_view
+                    self._send_bytes(
+                        HTTPStatus.OK,
+                        payload.encode(),
+                        "application/json",
+                        {"X-Trial-Seq": str(seq)},
+                    )
+                    return
+                newer = gaze.wait_after(after, wait_s)
+                if newer is None:
                     self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/json")
                     return
-                seq, payload = record
-                self._send(
-                    HTTPStatus.OK, f'{{"seq": {seq}, "commands": {payload}}}', "application/json"
-                )
+                self._send(HTTPStatus.OK, json.dumps(newer, allow_nan=False), "application/json")
                 return
             self._send(HTTPStatus.NOT_FOUND, "not found", "text/plain")
 
@@ -908,6 +1078,19 @@ def _serve(
     # reason: never behind a state snapshot being handed over.
     ack_thread = threading.Thread(target=pump_acks, daemon=True)
     ack_thread.start()
+    # --- Trial view: one thread per channel, for the camera's reason ------
+    def pump_slot(slot: Any, take: Callable[[Any], None]) -> None:
+        while not stop.is_set():
+            try:
+                item = slot.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            take(item)
+
+    for slot, take in ((trial_updates, trial_view.set), (gaze_updates, gaze.add)):
+        if slot is not None:
+            threading.Thread(target=pump_slot, args=(slot, take), daemon=True).start()
+    # --- end Trial view ---------------------------------------------------
     while not stop.is_set():
         server.handle_request()
     server.server_close()

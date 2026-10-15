@@ -772,6 +772,202 @@ then reports no click, so steps went missing under repeated presses. Each
 press also steps on from the value just sent rather than the one last
 published. `click` is kept for the keyboard, which reports no press.
 
+## Trial view
+
+The **Trial** entry in the sidebar (and the top of *All panels*) shows the
+screen the subject is looking at, in degrees of visual angle, with the eye's
+position over it: the trial's stimuli and gaze windows on a 5° grid, the
+current gaze point, and a trail of the last 0.5, 1 or 2 seconds (or the whole
+trial; the *Trail* menu, remembered per browser). The trail starts again with
+every trial. A frame with no gaze sample (a blink, a lost eye) breaks the
+trail and hides the point, and the line under the picture says so. Beside the
+picture is the camera box, and under it the task controls (the same buttons as
+the sidebar's, rendered into `<div data-controls-host>`). The saved copy in
+`figures/` has no Trial view: it has no trial running.
+
+### The picture
+
+Every coordinate is in dva, centred on the screen, y up: the frame stimulus
+placement already uses through `Screen.deg2px`. Six shapes, in
+`alhazen.display.schematic`:
+
+| Shape | Geometry |
+|---|---|
+| `Circle(center, radius)` | a disc or ring |
+| `Rect(center, size, angle_deg=0)` | a rectangle turned counter-clockwise about its centre |
+| `Line(start, end)` | a segment |
+| `Polygon(points)` | a closed outline through three or more points |
+| `Dots(points, radius)` | a dot field |
+| `Label(at, text)` | a short label (an annotation by default) |
+
+Each also takes `name=` (shown on hover), `role=` and `approximate=`. The
+role says how it is drawn: `stimulus` (on the subject's screen, filled),
+`region` (a window a gaze is judged against, a dashed outline, never filled:
+nothing is on the screen there) or `annotation` (the operator's mark, on no
+screen). `approximate=True` draws the outline dotted and puts *Approximate
+outline* in the legend: a bounding shape, or the place a moving stimulus
+starts from, is never passed off as exact. A shape checks itself when it is
+built — finite numbers, positive sizes, at least three polygon points, a known
+role, at most 5000 points per schematic — and raises `ValueError` naming the
+field, so a malformed picture fails at `build_trial` on trial one.
+
+**Where the picture comes from.** A task can hand over its own, exact picture
+as `TrialPlan.schematic`; it replaces the default whole:
+
+```python
+from alhazen.display.schematic import Circle, Dots, Rect
+from alhazen.task.schematic import region_shapes
+
+
+def build_trial(self, setup):
+    ...
+    return TrialPlan(
+        phases=phases,
+        stimuli=stimuli,
+        regions=regions,
+        schematic=[
+            Dots(dot_positions_dva, radius=0.1, name="cylinder"),
+            Rect((0.0, 0.0), (26.0, 14.0), name="aperture", role="annotation"),
+            Circle((0.0, 0.0), 0.15, name="fixation"),
+            *region_shapes(regions, setup.screen),  # the default's window outlines
+        ],
+    )
+```
+
+Without one, the session draws a default: every stimulus that describes its
+own outline — an optional `schematic(screen)` method returning shapes in dva,
+as alhazen's `FixationPoint` has — then every region of the plan as a dashed
+outline, converted from centred px with the session's own `Screen` (exact:
+the same window the phases judge against). A stimulus with no `schematic()`
+is not guessed at. A renderer's own attributes do not say where its ink is (a
+PsychoPy `ShapeStim`'s `size` is a scale factor, not a size), and a confident
+outline in the wrong place is worse than none. It is simply not drawn. The
+picture is the trial as it starts: a stimulus that moves is drawn where it
+begins, unless its task says otherwise.
+
+It is computed between trials, from the plan, before the first frame
+(`SessionRunner._publish_trial_view`), and travels as one small JSON on its own
+channel, never in a state publish.
+
+### The gaze
+
+```mermaid
+flowchart LR
+  E["TrialEngine, after each flip<br/>on_frame_input(trial, frame, t, inputs)"] --> R["FrameInputBuffer.note<br/>(the record, first)"]
+  E --> G["GazeFeed.note<br/>px → dva, ≤ 60 Hz, gaps once"]
+  G -->|"≤ 30 batches/s, put_nowait"| Q["one-slot queue<br/>full → keep, drop oldest past 240"]
+  Q --> C["server child<br/>last 600 samples, numbered"]
+  C -->|"/api/gaze long poll"| P["page: gazeLoop()<br/>redraws the gaze layer only"]
+```
+
+The gaze is the one the phases use (`InputFrame.gaze`, drift correction
+applied), taken from the engine's per-frame input hook, after the flip and
+after the frame-input record. `GazeFeed` (`live_monitor/gaze.py`) converts it
+to dva, skips a repeated sample (same `gaze_t`), keeps at most 60 a second, and
+sends one gap marker per run of missing samples. About thirty times a second
+it offers what it holds to the live monitor's gaze channel with a
+non-blocking put. When the server child has not collected the last batch, the
+samples stay with the feed and go with the next one. Past 240 waiting samples
+(four seconds) the oldest are dropped, so a stalled page loses the start of a
+trail, never the newest point, and never holds up a frame. The feed is wired
+only when the session has both a live monitor and an eye tracker.
+
+**Cost.** Measured with `examples/saccade_to_target` on a simulated display
+paced at 120 Hz by real sleeps (8.33 ms frames), the automated participant
+giving a new sample every frame, the live monitor open in Chromium, and the
+feed wired on even trials only, so on and off share the same minutes of a
+shared machine's load. Two such sessions of 120 trials: `GazeFeed.note`
+takes 16 to 17 µs per frame at the median, 111 to 147 µs at the 99th
+percentile (1.3 to 1.8 % of a frame) and 1.1 to 1.6 ms at most, against 14
+and 40 to 51 µs for the frame-input record beside it. Leaving out the first
+four trials, whose drops fell on gaze-on and gaze-off trials alike while the
+page loaded, frame intervals were 0 and 1 dropped of 2,940 frames with the
+feed against 0 and 0 of 2,892 without, 99th percentile 8.44 to 8.54 ms
+against 8.41 to 8.47 ms. The live monitor starts the channel's feeder thread
+when it starts, outside any trial.
+
+### The camera
+
+No supported tracker gives the session a camera image while it records, so
+the camera box never shows a live picture during a trial:
+
+- **EyeLink.** The camera image travels over the link only in camera setup:
+  pylink hands it to the display PC through the `EyeLinkCustomDisplay` image
+  callbacks (`setup_image_display`, `draw_image_line`, `exit_image_display`,
+  "called to notify that all camera setup things are complete"), which run
+  inside `doTrackerSetup`. Recording is a different tracker mode
+  (`IN_RECORD_MODE` against `IN_SETUP_MODE`/`IN_IMAGE_MODE` in `eyelink.h`),
+  and SR Research support states that "the video which can be accessed during
+  camera setup is not available during recording"; during a trial the eye
+  images are only on the Host PC's own display (bottom left). alhazen's
+  EyeLink backend has no `camera_frame` at all: the Host PC shows the image.
+  Sources: SR Research, *EyeLink Programmer's Guide*, "Calibration Camera
+  Image Presentation Example" and `eyelink.h`
+  (sr-research.com/download/dispdoc); SR Research support on the PsychoPy
+  forum, "EyeLink - Saving raw video" (discourse.psychopy.org/t/1588).
+- **TRACKPixx3.** `TPxGetImagePtr` returns the current eye image from the
+  DATAPixx3 at any time (VPixx `_libdpx`), and the backend reads it while
+  paused or calibrating. It is not read during trials on purpose: each read
+  is a `DPxUpdateRegCache` register round trip over USB on the device that is
+  recording the samples, under the same lock as the sample drain, and a
+  register-level read on this device has re-pointed its sample ring during a
+  recording before (`recording_armed` in `devices/eyetracker/viewpixx.py`),
+  which is lost samples. Doing it every frame would also cost the frame loop
+  a USB round trip.
+- **mouse_sim, scripted, the automated participant.** No camera.
+
+What the box shows instead, honestly: on a tracker with a camera, the newest
+real frame from the last pause or calibration (the camera channel keeps it),
+with how long before the running trial it was taken, both times on the
+session clock; while paused, the live stream. On a tracker without one, the
+tracker's own sentence why (`camera_while_recording` on each backend, read by
+`EyeTrackerMonitor.trial_camera`). Never a picture that is not the camera's.
+
+The best alternatives, if a live eye image during trials is wanted:
+
+1. **DATAPixx3 console output (VPixx rigs).** The DATAPixx3 can draw the
+   tracker window beside the stimulus on its console video output
+   (`DP3SetVidConsoleDisplay`, e.g. `FULL_STIMULI_HALF_TRACK`), in hardware,
+   with no read by the session at all. A second monitor at the operator's
+   desk then shows the live eye during every trial.
+2. **EyeLink rigs:** the Host PC's display already shows it; a camera on, or a
+   video capture of, the Host PC screen is the only route that does not touch
+   the link.
+3. A between-trials snapshot on the TRACKPixx3 during the ITI is possible in
+   principle, but it is the same register read during the recording; it
+   should be tried on the rig with the ring check above before it is offered.
+
+### Wire format
+
+`GET /api/trial?token=…&after=<seq>&wait_ms=…` answers the newest picture
+after `seq` (header `X-Trial-Seq`), or 204 when none came within the wait:
+
+```json
+{"trial_index": 12, "attempt": 1, "t": 812.4,
+ "screen": {"width_dva": 30.0, "height_dva": 16.9},
+ "source": "default",
+ "shapes": [{"kind": "circle", "role": "region", "name": "fixation",
+             "center": [0.0, 0.0], "radius": 2.0}],
+ "undrawn": ["cylinder"],
+ "condition": {"side": "left"},
+ "gaze": true,
+ "camera": {"live": false, "has_frames": false, "reason": "…"}}
+```
+
+`GET /api/gaze?token=…&after=<seq>&wait_ms=…` answers the samples numbered
+after `seq`, `[trial_index, t, x_dva, y_dva]` with `null` x and y for a gap,
+`missed` counting those the server had already dropped, or 204:
+
+```json
+{"seq": 3827, "missed": 0, "samples": [[57, 812.43, -0.21, 0.08], [57, 812.45, null, null]]}
+```
+
+Both are guarded by the session token like every other endpoint, and both
+channels are optional capabilities of the live monitor
+(`LiveMonitorController.publish_trial`/`publish_gaze`, looked up with
+`getattr`): a stand-in monitor without them runs the session with no Trial
+view.
+
 ## Frame-timing panel
 
 Every session gets a **Frame intervals** panel in the *Session* group, built

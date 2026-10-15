@@ -83,6 +83,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `drain`), `AdaptiveSchedule.estimators` / `per_estimator` / `decided_by`
   (filled by `adaptive_bounds`), all optional with defaults. The answer's
   `counts` gain `per_condition`; every uncertainty line is kept.
+- The live monitor's Trial view: the running trial's screen in dva (stimuli
+  and gaze windows on a degree grid) with the current gaze and a trail that
+  restarts each trial, beside a camera box that shows the last real frame from
+  a pause or calibration with its age, or the tracker's reason there is none.
+  `TrialPlan.schematic` lets a task supply its exact picture in the new shape
+  vocabulary (`alhazen.display.schematic`); without one the regions and any
+  stimulus with a `schematic(screen)` method are drawn (`FixationPoint` has
+  one). The gaze travels at up to 60 Hz on its own non-blocking channel
+  (`/api/gaze`), the picture once per trial (`/api/trial`). Every eye-tracker
+  backend states why it gives no camera image during a trial
+  (`camera_while_recording`). docs/live_monitor.md, "Trial view".
 
 ### Changed
 - Measure mode writes its report under the rig's data root,

@@ -418,6 +418,25 @@ class EyeTrackerMonitor:
         """Whether this tracker can hand the session a camera image at all."""
         return hasattr(self._tracker, "camera_frame")
 
+    def trial_camera(self) -> dict[str, Any]:
+        """What the live monitor's Trial view may show of the camera during a
+        trial: never a live image, and the tracker's own reason why.
+
+        ``has_frames`` says whether a real frame from the last pause or
+        calibration exists to show instead (the camera channel keeps the
+        newest one). The reason is the tracker's ``camera_while_recording``,
+        another optional capability looked up here; a tracker that does not
+        say gets a sentence that is true of every tracker.
+        """
+        reason = getattr(self._tracker, "camera_while_recording", None)
+        if not isinstance(reason, str) or not reason:
+            reason = (
+                "This tracker's camera image is read only while paused or calibrating."
+                if self.has_camera
+                else "This eye tracker gives the session no camera image."
+            )
+        return {"live": False, "has_frames": self.has_camera, "reason": reason}
+
     def panels(self, *, camera: bool, image: bool = True) -> list[dict[str, Any]]:
         """The "Eye tracker" section: camera, calibration, validation, drift.
 

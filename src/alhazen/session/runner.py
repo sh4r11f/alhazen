@@ -99,8 +99,9 @@ from alhazen.task.live import LiveAnalysis
 
 # Re-exported through this module as well as its own: experiment code and
 # tests written before the task layer existed import them from here.
-from alhazen.task.plan import BuildTrial, TrialSetup
+from alhazen.task.plan import BuildTrial, TrialPlan, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
+from alhazen.task.schematic import trial_view
 from alhazen.task.subject_kind import subject_kind_of
 from alhazen.training.history import stage_tally
 from alhazen.training.supervisor import TrainingSupervisor
@@ -845,6 +846,7 @@ class SessionRunner:
             condition=condition,
         )
         plan = self._build_trial(setup)
+        self._publish_trial_view(plan, condition, attempt)
         record = {
             "trial_index": self._trial_index,
             "attempt": attempt,
@@ -877,6 +879,44 @@ class SessionRunner:
             record=record,
         )
         return ctx, plan.phases
+
+    def _publish_trial_view(self, plan: TrialPlan, condition: Condition, attempt: int) -> None:
+        """Send the live monitor's Trial view the picture of the trial about to
+        run (task/schematic.py), before its first frame.
+
+        One small JSON on its own channel, never a state publish:
+        between trials, where the session already spends its bookkeeping
+        time. Its gaze follows frame by frame (live_monitor/gaze.py, wired in
+        session/builder.py).
+        """
+        # An optional capability of the live monitor, looked up here and
+        # nowhere else: a monitor written before the Trial view (a harness's
+        # stand-in, an experiment's own) simply gets no trial pictures.
+        publish_trial = getattr(self._live_monitor, "publish_trial", None)
+        if publish_trial is None:
+            return
+        view = trial_view(
+            schematic=tuple(plan.schematic) if plan.schematic is not None else None,
+            stimuli=plan.stimuli,
+            regions=plan.regions,
+            screen=self._screen,
+            trial_index=self._trial_index,
+            attempt=attempt,
+            condition=condition.params,
+            t=self._clock.now(),
+        )
+        view["gaze"] = self._tracker is not None
+        if self._eyetracker is not None:
+            view["camera"] = self._eyetracker.trial_camera()
+        else:
+            view["camera"] = {
+                "live": False,
+                "has_frames": False,
+                "reason": "This rig has no eye tracker."
+                if self._tracker is None
+                else "This eye tracker gives the session no camera image.",
+            }
+        publish_trial(view)
 
     def _apply_stage_transition(self) -> bool:
         """Move the subject if the curriculum says so. Returns False when the

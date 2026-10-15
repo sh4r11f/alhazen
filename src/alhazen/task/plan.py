@@ -8,7 +8,7 @@ is simply its caller. Keeping them below the session layer is also what lets
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,6 +17,7 @@ import numpy as np
 from alhazen.config.models import SessionConfig
 from alhazen.core.trial import CircleRegion
 from alhazen.display.backend import DisplayBackend
+from alhazen.display.schematic import Shape, check_shapes
 from alhazen.display.screen import Screen
 from alhazen.paradigms.base import Condition
 
@@ -45,12 +46,23 @@ class TrialSetup:
 @dataclass
 class TrialPlan:
     """What ``build_trial`` returns. The runner assembles the TrialContext
-    from this, so trial records stay uniform across experiments."""
+    from this, so trial records stay uniform across experiments.
+
+    ``schematic`` is optional: the trial's picture for the live monitor's
+    Trial view, as shapes in dva (alhazen.display.schematic). Left None, the
+    session draws the regions and every stimulus that can describe its own
+    outline (task/schematic.py). Checked here, so a malformed one fails at
+    ``build_trial`` rather than as a blank picture."""
 
     phases: list[Any]
     stimuli: dict[str, Any] = field(default_factory=dict)
     regions: dict[str, CircleRegion] = field(default_factory=dict)
     record: dict[str, Any] = field(default_factory=dict)
+    schematic: Sequence[Shape] | None = None
+
+    def __post_init__(self) -> None:
+        if self.schematic is not None:
+            self.schematic = check_shapes(self.schematic, "TrialPlan.schematic")
 
 
 BuildTrial = Callable[[TrialSetup], TrialPlan]

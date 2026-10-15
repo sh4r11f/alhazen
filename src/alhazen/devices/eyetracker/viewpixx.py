@@ -1087,6 +1087,16 @@ class ViewPixxTracker:
     those are tested.
     """
 
+    # What the live monitor's Trial view says in place of a live camera image
+    # (session/eyetracker.py EyeTrackerMonitor.trial_camera). camera_frame()
+    # could be called mid-trial, but it is a register read on the device that
+    # streams the samples, and such a read has re-pointed the sample ring
+    # during a recording (recording_armed). docs/live_monitor.md, "Trial view".
+    camera_while_recording = (
+        "The TRACKPixx3 image is read only while paused or calibrating: reading it means "
+        "a register read on the device that is recording the samples."
+    )
+
     def __init__(
         self,
         cfg: EyeTrackerConfig,

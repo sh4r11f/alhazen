@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from alhazen.display.backend import DisplayBackend
+from alhazen.display.schematic import Circle
 from alhazen.display.screen import Screen
 from alhazen.stimuli.base import NullStimulus, Stimulus
 
@@ -25,6 +26,9 @@ class FixationPoint:
     ) -> None:
         from psychopy import visual
 
+        # Kept for schematic(): the live monitor's picture of the trial.
+        self._pos = (float(pos[0]), float(pos[1]))
+        self._radius_px = screen.deg2px(size_dva) / 2.0
         self._stim: Any = visual.Circle(
             display.window,
             radius=screen.deg2px(size_dva) / 2.0,
@@ -37,6 +41,12 @@ class FixationPoint:
     def update(self, dt: float) -> None:
         # Static stimulus; nothing advances.
         return
+
+    def schematic(self, screen: Screen) -> tuple[Circle, ...]:
+        """The point's outline in dva, for the live monitor's Trial view:
+        exact, because a fixation point never moves or changes size."""
+        x, y = self._pos
+        return (Circle((screen.px2deg(x), screen.px2deg(y)), screen.px2deg(self._radius_px)),)
 
     def draw(self) -> None:
         self._stim.draw()
