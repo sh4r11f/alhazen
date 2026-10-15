@@ -1241,3 +1241,107 @@ def test_factors_side_by_side_say_they_are_averaged_separately():
 def test_cross_is_refused_where_there_is_nothing_to_cross(fields, message):
     with pytest.raises(ValueError, match=message):
         LiveMonitorPanel(title="P", cross=True, **fields)
+
+
+class TestSeriesFactor:
+    """One factor on the axis, the other in the colour: the interaction plot.
+    (`TestSeries`, above, is the `series` panel kind, a quantity over trials.)"""
+
+    def panel(self, **overrides):
+        fields = dict(
+            kind="grouped_mean", title="P", value="hit", group="separation", series="motion"
+        )
+        return LiveMonitorPanel(**{**fields, **overrides})
+
+    def test_each_cell_is_one_mark_labelled_by_its_axis_level_in_its_series_colour(self):
+        data = payload(self.panel(), _crossable())
+        # Series outermost (levels in their natural order), axis levels
+        # within, so each series' marks run along the axis in order.
+        assert [(g["label"], g["series"], g["mean"], g["n"]) for g in data["groups"]] == [
+            ("far", "moving", 1.0, 1),
+            ("near", "moving", 1.0, 1),
+            ("far", "static", 0.0, 1),
+            ("near", "static", 0.5, 2),
+        ]
+        assert data["x_label"] == "Separation"
+        # The legend's title is the series factor; its entries are LEVELS of
+        # it, so they read as values ("Moving"), not as column names.
+        assert data["series_label"] == "motion"
+        assert data["display_series_label"] == "Motion"
+        assert [g["display_series"] for g in data["groups"]][:2] == ["Moving", "Moving"]
+        # Dots are joined across the axis; a trial missing a factor is in no
+        # cell, so n counts five of the six trials.
+        assert data["connect"] is True
+        assert {"label": "n", "value": "5"} in data["stats"]
+        assert "note" not in data
+
+    def test_bars_are_not_joined(self):
+        assert payload(self.panel(style="bars"), _crossable())["connect"] is False
+
+    def test_a_panel_with_no_cell_says_which_two_factors_it_wanted(self):
+        rows = [trial(0, completed=True, hit=1.0, separation="near")]
+        data = payload(self.panel(), rows)
+        assert data["form"] == "empty"
+        assert data["message"] == "No hit by separation and motion yet"
+
+    @pytest.mark.parametrize(
+        ("fields", "message"),
+        [
+            (
+                {"kind": "histogram", "value": "hit", "series": "motion"},
+                "series is drawn on grouped_mean panels only, not on histogram",
+            ),
+            (
+                {
+                    "kind": "grouped_mean",
+                    "value": "hit",
+                    "group": ("separation", "stimulus"),
+                    "series": "motion",
+                },
+                "series takes exactly one group column",
+            ),
+            (
+                {"kind": "grouped_mean", "value": "hit", "group": "motion", "series": "motion"},
+                "cannot be both the axis and the colour",
+            ),
+        ],
+    )
+    def test_series_is_refused_where_it_cannot_be_drawn(self, fields, message):
+        with pytest.raises(ValueError, match=message):
+            LiveMonitorPanel(title="P", **fields)
+
+
+class TestAProportionColumn:
+    """A grouped_mean over a 0/1 column is a proportion, and is drawn as one."""
+
+    def panel(self, **overrides):
+        fields = dict(kind="grouped_mean", title="P", value="hit", group="separation")
+        return LiveMonitorPanel(**{**fields, **overrides})
+
+    def test_every_group_gets_a_wilson_interval_and_the_axis_is_zero_to_one(self):
+        rows = [trial(i, completed=True, hit=float(i < 7), separation="near") for i in range(7)]
+        rows += [trial(10 + i, completed=True, hit=0.0, separation="far") for i in range(7)]
+        data = payload(self.panel(), rows)
+        by_label = {g["label"]: g for g in data["groups"]}
+        # 7 of 7: the standard error would be zero, which is certainty about
+        # nothing. Wilson's interval reaches down to about 0.65.
+        assert by_label["near"]["mean"] == 1.0
+        assert by_label["near"]["high"] == 1.0
+        assert by_label["near"]["low"] == pytest.approx(0.646, abs=0.01)
+        assert by_label["far"]["low"] == 0.0
+        assert by_label["far"]["high"] == pytest.approx(0.354, abs=0.01)
+        assert all("sem" not in g for g in data["groups"])
+        assert data["error_label"] == "95% CI (Wilson)"
+        assert data["y_domain"] == [0.0, 1.0]
+
+    def test_a_single_trial_still_has_an_interval(self):
+        data = payload(self.panel(), [trial(1, completed=True, hit=1.0, separation="near")])
+        group = data["groups"][0]
+        assert (group["low"], group["high"]) == (pytest.approx(0.207, abs=0.01), 1.0)
+
+    def test_a_measured_column_keeps_its_standard_error(self):
+        rows = [trial(i, completed=True, hit=float(i), separation="near") for i in (0, 1, 2)]
+        data = payload(self.panel(), rows)
+        assert data["groups"][0]["sem"] == pytest.approx(1 / math.sqrt(3))
+        assert data["error_label"] == "Mean ± s.e.m."
+        assert "y_domain" not in data

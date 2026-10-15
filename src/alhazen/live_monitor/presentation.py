@@ -243,11 +243,20 @@ def present(payload: dict[str, Any]) -> dict[str, Any]:
     band = payload.get("band")
     if isinstance(band, dict) and isinstance(band.get("name"), str):
         band["display_name"] = display_value(band["name"])
+    # A series panel's `series_label` is the factor the colours stand for
+    # ("alignment"), written as a legend title; its groups' `series` are then
+    # that factor's LEVELS ("aligned"), which read as values. On every other
+    # grouped panel a group's `series` is a factor's name.
+    by_level = isinstance(payload.get("series_label"), str) and bool(payload["series_label"])
+    if by_level:
+        payload["display_series_label"] = sentence_start(payload["series_label"])
     for group in payload.get("groups") or []:
         if isinstance(group.get("label"), str):
             group["display_label"] = display_value(group["label"])
         if isinstance(group.get("series"), str) and group["series"]:
-            group["display_series"] = display_name(group["series"])
+            group["display_series"] = (
+                display_value(group["series"]) if by_level else display_name(group["series"])
+            )
     for one_map in payload.get("maps") or []:
         if isinstance(one_map.get("name"), str) and one_map["name"]:
             one_map["display_name"] = display_value(one_map["name"])

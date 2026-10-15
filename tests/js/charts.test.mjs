@@ -250,6 +250,73 @@ describe('drawDots', () => {
     assert.equal(count.children[0].getAttribute('font-style'), 'italic');
     assert.equal(count.children[0].textContent, 'n');
   });
+
+  /* An interaction plot: separation on the axis, alignment in the colour,
+   * as panels.py lays the cells out (series outermost, axis levels within). */
+  function interaction(overrides) {
+    return {
+      form: 'dots',
+      style: 'dots',
+      x_label: 'Separation',
+      y_label: 'Occluder landing',
+      error_label: '95% CI (Wilson)',
+      y_domain: [0, 1],
+      series_label: 'alignment',
+      display_series_label: 'Alignment',
+      connect: true,
+      groups: [
+        { series: 'aligned', display_series: 'Aligned', label: 'far', mean: 0.6, low: 0.4, high: 0.8, n: 20 },
+        { series: 'aligned', display_series: 'Aligned', label: 'near', mean: 0.9, low: 0.7, high: 0.97, n: 24 },
+        { series: 'rotated', display_series: 'Rotated', label: 'far', mean: 0.0, low: 0.0, high: 0.17, n: 19 },
+        { series: 'rotated', display_series: 'Rotated', label: 'near', mean: 0.3, low: 0.15, high: 0.5, n: 23 },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('lays a series panel out by axis level, one dodged mark per series, joined by a line', () => {
+    const { svg, legendHost } = dots(interaction());
+    // Four cells, four marks, coloured by series.
+    assert.deepEqual(markerColours(svg), [
+      'var(--series-1)', 'var(--series-1)', 'var(--series-2)', 'var(--series-2)',
+    ]);
+    // Two slots on the axis, each labelled once, with both series' n.
+    const texts = svg.querySelectorAll('text').map((text) => text.textContent);
+    assert.equal(texts.filter((t) => t === 'far').length, 1);
+    assert.equal(texts.filter((t) => t === 'near').length, 1);
+    assert.ok(texts.includes('n = 20 / 19'), 'the far slot lists both series\' n');
+    assert.ok(texts.includes('n = 24 / 23'), 'the near slot lists both series\' n');
+    // At one slot the two series sit a few pixels either side of its centre.
+    const marks = svg.querySelectorAll('circle').filter((c) => c.getAttribute('style') !== 'fill:var(--surface)');
+    const far = [marks[0], marks[2]].map((c) => numberAttr(c, 'cx'));
+    assert.notEqual(far[0], far[1]);
+    assert.ok(Math.abs(far[0] - far[1]) <= 18, 'dodged within the slot, not into the next');
+    // One connecting line per series, in its colour.
+    const lines = svg.querySelectorAll('polyline');
+    assert.equal(lines.length, 2);
+    assert.match(lines[0].getAttribute('style'), /stroke:var\(--series-1\)/);
+    assert.match(lines[1].getAttribute('style'), /stroke:var\(--series-2\)/);
+    // The legend is titled with the series factor and names its levels.
+    assert.equal(legendHost.querySelector('.legend-title').textContent, 'Alignment');
+    assert.deepEqual(legendOf(legendHost).slice(0, 2), [
+      { name: 'Aligned', shape: 'line', colour: 'var(--series-1)' },
+      { name: 'Rotated', shape: 'line', colour: 'var(--series-2)' },
+    ]);
+  });
+
+  it('does not join the bars of a series panel', () => {
+    const { svg } = dots(interaction({ style: 'bars', connect: false }));
+    assert.equal(svg.querySelectorAll('polyline').length, 0);
+    assert.equal(painted(svg, 'rect').length, 4);
+  });
+
+  it('gives the table view a column for the series', () => {
+    const rows = live_monitor.get('tableRows')(interaction());
+    // Spread into this realm's arrays: the page's arrays have the page's
+    // Array prototype, which a strict deep comparison treats as a difference.
+    assert.deepEqual([...rows.head], ['Separation', 'Alignment', 'Mean', '95% CI (Wilson)', 'n']);
+    assert.deepEqual([...rows.rows[0]], ['far', 'Aligned', '0.6', '0.4 – 0.8', '20']);
+  });
 });
 
 describe('figure export', () => {

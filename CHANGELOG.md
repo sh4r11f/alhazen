@@ -54,6 +54,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   (docs/data.md §2).
 
 ### Added
+- `LiveMonitorPanel.series`, for a `grouped_mean` panel: a second factor drawn
+  in the colour rather than along the axis. Each level of `group` is one
+  position on the axis and, at each, one mark per level of `series`, dodged
+  a few pixels apart, with its own *n*; with dots the marks of a series are
+  joined across the axis. That is an interaction plot — two lines that are
+  not parallel — which neither the marginal means nor `cross=True` can show.
+  The legend is titled with the series factor and the table view gains its
+  column. `series` is refused on any other kind, with more than one `group`
+  column, or naming the `group` column itself.
+- A `grouped_mean` panel whose column is 0/1 on every trial draws proportions:
+  a 95% Wilson interval on every group (the standard error of a proportion is
+  zero at 0 of 7 and at 7 of 7, which is certainty about nothing; a single
+  trial gets a wide interval rather than none) and an axis pinned to 0–1, with
+  the legend saying "95% CI (Wilson)". A measured column keeps its
+  "Mean ± s.e.m.".
 - `rig-source.yaml` in every run folder with a rig file: the file as written,
   byte for byte, comments and all (what `rig.yaml` was). `session.json` names
   it as `files.rig_source`. `rig-merged.yaml` is still written for a rig that
