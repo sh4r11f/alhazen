@@ -790,6 +790,34 @@ def _group_order(label: str) -> tuple[int, float, str]:
         return (1, 0.0, label)
 
 
+def _is_binary(values: list[float]) -> bool:
+    """Whether every value is 0 or 1 — a column that is a yes/no per trial,
+    whose mean is a proportion."""
+    return all(value in (0.0, 1.0) for value in values)
+
+
+def _interval(values: list[float], binary: bool) -> dict[str, Any]:
+    """The error bar of one group: how well its mean is pinned down.
+
+    For a measured quantity that is the standard error of the mean. For a
+    0/1 column the mean is a proportion, and its standard error is a
+    normal interval that is badly wrong on a handful of trials — zero width
+    at 0 of 7 or 7 of 7, where nothing is certain — so the bar is Wilson's
+    95% interval instead, the one `grouped_rate` and `performance` draw.
+    Absolute bounds (``low``/``high``) rather than a ± value, because the
+    interval is not symmetric about the proportion.
+
+    A single measured trial has no spread, so ``sem`` is None there: better
+    a bare dot than a zero-length bar implying certainty. A single 0/1
+    trial still has a Wilson interval, a wide one, which is the truth.
+    """
+    if binary:
+        low, high = _wilson(int(sum(values)), len(values))
+        return {"low": low, "high": high}
+    sd = _sd(values)
+    return {"sem": None if math.isnan(sd) else sd / math.sqrt(len(values))}
+
+
 def _grouped_mean(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     field = _required(panel, "value")
     fields = panel.group_fields
@@ -798,18 +826,25 @@ def _grouped_mean(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[s
     # Crossing needs two factors; the spec refuses cross=True with fewer, so
     # the length check only guards a panel built past its own validator.
     crossed = panel.cross and len(fields) > 1
+    # A series panel: one group column on the axis, a second factor as the
+    # colour (spec.LiveMonitorPanel.series). The spec holds it to one group
+    # column, so `fields[0]` is the whole axis.
+    series_field = panel.series
 
     # Marginal buckets are keyed by (factor, level) rather than by level
     # alone. Two factors can name the same level — `near` under separation and
     # `near` under anything else — and merging them would silently average
     # unrelated trials together. Crossed buckets are keyed by every factor's
-    # level at once, in the order the factors were declared.
+    # level at once, in the order the factors were declared. Series buckets
+    # are keyed by (axis level, series level): one cell of the two-factor
+    # design each, like a crossed one, but the two parts are drawn apart.
     buckets: dict[tuple[str, ...], list[float]] = {}
     for row in rows:
         if not _num(row.get(field)):
             continue
-        if crossed:
-            levels = [row.get(group_field) for group_field in fields]
+        if crossed or series_field is not None:
+            factors = fields if crossed else (fields[0], series_field)
+            levels = [row.get(factor) for factor in factors]
             # A trial missing any one factor belongs to no cell.
             if any(level is None for level in levels):
                 continue
@@ -820,38 +855,46 @@ def _grouped_mean(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[s
             if key is not None:
                 buckets.setdefault((group_field, str(key)), []).append(float(row[field]))
     if not buckets:
-        return _empty(f"No {field} by {' / '.join(fields)} yet")
+        split = " / ".join(fields) if series_field is None else f"{fields[0]} and {series_field}"
+        return _empty(f"No {field} by {split} yet")
 
     if crossed:
         # Each factor's levels in their natural order, the first factor
         # outermost, so the cells that share a level of it sit together.
         ordered = sorted(buckets, key=lambda key: tuple(_group_order(level) for level in key))
+    elif series_field is not None:
+        # Series outermost, axis levels within: the page draws each series'
+        # marks in this order, so its line runs along the axis left to right.
+        ordered = sorted(buckets, key=lambda key: (_group_order(key[1]), _group_order(key[0])))
     else:
         # Factors in the order they were declared, levels ordered within each,
         # so the bars of one factor stay together and the reader compares
         # within a colour before comparing across.
         ordered = sorted(buckets, key=lambda key: (fields.index(key[0]), _group_order(key[1])))
 
+    # One rule for the whole panel, not per group: a 0/1 column gets Wilson
+    # intervals on every group and a 0–1 axis, so one group that happened to
+    # hold only hits is drawn on the same terms as the rest.
+    binary = _is_binary([value for values in buckets.values() for value in values])
+
     groups: list[dict[str, Any]] = []
     trials_shown = 0
     for key in ordered:
         values = buckets[key]
         trials_shown += len(values)
-        sd = _sd(values)
         group: dict[str, Any] = {
             # A cell is named by all its levels, "near / static"; a marginal
-            # bar by its one level, with its factor as the series.
-            "label": " / ".join(key) if crossed else key[1],
+            # bar by its one level, with its factor as the series; a series
+            # panel's mark by its axis level, with the series level as its
+            # series.
+            "label": " / ".join(key) if crossed else key[1] if series_field is None else key[0],
             "mean": _mean(values),
-            # Standard error of the mean: the error bar answers "how well
-            # is this mean pinned down", which is the question a group
-            # comparison asks. NaN travels as None for a single trial,
-            # where no spread was measured — better a bare dot than a
-            # zero-length bar implying certainty.
-            "sem": None if math.isnan(sd) else sd / math.sqrt(len(values)),
+            **_interval(values, binary),
             "n": len(values),
         }
-        if not crossed:
+        if series_field is not None:
+            group["series"] = key[1]
+        elif not crossed:
             group["series"] = key[0].replace("_", " ")
         groups.append(group)
 
@@ -871,7 +914,7 @@ def _grouped_mean(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[s
         "style": panel.style or "dots",
         "x_label": x_label,
         "y_label": axis_label(field, panel.unit),
-        "error_label": "Mean ± s.e.m.",
+        "error_label": "95% CI (Wilson)" if binary else "Mean ± s.e.m.",
         "stats": [
             {"label": "groups", "value": str(len(groups))},
             # Side by side, `n` counts placements, not trials: every trial
@@ -881,6 +924,17 @@ def _grouped_mean(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[s
             {"label": "n", "value": f"{trials_shown:,}"},
         ],
     }
+    if binary:
+        # A proportion axis is 0 to 1, as on every other panel of a
+        # proportion: auto-scaling 0.62 against 0.68 turns noise into a
+        # result.
+        payload["y_domain"] = [0.0, 1.0]
+    if series_field is not None:
+        # The legend's question ("Alignment") and, for dots, that the marks
+        # of one series are joined across the axis: an interaction is read as
+        # two lines that are not parallel, and bars have no line to read.
+        payload["series_label"] = split_unit(series_field)[0]
+        payload["connect"] = (panel.style or "dots") == "dots"
     if len(fields) > 1 and not crossed:
         # On the panel, not only in the spec: bars for several factors on one
         # axis look like the cells of a design, and they are not.

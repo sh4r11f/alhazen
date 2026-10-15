@@ -124,6 +124,16 @@ class LiveMonitorPanel(Model):
     # every trial (marginal means) and the panel says so, because marginals
     # side by side on one axis are easy to misread as the cells of a design.
     cross: bool = False
+    # ``grouped_mean`` with one ``group`` column: a second factor drawn as
+    # coloured SERIES rather than as more x positions. Each level of ``group``
+    # is one position on the axis; at each, one mark per level of ``series``,
+    # in that level's colour, and with dots the marks of a series are joined
+    # across the axis. That is an interaction plot — the one figure that
+    # shows whether a factor's effect changes with another's — which neither
+    # the marginal means (two factors side by side) nor ``cross`` (every cell
+    # in one colour, on one row) can show: the eye reads an interaction as
+    # two lines that are not parallel.
+    series: str | None = None
     # ``grouped_mean`` and ``grouped_rate``: dots-and-whiskers, or bars.
     style: GroupedStyle | None = None
     # Which sidebar group this panel is filed under. Left unset, it follows
@@ -182,6 +192,24 @@ class LiveMonitorPanel(Model):
                 "cross=True crosses two or more group columns on a grouped_mean panel; "
                 f"this {self.kind} panel names {len(self.group_fields)}"
             )
+        if self.series is not None:
+            # A series is a second factor on a grouped_mean, and only there:
+            # on any other kind there is no x axis of levels to spread it
+            # across. One group column, because the series IS the second
+            # factor — a third would need a facet, not a colour — and a
+            # column cannot be both the axis and the colour.
+            if self.kind != "grouped_mean":
+                raise ValueError(f"series is drawn on grouped_mean panels only, not on {self.kind}")
+            if len(self.group_fields) != 1:
+                raise ValueError(
+                    "series takes exactly one group column (the x axis); this panel names "
+                    f"{len(self.group_fields)}. To cross more factors use cross=True"
+                )
+            if self.series in self.group_fields:
+                raise ValueError(
+                    f"series {self.series!r} is also the group column: one factor cannot "
+                    "be both the axis and the colour"
+                )
         if self.rolling_window is not None and self.rolling_window < 1:
             raise ValueError("rolling_window must be >= 1")
         return self

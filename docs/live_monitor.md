@@ -186,11 +186,13 @@ thing wherever it appears.
   convention a trial record already follows. Set `unit=` on the panel for a
   column named some other way.
 - **Error bars are defined on the panel.** A `grouped_mean` whisker is the
-  standard error of the mean and a `grouped_rate` whisker a 95% Wilson
-  interval, and the legend says which: a journal will not print an error bar
-  the figure does not define. The number of trials behind each bar is printed
-  under it, as *n* = 12. A group with a single trial gets no whisker: no
-  spread was measured, and a zero-length bar would imply certainty.
+  standard error of the mean — or, when the column is 0/1 and the mean a
+  proportion, a 95% Wilson interval — and a `grouped_rate` whisker a 95%
+  Wilson interval, and the legend says which: a journal will not print an
+  error bar the figure does not define. The number of trials behind each bar
+  is printed under it, as *n* = 12. A group with a single measured trial gets
+  no whisker: no spread was measured, and a zero-length bar would imply
+  certainty. (A single 0/1 trial still gets its Wilson interval, a wide one.)
 - **The shaded band on `performance` is a 95% Wilson interval**, not the
   textbook normal one — which is badly wrong on the handful of trials where an
   experimenter is most tempted to read it, and can run past 0 or 1.
@@ -274,7 +276,7 @@ layout.
 | `scatter` | where in space did the response land? | equal-aspect scatter with targets, the mean landing, and any regions the task outlines |
 | `vectors` | how far, and which way, did the eye move? | every trial's displacement from one origin, on a polar grid |
 | `series` | how does one quantity drift? | per-trial points with a moving mean |
-| `grouped_mean` | does it differ across a condition? | group means ± s.e.m., with *n*; several factors side by side or crossed |
+| `grouped_mean` | does it differ across a condition? | group means ± s.e.m. (a 0/1 column: proportions with Wilson intervals), with *n*; several factors side by side, crossed, or one on the axis and one in the colour (an interaction plot) |
 | `stat` | one number | the number |
 
 `performance` needs nothing declared: it reads the row's own `success` when
@@ -415,6 +417,38 @@ levels instead ("near / static"), each over the trials that had exactly that
 combination and with its own *n*; a trial missing any of the factors sits in no
 cell. `cross=True` on a panel with fewer than two factors, or on any other
 kind, is refused when the panel is declared.
+
+Neither of those shows an **interaction** — whether one factor's effect
+changes with the other's — and that is often the claim an experiment makes.
+For that, put one factor on the axis and the other in the colour:
+
+```python
+LiveMonitorPanel(
+    kind="grouped_mean",
+    title="P(occluder): alignment × separation",
+    value="occluder_landing",
+    group="separation",       # the x axis: near, far
+    series="alignment",       # one coloured mark per level, at each x
+    where={"stimulus": "bars"},
+    completed_only=True,
+)
+```
+
+Each level of `group` is one position on the axis; at each, one mark per
+level of `series`, dodged a few pixels apart in that level's colour, with its
+own *n* (printed under the axis as `n = 12 / 11`, in legend order). With dots
+the marks of a series are joined across the axis, so an interaction reads as
+two lines that are not parallel; bars are not joined. The legend is titled
+with the series factor. `series` takes exactly one `group` column and is
+refused on any other kind, with several group columns, or naming the group
+column itself.
+
+**A 0/1 column is a proportion.** When every value a `grouped_mean` panel
+reads is 0 or 1 — a hit per trial — its mean is a proportion, and the panel
+draws it as one: the whisker is a 95% Wilson interval (the standard error of
+a proportion is zero at 0 of 7 and at 7 of 7, which is certainty about
+nothing) and the axis is pinned to 0–1. The legend says "95% CI (Wilson)"
+instead of "Mean ± s.e.m.".
 
 ## Panel filters
 

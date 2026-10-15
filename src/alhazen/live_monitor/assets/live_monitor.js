@@ -1116,14 +1116,21 @@ function drawVectors(legendHost, host, data) {
 }
 
 
-/** Group means with standard-error bars — the comparison a condition column
- *  invites, drawn so the reader can see how well each mean is pinned down. */
+/** Group means with error bars — the comparison a condition column invites,
+ *  drawn so the reader can see how well each mean is pinned down.
+ *
+ *  Two layouts. Plain: one slot on the axis per group, in payload order. By
+ *  series (`data.series_label` set): one slot per distinct `label`, and at
+ *  each slot one mark per `series`, dodged a few pixels apart and coloured by
+ *  series; with `data.connect` the marks of a series are joined across the
+ *  axis, which is how an interaction is read — two lines not parallel. */
 function drawDots(legendHost, host, data) {
   const groups = data.groups || [];
   if (!groups.length) return drawEmpty(host, 'No data yet');
 
   const width = host.clientWidth || 380;
   const bars = data.style === 'bars';
+  const bySeries = data.series_label !== undefined;
   /* An interval may be given as absolute bounds (a Wilson interval is not
    * symmetric about its estimate) or as one ± value. */
   const lowOf = (g) => (g.low === undefined ? g.mean - (g.sem || 0) : g.low);
@@ -1151,19 +1158,6 @@ function drawDots(legendHost, host, data) {
   const left = leftPad(yTicks);
   const plotH = plotHeight(width);
   const box = { x0: left, x1: width - PAD.right, y0: PAD.top, y1: PAD.top + plotH };
-  const step = (box.x1 - box.x0) / groups.length;
-  const xAt = (index) => box.x0 + step * (index + 0.5);
-  const yScale = (v) => box.y1 - (v - yLo) / (yHi - yLo) * (box.y1 - box.y0);
-
-  const svg = svgEl('svg', { width: width, height: chartHeight(width) }, host);
-  drawFrame(svg, box, { xScale: xAt, yScale, xTicks: [], yTicks, yLabel: data.y_label });
-  if (yLo < 0 && yHi > 0) {
-    /* Bars on both sides of zero need the baseline drawn, or a short negative
-     * bar reads as a short positive one. */
-    svgEl('line', {
-      x1: box.x0, x2: box.x1, y1: yScale(0), y2: yScale(0), class: 'spine',
-    }, svg);
-  }
 
   /* One colour per factor. A panel that groups by a single factor keeps the
    * one colour it always had; a panel showing several on a shared axis needs
@@ -1179,6 +1173,33 @@ function drawDots(legendHost, host, data) {
     const carrier = groups.find((g) => g.series === raw);
     return (carrier && carrier.display_series) || raw;
   };
+
+  /* The axis: one slot per group, or per distinct label when the groups are
+   * the cells of two factors and the second is the colour. Within a slot the
+   * series are dodged, close enough to read as one level, apart enough that
+   * their whiskers do not cross. */
+  const slots = [];
+  groups.forEach((g) => { if (!bySeries || !slots.includes(g.label)) slots.push(g.label); });
+  const step = (box.x1 - box.x0) / (bySeries ? slots.length : groups.length);
+  const dodge = bySeries ? Math.min(18, step / (series.length + 1)) : 0;
+  const slotOf = (g, index) => (bySeries ? slots.indexOf(g.label) : index);
+  const xAt = (g, index) => {
+    const centre = box.x0 + step * (slotOf(g, index) + 0.5);
+    if (!bySeries) return centre;
+    return centre + (series.indexOf(g.series) - (series.length - 1) / 2) * dodge;
+  };
+  const yScale = (v) => box.y1 - (v - yLo) / (yHi - yLo) * (box.y1 - box.y0);
+
+  const svg = svgEl('svg', { width: width, height: chartHeight(width) }, host);
+  drawFrame(svg, box, { xScale: (i) => box.x0 + step * (i + 0.5), yScale, xTicks: [], yTicks, yLabel: data.y_label });
+  if (yLo < 0 && yHi > 0) {
+    /* Bars on both sides of zero need the baseline drawn, or a short negative
+     * bar reads as a short positive one. */
+    svgEl('line', {
+      x1: box.x0, x2: box.x1, y1: yScale(0), y2: yScale(0), class: 'spine',
+    }, svg);
+  }
+
   /* One entry per factor when there are several, and the error bar's
    * definition whenever a whisker is drawn: a journal will not print an error
    * bar the figure does not define, and "Mean ± s.e.m." and "95% CI" are
@@ -1190,16 +1211,37 @@ function drawDots(legendHost, host, data) {
   if (data.error_label && drawsWhiskers) {
     entries.push({ name: data.error_label, color: bars ? 'var(--axis)' : 'var(--ink-2)', shape: 'whisker' });
   }
-  drawLegend(legendHost, entries);
+  drawLegend(legendHost, entries, bySeries ? shown(data, 'series_label') : undefined);
+
+  /* The lines of an interaction plot, under the marks: each series' means
+   * joined in slot order, in the series' colour. */
+  if (bySeries && data.connect && !bars) {
+    series.forEach((name) => {
+      const own = groups
+        .map((g, index) => ({ g: g, index: index }))
+        .filter((entry) => entry.g.series === name)
+        .sort((a, b) => slotOf(a.g, a.index) - slotOf(b.g, b.index));
+      if (own.length < 2) return;
+      svgEl('polyline', {
+        points: own.map((entry) => xAt(entry.g, entry.index) + ',' + yScale(entry.g.mean)).join(' '),
+        style: 'fill:none;stroke:' + colorOf(own[0].g) + ';stroke-width:2',
+        class: 'connect',
+      }, svg);
+    });
+  }
+
   const zero = yScale(Math.min(Math.max(0, yLo), yHi));
   /* Half the slot, up to 40 px: wide enough to read as bars rather than
-   * stems, narrow enough to keep the gap that marks them as separate groups. */
-  const thickness = Math.max(6, Math.min(40, step * 0.5));
+   * stems, narrow enough to keep the gap that marks them as separate groups.
+   * Dodged bars share the slot, so each takes a little less than its dodge. */
+  const thickness = bySeries
+    ? Math.max(4, dodge * 0.8)
+    : Math.max(6, Math.min(40, step * 0.5));
   /* Caps in proportion to the bar, so a wide bar's whisker does not end in a
    * pin head and a narrow bar's cap does not overhang it. */
   const cap = Math.max(3, Math.min(7, thickness * 0.2));
   groups.forEach((group, index) => {
-    const x = xAt(index);
+    const x = xAt(group, index);
     const y = yScale(group.mean);
     if (bars) {
       /* Square ends, hanging from zero for a negative mean and standing on it
@@ -1223,17 +1265,9 @@ function drawDots(legendHost, host, data) {
       }, svg);
     }
     if (!bars) marker(svg, x, y, colorOf(group), 4.5);
-    svgEl('text', {
-      x: x, y: box.y1 + 15, class: 'tick-text', 'text-anchor': 'middle',
-    }, svg).textContent = shown(group, 'label');
-    /* "n = 12" with an italic n: the sample size as it is set in print. */
-    const count = svgEl('text', {
-      x: x, y: box.y1 + 27, class: 'tick-text', 'text-anchor': 'middle',
-    }, svg);
-    svgEl('tspan', { 'font-style': 'italic' }, count).textContent = 'n';
-    svgEl('tspan', {}, count).textContent = ' = ' + group.n;
 
-    const hit = svgEl('rect', { x: x - step / 2, y: box.y0, width: step, height: box.y1 - box.y0, class: 'hit' }, svg);
+    const hitX = bySeries ? x - dodge / 2 : x - step / 2;
+    const hit = svgEl('rect', { x: hitX, y: box.y0, width: bySeries ? dodge : step, height: box.y1 - box.y0, class: 'hit' }, svg);
     hit.addEventListener('pointermove', (event) => {
       const rect = svg.getBoundingClientRect();
       const rows = [{ name: 'Mean', value: fmt(group.mean), color: colorOf(group) }];
@@ -1248,6 +1282,24 @@ function drawDots(legendHost, host, data) {
       showTip(host, event.clientX - rect.left, event.clientY - rect.top, title, rows);
     });
     hit.addEventListener('pointerleave', () => hideTip(host));
+  });
+
+  /* The slot labels, once each, and the sample size under them: "n = 12"
+   * with an italic n, as it is set in print. A slot holding several series
+   * lists each one's n in legend order, "n = 12 / 11". */
+  slots.forEach((label, slot) => {
+    const x = box.x0 + step * (slot + 0.5);
+    const members = bySeries
+      ? series.map((name) => groups.find((g) => g.label === label && g.series === name))
+      : [groups[slot]];
+    svgEl('text', {
+      x: x, y: box.y1 + 15, class: 'tick-text', 'text-anchor': 'middle',
+    }, svg).textContent = shown(members.find((g) => g) || groups[slot], 'label');
+    const count = svgEl('text', {
+      x: x, y: box.y1 + 27, class: 'tick-text', 'text-anchor': 'middle',
+    }, svg);
+    svgEl('tspan', { 'font-style': 'italic' }, count).textContent = 'n';
+    svgEl('tspan', {}, count).textContent = ' = ' + members.map((g) => (g ? g.n : '–')).join(' / ');
   });
 
   if (data.x_label) {
@@ -2219,16 +2271,23 @@ function tableRows(data) {
           fmt((Math.atan2(p[1], p[0]) * 180) / Math.PI),
         ])) };
     }
-    case 'dots':
-      return { head: [data.x_label || 'Group', 'Mean', data.error_label || 'Interval', 'n'],
+    case 'dots': {
+      /* A series panel's groups are cells of two factors, so the table gets
+       * a column for the second one; any other grouped panel's `series` is
+       * the factor the mark belongs to, already told by the legend. */
+      const bySeries = data.series_label !== undefined;
+      return { head: [data.x_label || 'Group', ...(bySeries ? [shown(data, 'series_label')] : []),
+          'Mean', data.error_label || 'Interval', 'n'],
         rows: (data.groups || []).map((g) => [
           shown(g, 'label'),
+          ...(bySeries ? [shown(g, 'series')] : []),
           fmt(g.mean),
           g.low === undefined
             ? (g.sem === null ? '—' : '± ' + fmt(g.sem))
             : fmt(g.low) + ' – ' + fmt(g.high),
           String(g.n),
         ]) };
+    }
     case 'stat':
       return { head: [data.label || 'Value', ''], rows: [[data.value + (data.unit ? ' ' + data.unit : ''), data.secondary || '']] };
     case 'image':
