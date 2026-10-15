@@ -106,6 +106,41 @@ class TestTheAllowSets:
             "Calibrate works only while the task is paused; pause it first"
         )
 
+    def test_the_rig_keys_are_judged_by_the_same_table(self):
+        """Every command a rig key can send during a trial has its name in the
+        controls table, and the only one the running allow-set refuses is
+        calibrate: the keyboard and the page share one rule."""
+        from alhazen.core.commands import DEFAULT_KEYMAP
+        from alhazen.session.operator_commands import KEYBOARD_COMMAND_NAMES
+
+        names = {KEYBOARD_COMMAND_NAMES[command] for command in DEFAULT_KEYMAP.values()}
+        assert names <= KNOWN_COMMANDS
+        assert names - STATUS_COMMANDS["running"] == {"calibrate"}
+        # No key starts validate or drift correction during a trial: they are
+        # pause-menu rows only (read while paused, session/pause.py).
+        assert not names & {"validate", "drift_correct"}
+
+    def test_a_refused_rig_key_is_recorded_like_a_page_command(self):
+        queue = ScriptedQueue()
+        operator, events = bound(queue)
+        note = status_refusal("calibrate", "running")
+        assert note is not None
+        operator.record_keyboard("calibrate", "keyboard-1", "refused", note)
+        assert events == [
+            (
+                "OPERATOR_COMMAND",
+                {
+                    "name": "calibrate",
+                    "request_id": "keyboard-1",
+                    "source": "keyboard",
+                    "result": "refused",
+                    "note": note,
+                },
+            )
+        ]
+        (record,) = queue.ack_records[-1]
+        assert (record["source"], record["result"]) == ("keyboard", "refused")
+
     def test_an_unknown_name_is_a_bug_not_a_refusal(self):
         with pytest.raises(ValueError, match="unknown operator command"):
             status_refusal("recalibrate", "paused")
@@ -291,7 +326,7 @@ class TestTakingCommands:
         recent = operator.recent()
         assert len(recent) == RECENT
         assert recent[-1]["request_id"] == f"r{RECENT + 5}"
-        assert set(recent[0]) == {"request_id", "name", "result", "note", "t"}
+        assert set(recent[0]) == {"request_id", "name", "source", "result", "note", "t"}
 
     def test_acknowledging_before_the_runner_bound_it_is_a_wiring_bug(self):
         operator = OperatorCommands(ScriptedQueue([[("pause", "running")]]))
@@ -393,6 +428,29 @@ class TestThroughASession:
         harness.runner.run()
         assert "PAUSED" not in _names(harness)
         assert _acks(harness) == [("calibrate", "refused")]
+
+    def test_calibrate_key_during_a_trial_shows_on_the_page(self, tmp_path: Path):
+        """C at the rig during a trial: refused, the trial completes, and the
+        refusal is in the record the page lists under its buttons."""
+        queue = ScriptedQueue()
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=ScriptedCommands([[Command.CALIBRATE]]),
+            live_monitor=queue,
+            on_pause=lambda menu: "resume",
+            merge_live_monitor=True,
+        )
+        harness.runner.run()
+        assert "PAUSED" not in _names(harness)
+        assert [row["trial_index"] for row in harness.recorder.trials] == [1]
+        (record,) = queue.states[-1]["commands"]
+        assert (record["name"], record["source"], record["result"]) == (
+            "calibrate",
+            "keyboard",
+            "refused",
+        )
+        assert record["request_id"] == "keyboard-1"
         assert [row["trial_index"] for row in harness.recorder.trials] == [1]
 
     def test_skip_from_the_page_abandons_the_trial(self, tmp_path: Path):

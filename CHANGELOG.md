@@ -64,7 +64,8 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   (`core.commands.MergedCommands`): no synthetic keystrokes, no window focus.
   The buttons are drawn into every `[data-controls-host]` on the page.
 - `OPERATOR_COMMAND`, a reserved event: every command the session takes from
-  the live monitor, with `name`, `request_id`, `source` (`live_monitor`),
+  the live monitor, and every rig key the session refuses, with `name`,
+  `request_id`, `source` (`live_monitor` or `keyboard`),
   `result` (`applied`, `refused`, `failed` or `discarded`) and a `note`. The
   newest 20 travel in each live monitor state as `commands`, and at once on
   `GET /api/commands`.
@@ -112,13 +113,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   Reports already in `configs/measurements/` are not moved; move them by hand
   to `data/measurements/` if they should stay with the rest.
 - **The rig keyboard's C during a trial no longer pauses and calibrates.**
-  Calibration runs only while the task is paused, the same rule as the live
-  monitor's Calibrate button (one command path: `MergedCommands` into the
-  engine). The engine hands the key to the runner, which logs the refusal and
-  records an `OPERATOR_COMMAND` with `source: keyboard`, `result: refused` and
-  `request_id: null`; the trial goes on. Pause with P, then C on the pause
-  menu. `TrialEngine` no longer sets the record's `pause_action`, and
-  `PauseController` no longer reads it.
+  Calibration, validation and drift correction run only while the task is
+  paused, on every rig, from the page and from the keyboard alike, judged by
+  one table (`live_monitor/controls.py`; `KEYBOARD_COMMAND_NAMES` maps each
+  key's command into it). The engine hands the in-trial C to the runner, which
+  logs the refusal, records an `OPERATOR_COMMAND` with `source: keyboard`,
+  `result: refused` and `request_id: keyboard-<n>`, and lists it under the
+  live monitor's buttons; the trial goes on. Pause with P, then C on the pause
+  menu. V and D were never bound during a trial and still are not. Live
+  monitor acknowledgement records gain `source`. `TrialEngine` no longer sets
+  the record's `pause_action`, and `PauseController` no longer reads it.
 - The dashboard takes the Split design: an icon rail that widens on hover, the Run
   page as settings on the left and an instrument pane on the right (the launch
   summary before a run, the live monitor during one, media, console and upload

@@ -851,7 +851,7 @@ class TestRunnerIntegration:
         (refused,) = [e for e in harness.collector.events if e.name == "OPERATOR_COMMAND"]
         assert refused.payload == {
             "name": "calibrate",
-            "request_id": None,
+            "request_id": "keyboard-1",
             "source": "keyboard",
             "result": "refused",
             "note": "Calibrate works only while the task is paused; pause it first",
@@ -859,6 +859,9 @@ class TestRunnerIntegration:
         assert "calibrate key during a trial refused" in caplog.text
         assert names.count("TRIAL_END") == 1  # one trial, run to its end
         assert live_monitor.states[-1]["status"] == "complete"
+        # Listed on the page, under the buttons, as the key at the rig.
+        (record,) = [c for c in live_monitor.states[-1]["commands"] if c["source"] == "keyboard"]
+        assert (record["name"], record["result"]) == ("calibrate", "refused")
 
     def test_a_click_on_a_rig_without_a_tracker_says_so(self, tmp_path: Path, caplog):
         """The server accepts Validate whether or not a tracker is wired, so

@@ -102,6 +102,21 @@ describe('the operator controls', () => {
     }
   });
 
+  it('list a rig key the session refused, with why, under the buttons', async () => {
+    const note = RUNNING_CONTROLS.refused.calibrate;
+    const live_monitor = await livePage({
+      state: running({ commands: [{ request_id: 'keyboard-1', name: 'calibrate', source: 'keyboard',
+        result: 'refused', note, t: 3 }] }),
+      command: () => response({ status: 202 }),
+    });
+    for (const host of [live_monitor.byId('controls'), live_monitor.byId('trial-controls')]) {
+      const item = host.querySelector('.command-log').querySelector('li');
+      assert.equal(item.dataset.result, 'refused');
+      assert.equal(item.querySelector('.command-name').textContent, 'Calibrate (key at the rig)');
+      assert.equal(item.querySelector('.command-note').textContent, 'refused · ' + note);
+    }
+  });
+
   it('fill every controls host on the page, not only the sidebar', async () => {
     const live_monitor = await livePage({ state: running(), command: () => response({ status: 202 }) });
     const host = live_monitor.document.createElement('div');

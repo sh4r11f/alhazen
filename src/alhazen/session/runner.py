@@ -54,7 +54,7 @@ import numpy as np
 from alhazen.config.models import DEFAULT_MAX_CONSECUTIVE_DROPOUTS, SessionConfig
 from alhazen.config.reward_calibration import load_reward_calibration
 from alhazen.core.clock import Clock
-from alhazen.core.commands import Command, CommandSource, paused_only_refusal
+from alhazen.core.commands import Command, CommandSource
 from alhazen.core.engine import QuitRequested, TrialEngine, TrialResult
 from alhazen.core.events import Event, EventBus
 from alhazen.core.trial import (
@@ -80,6 +80,7 @@ from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
 from alhazen.errors import ConfigError
+from alhazen.live_monitor.controls import status_refusal
 from alhazen.live_monitor.juice import juice_payload, juice_totals, ul_by_width
 from alhazen.live_monitor.panels import frame_intervals_panel
 from alhazen.live_monitor.runtime import LiveMonitorController, live_monitor_state
@@ -88,7 +89,11 @@ from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor, eye_markers
 from alhazen.session.identity import RunIdentity, record_reward_delivered, write_run_identity
-from alhazen.session.operator_commands import Capabilities, OperatorCommands
+from alhazen.session.operator_commands import (
+    KEYBOARD_COMMAND_NAMES,
+    Capabilities,
+    OperatorCommands,
+)
 from alhazen.session.pause import PauseMenu
 from alhazen.session.pause_control import PauseController
 from alhazen.session.recorder import DataRecorder
@@ -375,6 +380,8 @@ class SessionRunner:
         if live_monitor is not None and operator_commands is None:
             operator_commands = OperatorCommands(live_monitor)
         self._operator = operator_commands
+        # How many rig keys this session refused (their request ids).
+        self._keyboard_refusals = 0
         if operator_commands is not None:
             operator_commands.bind(
                 emit=self._emit_session_event,
@@ -948,24 +955,31 @@ class SessionRunner:
         Stage keys are queued rather than applied: this arrives mid-trial, and
         the transition happens between trials like every other one.
         """
-        if command is Command.CALIBRATE:
-            # The rig's C key during a trial. Calibration runs only while the
-            # task is paused (core/commands.py paused_only_refusal), the same
-            # rule as the live monitor's button; the trial goes on. Logged and
-            # recorded like a refused page command, so events.csv says the
-            # key was pressed and why nothing happened.
-            note = paused_only_refusal("Calibrate")
-            log.warning("calibrate key during a trial refused: %s", note)
-            self._emit_session_event(
-                "OPERATOR_COMMAND",
-                {
-                    "name": "calibrate",
-                    "request_id": None,
-                    "source": "keyboard",
-                    "result": "refused",
-                    "note": note,
-                },
-            )
+        name = KEYBOARD_COMMAND_NAMES.get(command)
+        if name is not None and (refusal := status_refusal(name, "running")) is not None:
+            # A rig key the controls table does not allow during a trial
+            # (today: C, calibrate, which runs only while the task is
+            # paused). The same table and wording as the live monitor's
+            # buttons, on every rig. The trial goes on; the refusal is
+            # logged, written to events.csv as OPERATOR_COMMAND from the
+            # keyboard, and listed under the page's buttons. Never drawn on
+            # the rig's screen: during a trial that is the subject's screen.
+            self._keyboard_refusals += 1
+            request_id = f"keyboard-{self._keyboard_refusals}"
+            log.warning("%s key during a trial refused: %s", name, refusal)
+            if self._operator is not None:
+                self._operator.record_keyboard(name, request_id, "refused", refusal)
+            else:
+                self._emit_session_event(
+                    "OPERATOR_COMMAND",
+                    {
+                        "name": name,
+                        "request_id": request_id,
+                        "source": "keyboard",
+                        "result": "refused",
+                        "note": refusal,
+                    },
+                )
             return
         if self._training is None:
             log.info("ignoring %s: this session has no curriculum", command)

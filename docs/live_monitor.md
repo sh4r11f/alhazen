@@ -102,11 +102,20 @@ correct**) work only while the task is paused, on every rig (it is not a rig
 setting): a procedure takes the subject's screen over, so the operator pauses
 first and then chooses one. During a trial they are off, with the reason
 "Calibrate works only while the task is paused; pause it first", and the
-server refuses them with a 409 and the same reason. The rig keyboard follows
-the same rule: C pressed during a trial no longer pauses and calibrates in one
-press; the trial goes on, the session log says why, and `events.csv` records
-it as an `OPERATOR_COMMAND` with `source: keyboard`, `result: refused` and no
-`request_id`. C on the pause menu calibrates as before.
+server refuses them with a 409 and the same reason.
+
+The rig keyboard follows the same rule, judged by the same table
+(`live_monitor/controls.py`; `KEYBOARD_COMMAND_NAMES` names each key's
+command in it): C pressed during a trial no longer pauses and calibrates in
+one press. The trial goes on; the refusal is logged ("calibrate key during a
+trial refused: …"), written to `events.csv` as an `OPERATOR_COMMAND` with
+`source: keyboard`, `result: refused`, `request_id: keyboard-<n>` and the
+same note, and listed under the page's buttons as *Calibrate (key at the
+rig)*. It is not drawn on the rig's screen: during a trial that is the
+subject's screen. V and D have no binding during a trial at all (they are
+pause-menu rows, read only while paused), so no in-trial key can start a
+validation or a drift correction. On the pause menu C, V and D run their
+procedures as before.
 
 A button the session will not act on is shown dimmed with its reason (on
 hover, and in a line under the buttons when it is clicked): a rig with no eye

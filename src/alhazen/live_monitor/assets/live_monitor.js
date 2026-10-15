@@ -3639,7 +3639,10 @@ function fillControlsHost(host) {
   acknowledgements.slice(-ACKNOWLEDGEMENTS_SHOWN).reverse().forEach((record) => {
     const item = htmlEl('li', null, null, log);
     item.dataset.result = record.result;
-    htmlEl('span', 'command-name', commandLabel(record.name), item);
+    /* A rig key the session refused is listed too, so the page says why the
+     * key did nothing (session/operator_commands.py record_keyboard). */
+    const from = record.source === 'keyboard' ? ' (key at the rig)' : '';
+    htmlEl('span', 'command-name', commandLabel(record.name) + from, item);
     htmlEl('span', 'command-note', record.result + ' · ' + record.note, item);
   });
   if (!log.children.length) log.remove();

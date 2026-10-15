@@ -22,7 +22,7 @@ The page posts a command; the server checks it against the status it holds
   ``RECENT`` of them, in every state publish as ``commands`` and at once on
   the live monitor's acknowledgement channel).
 
-Interface: ``bind``, ``take_for_trial``, ``take_for_pause``,
+Interface: ``bind``, ``take_for_trial``, ``take_for_pause``, ``record_keyboard``,
 ``discard_pending``, ``acknowledge``, ``controls``, ``recent``.
 
 Callers must not rely on the wording of a note, nor on when within a frame
@@ -83,6 +83,15 @@ TRIAL_COMMANDS = {
     "promote_stage": Command.PROMOTE_STAGE,
     "demote_stage": Command.DEMOTE_STAGE,
     "hold_stage": Command.HOLD_STAGE,
+}
+
+# Every engine command as the controls table names it (live_monitor/
+# controls.py): the rig's keys are judged by the same table as the page's
+# buttons. CALIBRATE is a key the engine refuses during a trial, because the
+# table allows "calibrate" only while paused.
+KEYBOARD_COMMAND_NAMES: dict[Command, str] = {
+    **{command: name for name, command in TRIAL_COMMANDS.items()},
+    Command.CALIBRATE: "calibrate",
 }
 
 # What the engine does with each, said in the acknowledgement. Said before it
@@ -327,6 +336,19 @@ class OperatorCommands:
     def acknowledge(self, command: LiveMonitorCommand, result: Result, note: str) -> None:
         """Record what became of one command: an OPERATOR_COMMAND event, an
         entry in the record the page reads, and that record sent at once."""
+        self._record(command.name, command.request_id, "live_monitor", result, note)
+
+    def record_keyboard(self, name: str, request_id: str, result: Result, note: str) -> None:
+        """Record a rig-keyboard command the session refused (today: the
+        calibrate key during a trial), exactly as a page command's
+        acknowledgement: the OPERATOR_COMMAND event with ``source:
+        keyboard``, and an entry in the record the page lists under its
+        buttons, so the operator watching the page sees why the key did
+        nothing. ``request_id`` is the session's own (``keyboard-<n>``): no
+        page sent it."""
+        self._record(name, request_id, "keyboard", result, note)
+
+    def _record(self, name: str, request_id: str, source: str, result: Result, note: str) -> None:
         if self._emit is None or self._clock is None:
             # The runner binds this as it is built, before any command can be
             # taken; reaching here unbound is a wiring bug, and an
@@ -336,23 +358,24 @@ class OperatorCommands:
         self._emit(
             "OPERATOR_COMMAND",
             {
-                "name": command.name,
-                "request_id": command.request_id,
-                "source": "live_monitor",
+                "name": name,
+                "request_id": request_id,
+                "source": source,
                 "result": result,
                 "note": note,
             },
         )
         self._recent.append(
             {
-                "request_id": command.request_id,
-                "name": command.name,
+                "request_id": request_id,
+                "name": name,
+                "source": source,
                 "result": result,
                 "note": note,
                 "t": self._clock.now(),
             }
         )
-        log.info("live monitor command %s: %s (%s)", command.name, result, note)
+        log.info("%s command %s: %s (%s)", source.replace("_", " "), name, result, note)
         self._live_monitor.publish_commands(self.recent())
 
     def recent(self) -> list[dict[str, Any]]:
