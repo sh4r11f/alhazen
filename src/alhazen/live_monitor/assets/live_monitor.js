@@ -3052,7 +3052,7 @@ let controlFeedback = '';
 /** Quit asks first, in the page: true while its confirmation is showing. */
 let confirmingQuit = false;
 /** How many acknowledgements each host lists, newest first. */
-const ACKNOWLEDGEMENTS_SHOWN = 4;
+const ACKNOWLEDGEMENTS_SHOWN = 3;
 const TERMINAL_STATUSES = ['complete', 'failed', 'cancelled', 'stopping'];
 
 function commandLabel(name) {

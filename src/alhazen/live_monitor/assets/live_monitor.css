@@ -637,7 +637,7 @@ button.control:focus-visible { outline: 2px solid var(--series-1); outline-offse
   background: var(--surface);
 }
 .quit-confirm p { margin: 0 0 8px; font-size: 13px; }
-.quit-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.quit-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
 .quit-actions button.control { justify-content: center; }
 
 .control-feedback { margin: 10px 0 0; color: var(--critical); font-size: 12.5px; }

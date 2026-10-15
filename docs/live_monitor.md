@@ -78,35 +78,75 @@ whose length is negative (larger than 4 KiB gets a 413). `--live-monitor` and `-
 rig for one run. `--no-live-monitor-browser` starts the server without launching
 the default browser; the URL is written to the session log.
 
-## Focus safety and controls
+## Session controls
 
-The live monitor is deliberately read-only during a running experiment. Clicking
-a browser on the presentation computer necessarily transfers OS focus before
-Python can react, so a web Pause button cannot honestly promise not to affect
-subject input.
+The sidebar's **Session** buttons command the running task directly, so the
+operator never has to click into the PsychoPy window: **Pause** (P),
+**Resume** (Space), **Calibrate** (C), **Validate** (V), **Drift correct** (D),
+**Reward** (R), **Skip trial** (Esc), **Quit** (Ctrl-C during a trial, Q while
+paused), and, when a curriculum runs, **Promote**, **Demote** and **Hold
+stage** (], [, H). Each button shows the key it stands for at the rig. The
+same buttons are drawn into every element of the page marked
+`data-controls-host` (a view can put a set under itself).
 
-Press **P** on the experimenter keyboard first. Once the subject display says
-the run is paused, the live monitor enables Resume, Calibrate, Validate, Drift
-correct, Give reward, Quit, and curriculum controls. The server also rejects
-control requests unless its authoritative session state is `paused`;
-disabling the buttons is not the security boundary. Space, C, V, D, R and Q
-remain available from the keyboard while paused, so closing the browser
-cannot strand a session.
+What a button does depends on what the session is doing:
 
-Commands queued before a pause begins are **discarded**. A click accepted in
-the milliseconds between the browser seeing "paused" and the runner resuming
-would otherwise sit in the queue and fire at the next pause — a reward
-delivered, or a session quit, minutes after the click that asked for it.
+| Status | Buttons that act |
+| --- | --- |
+| running (a trial or the gap between trials) | Pause, Calibrate (pause, then calibrate), Skip trial, Reward, Quit, stage keys |
+| paused | Resume, Calibrate, Validate, Drift correct, Reward, Quit, stage keys |
+| calibrating (a procedure is running), starting, ended | none |
 
-The eye-tracker procedures and manual reward leave the run paused. Resume is
-always an explicit action. Each successful or failed reward is written to
-`events.csv`, including its configured pulse train.
+A button the session will not act on is shown dimmed with its reason (on
+hover, and in a line under the buttons when it is clicked): a rig with no eye
+tracker says so under Calibrate, a run with nobody at the keyboard (an
+unattended run resumes every pause at once) under Pause. **Quit** asks first,
+in the page.
+
+**One path for every command.** A click is not a synthetic keystroke and
+needs no window focus. The server (`live_monitor/controls.py`) passes a
+command only in a status that allows it and only if the session listed it as
+available, and stamps it with that status; anything else is refused with a 409
+and the reason. During a trial the command reaches the engine through the
+same command source the keyboard feeds (`core.commands.MergedCommands`), so a
+Pause clicked in the page and P pressed at the rig end the trial through the
+same code and leave the same `PAUSED` event. While paused, the pause menu
+takes it, exactly as it takes Space, C, V, D, R and Q from the keyboard,
+which stay live, so closing the browser cannot strand a session. The
+procedures and a manual reward leave the run paused; resuming is always an
+explicit action.
+
+**Acknowledged by the task.** Every command the session takes off the queue
+is acknowledged once: **applied**, **refused** (the session cannot act on it),
+**failed** (it tried: a reward the pump refused) or **discarded** (it arrived
+when it no longer applied). The acknowledgement is written to `events.csv` as
+an `OPERATOR_COMMAND` event (`name`, `request_id`, `source: live_monitor`,
+`result`, `note`), published as `commands` (the newest 20) in every state
+snapshot, and sent at once on its own channel, so a Reward clicked mid-trial
+reads "applied" without waiting for the trial to end. The page shows a
+clicked button as sent until its acknowledgement arrives, and lists the
+newest acknowledgements under the buttons.
+
+**Stale commands are discarded, and say so.** A command is acted on only in
+the status it was accepted in. A Resume accepted a moment before the keyboard
+resumed never fires in the next trial; a Reward or Pause queued as a trial
+ended is discarded when the pause begins; a click accepted while a procedure
+ran is discarded when it ends. Each is acknowledged as discarded with the
+reason, rather than vanishing.
+
+**Focus.** Clicking a browser on the presentation computer moves keyboard
+focus away from the PsychoPy window, as a Resume clicked in the browser always
+did. Commands need no focus, but a task whose subject answers with the
+keyboard reads those keys from the PsychoPy window: on such a rig, open the
+live monitor on a second computer (the experiment workspace's Live monitor
+tab, or the URL from the session log) or press P/Space at the rig.
 
 While a calibration, validation or drift correction runs, the status reads
-**calibrating**, the buttons are inert, and the notice follows the
+**calibrating**, the buttons are off, and the notice follows the
 procedure's progress (`validating: target 3 of 5`); when it ends, the notice
-shows the result line and the *Eye tracker* panels update. See
-[eye-tracker.md](eye-tracker.md).
+shows the result line and the *Eye tracker* panels update. A walk whose rig
+advances targets by hand (`calibration_advance: manual`) still takes SPACE at
+each target from the rig's keyboard. See [eye-tracker.md](eye-tracker.md).
 
 ## The plots
 
