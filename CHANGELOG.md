@@ -101,7 +101,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   (role `annotation`), gaze windows and approximate outlines. The gaze travels at up to 60 Hz on its own non-blocking channel
   (`/api/gaze`), the picture once per trial (`/api/trial`). Every eye-tracker
   backend states why it gives no camera image during a trial
-  (`camera_while_recording`). docs/live_monitor.md, "Trial view".
+  (`camera_while_recording`). A label on the picture is sized to the picture
+  as shown (12 px on a desktop, down to 10 px on a phone), split evenly over
+  two lines when it does not fit, then ellipsized with its whole text on
+  hover, and kept inside the border; labels are filled text (the annotation
+  outline rule had drawn them as hollow letters). docs/live_monitor.md,
+  "Trial view".
 
 ### Changed
 - Measure mode writes its report under the rig's data root,
@@ -133,7 +138,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   oxblood palette, and light by default (System and Dark stay one click away and
   are remembered). The live monitor's chrome, operator buttons and Trial view
   follow the same language; chart colours are unchanged. Nunito is no longer
-  shipped.
+  shipped. On a phone the live monitor's panel names wrap onto as many rows as
+  they need beside or above the theme button, every one whole, instead of one
+  row that scrolled sideways and hid the last name under the button; an off
+  operator button never takes the hover or pressed look.
 - A run folder's `rig.yaml` is the complete rig the session was started with:
   the rig file merged over any shared rig it `extends`, with every setting
   written out, the defaults alhazen filled in included. Before, it was the rig

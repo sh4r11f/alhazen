@@ -118,7 +118,9 @@ validation or a drift correction. On the pause menu C, V and D run their
 procedures as before.
 
 A button the session will not act on is shown dimmed with its reason (on
-hover, and in a line under the buttons when it is clicked): a rig with no eye
+hover, and in a line under the buttons when it is clicked; it keeps its dimmed
+look under the pointer, pressed, tapped and clicked, and keeps the focus when
+the buttons are redrawn): a rig with no eye
 tracker says so under Calibrate, a run with nobody at the keyboard (an
 unattended run resumes every pause at once) under Pause. **Quit** asks first,
 in the page.
@@ -829,7 +831,11 @@ needs no key). `approximate=True` draws the outline dotted and puts *Approximate
 outline* in the legend: a bounding shape, or the place a moving stimulus
 starts from, is never passed off as exact. The hover shows `name` exactly as
 given; `region_shapes` names each window after its key, `fixation` ->
-*Fixation window*. A shape checks itself when it is
+*Fixation window*. A label's text is 12 px on a picture shown at least 480 px
+wide (any desktop page) and shrinks with a narrower one to 10 px on a phone;
+what still does not fit goes onto two lines split evenly, then ends in an
+ellipsis with the whole text on hover, and a label near an edge is moved in so
+the picture's border never cuts it. A shape checks itself when it is
 built — finite numbers, positive sizes, at least three polygon points, a known
 role, at most 5000 points per schematic — and raises `ValueError` naming the
 field, so a malformed picture fails at `build_trial` on trial one.
