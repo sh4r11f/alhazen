@@ -638,6 +638,7 @@ details.table th { color: var(--muted); font-weight: 600; }
 .trial-body figure { margin: 0; min-width: 0; }
 .trial-body figcaption { margin-top: 8px; color: var(--ink-2); font-size: 13px; min-height: 20px; }
 #trial-legend { margin-top: 10px; min-height: 20px; }
+#trial-undrawn:empty { display: none; }
 
 .trial-stage-box { position: relative; width: 100%; }
 .trial-stage-box svg { display: block; width: 100%; height: auto; }

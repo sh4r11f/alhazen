@@ -3233,6 +3233,12 @@ function drawTrialStage() {
 function drawTrialLegend(view) {
   const legend = byId('trial-legend');
   legend.replaceChildren();
+  /* A stimulus that cannot describe its own outline is not guessed at; it is
+   * named here instead, so an empty spot is never read as an empty screen. */
+  const undrawn = (view && view.undrawn) || [];
+  byId('trial-undrawn').textContent = undrawn.length
+    ? 'Not drawn, no outline available: ' + undrawn.join(', ') + '.'
+    : '';
   if (!view) return;
   const roles = new Set((view.shapes || []).map((s) => (s.approximate ? 'approx' : s.role)));
   const items = [];

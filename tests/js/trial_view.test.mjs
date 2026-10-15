@@ -144,12 +144,14 @@ describe('the trial picture', () => {
     assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 4 * fit.scale) < 1e-6);
   });
 
-  it('says what the trial is and names what it could not draw only by its legend', () => {
+  it('says what the trial is, keys the picture, and names what it could not draw', () => {
     const live_monitor = drawn(VIEW);
     assert.equal(live_monitor.byId('trial-title').textContent, 'Trial 4');
     assert.equal(live_monitor.byId('trial-meta').textContent, 'attempt 2 · side right · contrast 0.5');
     const legend = live_monitor.byId('trial-legend').children.map((item) => item.textContent);
     assert.deepEqual(legend, ['Gaze', 'Trail', 'Stimulus', 'Gaze window', 'Approximate outline']);
+    assert.equal(live_monitor.byId('trial-undrawn').textContent,
+      'Not drawn, no outline available: cylinder.');
   });
 
   it('draws the trail and the current gaze over the picture', () => {
