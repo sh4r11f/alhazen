@@ -525,6 +525,31 @@ class TestEachTrackerPathTakesItsTarget:
         assert display.menus == [] and display.messages == []
 
 
+def test_a_simulated_display_decodes_no_picture(monkeypatch):
+    """Nothing is drawn there, so nothing is loaded: a simulated run of a rig
+    whose target is a picture never needs Pillow or the picture files."""
+    from alhazen.devices.eyetracker import calibration_targets as module
+
+    def refuse(name):
+        raise AssertionError(f"decoded {name} for a simulated display")
+
+    monkeypatch.setattr(module, "decode_picture", refuse)
+    clock = FakeClock()
+    cfg = tracker_cfg(appearance="images", images=["food_1"])
+    targets = CalibrationTargets(cfg.calibration_target)
+    result = validate(
+        LooksAtTheTarget(clock, targets),
+        FakeDisplay(clock),
+        SCREEN,
+        clock,
+        cfg,
+        poll_keys=lambda: [],
+        calibration_targets=targets,
+        timing=FAST,
+    )
+    assert len(result.targets) == 5 and result.target_style == ""
+
+
 def test_the_validation_event_records_its_target(render_psychopy):
     """The VALIDATION event says what was drawn and where, in the
     CALIBRATION event's shape — the session's record of what the subject

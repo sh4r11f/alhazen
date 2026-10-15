@@ -580,12 +580,14 @@ class _ProcedureTarget:
             self.make = make_target
             return
         chosen = targets if targets is not None else CalibrationTargets(cfg.calibration_target)
-        # Checked and decoded before the first target, as a calibration's
-        # are at configure(); idempotent for a tracker that already did.
-        chosen.prepare(screen, cfg.calibration_area)
-        chosen.begin_procedure()
+        if display.kind != "simulated":
+            # Checked and decoded before the first target, as a calibration's
+            # are at configure(); idempotent for a tracker that already did.
+            # A simulated display draws nothing, so it needs no pictures.
+            chosen.prepare(screen, cfg.calibration_area)
+            chosen.begin_procedure()
+            self._targets = chosen
         self.make = target_maker(chosen, display, screen, clock)
-        self._targets = chosen if display.kind != "simulated" else None
 
     def record(self) -> tuple[str, tuple[TargetShown, ...]]:
         """(style, every target shown) for the result; ("", ()) when nothing
