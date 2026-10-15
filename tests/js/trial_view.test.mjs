@@ -270,6 +270,69 @@ describe('the trial picture', () => {
       'path: ' + KDE + ', and far too much more for two lines on a phone screen');
   });
 
+  describe('the scale bar keeps clear of the words on the picture', () => {
+    const KDE = 'Path: 1.77–6.93 s after onset (latest end)';
+    const stage = (view, width) => {
+      const live_monitor = loadLiveMonitor();
+      live_monitor.byId('trial-stage').clientWidth = width;
+      live_monitor.get('trialView').view = view;
+      live_monitor.get('drawTrialStage')();
+      const svg = live_monitor.byId('trial-stage').querySelector('svg');
+      const line = svg.querySelector('line.trial-scale');
+      const text = svg.querySelector('text.trial-scale-text');
+      const label = svg.querySelector('text.trial-shape');
+      return { live_monitor, line, text, label, fit: live_monitor.get('trialView').fit };
+    };
+    const hits = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+    const barBox = (line, fit) => {
+      const x0 = Number(line.getAttribute('x1'));
+      const y0 = Number(line.getAttribute('y1'));
+      return [x0, y0 - 6 - 11, x0 + Math.max(5 * fit.scale, 2 * 6), y0 + 2];
+    };
+
+    it('stays at the bottom left, exactly where it was, when no label is there', () => {
+      const { line, text, fit } = stage(VIEW, 800);
+      assert.equal(fit.scaleBar.corner, 'bottom-left');
+      assert.deepEqual([line.getAttribute('x1'), line.getAttribute('y1')].map(Number), [12, fit.height - 12]);
+      assert.equal(Number(line.getAttribute('x2')), 12 + 5 * fit.scale);
+      assert.deepEqual([text.getAttribute('x'), text.getAttribute('y')].map(Number), [12, fit.height - 18]);
+      assert.equal(text.textContent, '5°');
+    });
+
+    it('moves to another corner when a label sits on it, and the label keeps its place', () => {
+      // A phone-sized picture with the label low and to the left, over the bar's corner.
+      const view = { ...VIEW, screen: { width_dva: 40, height_dva: 22.5 },
+        shapes: [{ kind: 'label', role: 'annotation', name: 'path', at: [-14, -10.5], text: KDE }] };
+      const { live_monitor, line, label, fit } = stage(view, 300);
+      assert.notEqual(fit.scaleBar.corner, 'bottom-left');
+      const fitTrialLabel = live_monitor.get('fitTrialLabel');
+      const [x, y] = live_monitor.get('trialMap')(fit, -14, -10.5);
+      const laid = fitTrialLabel(KDE, x, y, fit);
+      assert.equal(Number(label.getAttribute('x')), laid.x, 'the label is not moved for the bar');
+      const box = live_monitor.get('trialLabelBox')(laid);
+      assert.equal(hits(barBox(line, fit), box), false, JSON.stringify([barBox(line, fit), box]));
+    });
+
+    it('prefers a free corner clear of the content, else the first free one, else stays put', () => {
+      const live_monitor = loadLiveMonitor();
+      const place = live_monitor.get('trialScalePlace');
+      const fit = live_monitor.get('trialFit')(40, 30, 800, 1000);
+      const bottomLeft = [0, 560, 200, 600];
+      const bottomRight = [600, 560, 800, 600];
+      const topLeft = [0, 0, 200, 40];
+      assert.equal(place(fit, [], []).corner, 'bottom-left');
+      assert.equal(place(fit, [bottomLeft], []).corner, 'bottom-right');
+      // A stimulus at the bottom right: the top left is free of both.
+      assert.equal(place(fit, [bottomLeft], [bottomRight]).corner, 'top-left');
+      // Content everywhere: the first corner clear of labels.
+      assert.equal(place(fit, [bottomLeft], [[0, 0, 800, 600]]).corner, 'bottom-right');
+      // Labels in every corner: the bar stays where it always was.
+      assert.equal(place(fit, [bottomLeft, bottomRight, topLeft, [600, 0, 800, 40]], []).corner, 'bottom-left');
+      // Content alone never moves it.
+      assert.equal(place(fit, [], [bottomLeft]).corner, 'bottom-left');
+    });
+  });
+
   it('a task with no picture shows its gaze windows alone and says so once', () => {
     const regionsOnly = {
       ...VIEW,

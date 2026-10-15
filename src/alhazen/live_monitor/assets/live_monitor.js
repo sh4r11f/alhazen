@@ -3260,14 +3260,75 @@ function fitTrialLabel(text, x, y, fit) {
     y: cy - ((lines.length - 1) * lineHeight) / 2,
     lineHeight: lineHeight,
     fontSize: px * unit,
+    width: widest,
     shortened: shortened,
   };
 }
 
+/** The box a laid-out label covers, in drawing units: [x0, y0, x1, y1]. */
+function trialLabelBox(label) {
+  const top = label.y - label.lineHeight / 2;
+  return [label.x - label.width / 2, top,
+    label.x + label.width / 2, top + label.lines.length * label.lineHeight];
+}
+
+/** The box a drawn shape covers, in drawing units, or boxes for its parts
+ *  (dots): only used to keep the scale bar off the picture's content. */
+function trialShapeBoxes(fit, shape) {
+  const s = fit.scale;
+  const around = (points, pad) => {
+    const xs = points.map((p) => p[0]);
+    const ys = points.map((p) => p[1]);
+    return [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad];
+  };
+  if (shape.kind === 'circle') return [around([trialMap(fit, shape.center[0], shape.center[1])], shape.radius * s)];
+  if (shape.kind === 'rect') {
+    const r = Math.hypot(shape.size[0], shape.size[1]) / 2;
+    return [around([trialMap(fit, shape.center[0], shape.center[1])], r * s)];
+  }
+  if (shape.kind === 'polygon') return [around(shape.points.map(([x, y]) => trialMap(fit, x, y)), 0)];
+  if (shape.kind === 'line') return [around([trialMap(fit, ...shape.start), trialMap(fit, ...shape.end)], 0)];
+  if (shape.kind === 'dots') return shape.points.map(([x, y]) => around([trialMap(fit, x, y)], shape.radius * s));
+  return [];
+}
+
+/* The 5° scale bar sits in a corner of the picture, bottom left unless a
+ * label is there: words a task placed on the picture are never drawn over
+ * (labels keep the position the task gave them). Another corner is tried
+ * next, one clear of the picture's content if there is one. */
+const TRIAL_SCALE_STEP = 5;
+const TRIAL_SCALE_INSET = 12;
+const TRIAL_SCALE_TEXT = 11;
+
+/** Where the scale bar goes: the bar's left end (x0, y0) and the corner's
+ *  name, given the label boxes and shape boxes to keep clear of. */
+function trialScalePlace(fit, labels, shapes) {
+  const bar = TRIAL_SCALE_STEP * fit.scale;
+  const text = textWidth(TRIAL_SCALE_STEP + '°', TRIAL_SCALE_TEXT + 'px ' + SANS);
+  const wide = Math.max(bar, text);
+  const inset = TRIAL_SCALE_INSET;
+  const top = inset + 6 + TRIAL_SCALE_TEXT;
+  const corners = [
+    ['bottom-left', inset, fit.height - inset],
+    ['bottom-right', fit.width - inset - wide, fit.height - inset],
+    ['top-left', inset, top],
+    ['top-right', fit.width - inset - wide, top],
+  ];
+  const gap = 4 * (fit.unit || 1);
+  const boxOf = ([, x0, y0]) => [x0 - gap, y0 - 6 - TRIAL_SCALE_TEXT - gap, x0 + wide + gap, y0 + 2 + gap];
+  const hits = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+  const clearOf = (boxes) => (corner) => !boxes.some((box) => hits(boxOf(corner), box));
+  const pick = (corner) => ({ corner: corner[0], x0: corner[1], y0: corner[2] });
+  if (clearOf(labels)(corners[0])) return pick(corners[0]);
+  const free = corners.slice(1).filter(clearOf(labels));
+  if (!free.length) return pick(corners[0]);
+  return pick(free.find(clearOf(shapes)) || free[0]);
+}
+
 /** A degree grid every 5°, the screen's centre lines and a scale bar: the
  *  measure the picture is read against. */
-function drawTrialGrid(svg, fit) {
-  const step = 5;
+function drawTrialGrid(svg, fit, place) {
+  const step = TRIAL_SCALE_STEP;
   const half = [fit.widthDva / 2, fit.heightDva / 2];
   for (let x = step; x < half[0]; x += step) {
     [x, -x].forEach((v) => {
@@ -3284,8 +3345,7 @@ function drawTrialGrid(svg, fit) {
   const [cx, cy] = trialMap(fit, 0, 0);
   svgEl('line', { class: 'trial-axis', x1: cx, y1: 0, x2: cx, y2: fit.height }, svg);
   svgEl('line', { class: 'trial-axis', x1: 0, y1: cy, x2: fit.width, y2: cy }, svg);
-  const x0 = 12;
-  const y0 = fit.height - 12;
+  const { x0, y0 } = place || { x0: TRIAL_SCALE_INSET, y0: fit.height - TRIAL_SCALE_INSET };
   svgEl('line', { class: 'trial-scale', x1: x0, y1: y0, x2: x0 + step * fit.scale, y2: y0 }, svg);
   const label = svgEl('text', { class: 'trial-scale-text', x: x0, y: y0 - 6 }, svg);
   label.textContent = step + '°';
@@ -3321,11 +3381,18 @@ function drawTrialStage() {
   const shown = svg.getBoundingClientRect ? svg.getBoundingClientRect().width : 0;
   fit.unit = shown > 0 ? fit.width / shown : 1;
   svgEl('rect', { class: 'trial-screen', x: 0.5, y: 0.5, width: fit.width - 1, height: fit.height - 1 }, svg);
-  drawTrialGrid(svg, fit);
+  const all = view.shapes || [];
+  const labelBoxes = all.filter((shape) => shape.kind === 'label').map((shape) => {
+    const [x, y] = trialMap(fit, shape.at[0], shape.at[1]);
+    return trialLabelBox(fitTrialLabel(shape.text, x, y, fit));
+  });
+  const shapeBoxes = all.filter((shape) => shape.kind !== 'label').flatMap((shape) => trialShapeBoxes(fit, shape));
+  fit.scaleBar = trialScalePlace(fit, labelBoxes, shapeBoxes);
+  drawTrialGrid(svg, fit, fit.scaleBar);
   const shapes = svgEl('g', { class: 'trial-shapes' }, svg);
   /* Regions over stimuli, so a window is never hidden under a filled disc. */
   const order = { stimulus: 0, annotation: 1, region: 2 };
-  [...(view.shapes || [])]
+  [...all]
     .sort((a, b) => (order[a.role] || 0) - (order[b.role] || 0))
     .forEach((shape) => drawTrialShape(shapes, fit, shape));
   svgEl('g', { class: 'trial-gaze-layer' }, svg);

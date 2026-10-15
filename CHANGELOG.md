@@ -105,7 +105,8 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   as shown (12 px on a desktop, down to 10 px on a phone), split evenly over
   two lines when it does not fit, then ellipsized with its whole text on
   hover, and kept inside the border; labels are filled text (the annotation
-  outline rule had drawn them as hollow letters). docs/live_monitor.md,
+  outline rule had drawn them as hollow letters). The 5° scale bar moves to
+  another corner when a label sits on its bottom-left one. docs/live_monitor.md,
   "Trial view".
 
 ### Changed

@@ -835,7 +835,10 @@ given; `region_shapes` names each window after its key, `fixation` ->
 wide (any desktop page) and shrinks with a narrower one to 10 px on a phone;
 what still does not fit goes onto two lines split evenly, then ends in an
 ellipsis with the whole text on hover, and a label near an edge is moved in so
-the picture's border never cuts it. A shape checks itself when it is
+the picture's border never cuts it. The 5° scale bar sits at the bottom left
+unless a label is there; it then moves to the next corner clear of labels
+(bottom right, top left, top right), preferring one clear of the shapes too,
+so a label always keeps the place the task gave it. A shape checks itself when it is
 built — finite numbers, positive sizes, at least three polygon points, a known
 role, at most 5000 points per schematic — and raises `ValueError` naming the
 field, so a malformed picture fails at `build_trial` on trial one.
