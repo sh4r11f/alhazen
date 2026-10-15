@@ -142,6 +142,16 @@ describe('the operator controls', () => {
     assert.equal(sidebar.querySelector('.command-log').querySelector('li').dataset.result, 'discarded');
   });
 
+  it('keep a newer acknowledgement when an older state publish is read after it', async () => {
+    const live_monitor = await livePage({ state: running(), command: () => response({ status: 202 }) });
+    const take = live_monitor.get('takeAcknowledgements');
+    const reward = { request_id: 'b', name: 'manual_reward', result: 'applied', note: 'one reward delivered', t: 2 };
+    const pause = { request_id: 'a', name: 'pause', result: 'applied', note: 'paused', t: 1 };
+    take([pause, reward]);   // the acknowledgement channel, newest
+    take([pause]);           // a state published just before the reward's acknowledgement
+    assert.equal(live_monitor.get('acknowledgements').map((r) => r.request_id).join(','), 'a,b');
+  });
+
   it('show the server\'s refusal and do not leave the button pending', async () => {
     const live_monitor = await livePage({
       state: running(),

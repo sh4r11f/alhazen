@@ -3053,6 +3053,8 @@ let controlFeedback = '';
 let confirmingQuit = false;
 /** How many acknowledgements each host lists, newest first. */
 const ACKNOWLEDGEMENTS_SHOWN = 3;
+/** How many the page remembers: the session's own record length. */
+const ACKNOWLEDGEMENT_MEMORY = 20;
 const TERMINAL_STATUSES = ['complete', 'failed', 'cancelled', 'stopping'];
 
 function commandLabel(name) {
@@ -3070,11 +3072,20 @@ function explainControl(name, reason) {
 }
 
 /** Take the session's acknowledgement record: each command this page sent
- *  and the session has now answered stops being pending. */
+ *  and the session has now answered stops being pending. Merged, never
+ *  replaced: the record arrives two ways (a state publish, the
+ *  acknowledgement channel), and a state published a moment before an
+ *  acknowledgement can be read after it — replacing would drop the newer one. */
 function takeAcknowledgements(records) {
   if (!Array.isArray(records)) return;
-  acknowledgements = records;
-  records.forEach((record) => { pendingCommands.delete(record.request_id); });
+  const merged = new Map(acknowledgements.map((record) => [record.request_id, record]));
+  records.forEach((record) => {
+    merged.set(record.request_id, record);
+    pendingCommands.delete(record.request_id);
+  });
+  acknowledgements = [...merged.values()]
+    .sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0))
+    .slice(-ACKNOWLEDGEMENT_MEMORY);
   /* A session that has ended will take nothing more: what is still waiting
    * was never taken, and says so rather than staying "sent" for ever. */
   if (state && TERMINAL_STATUSES.includes(state.status) && pendingCommands.size) {
