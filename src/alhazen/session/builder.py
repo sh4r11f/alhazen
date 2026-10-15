@@ -1048,10 +1048,13 @@ def build_session(
         # Every frame's inputs go to the frame-input buffer, and — when there
         # is a live monitor and a tracker to read — its gaze to the Trial
         # view too (live_monitor/gaze.py: decimated, batched, never blocking).
+        # publish_gaze is looked up like the runner's publish_trial: a
+        # stand-in controller without it gets no gaze stream.
         on_frame_input: FrameInputHook = frame_inputs.note
-        if live_monitor_controller is not None and tracker is not None:
+        publish_gaze = getattr(live_monitor_controller, "publish_gaze", None)
+        if publish_gaze is not None and tracker is not None:
             on_frame_input = _also_feeding(
-                on_frame_input, GazeFeed(live_monitor_controller.publish_gaze, screen.px_per_deg)
+                on_frame_input, GazeFeed(publish_gaze, screen.px_per_deg)
             )
 
         overlay: Callable[[TrialContext], None] | None = None

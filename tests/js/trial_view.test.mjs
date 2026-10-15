@@ -45,6 +45,16 @@ const VIEW = {
 };
 
 describe('trial view math', () => {
+  it('measures the gaze rate over the last second of samples, gaps left out', () => {
+    const gazeRate = loadLiveMonitor().get('gazeRate');
+    const samples = [];
+    for (let i = 0; i <= 120; i += 1) samples.push([i / 60, 0, 0]);
+    samples.push([2.01, null, null]);
+    assert.equal(gazeRate(samples), 60);
+    assert.equal(gazeRate(samples.slice(0, 10)), null, 'under a quarter second');
+    assert.equal(gazeRate([]), null);
+  });
+
   const live_monitor = loadLiveMonitor();
   const trialFit = live_monitor.get('trialFit');
   const trialMap = live_monitor.get('trialMap');
@@ -227,7 +237,8 @@ describe('the live page', () => {
     live_monitor.runFrames();
     const layer = live_monitor.byId('trial-stage').querySelector('g.trial-gaze-layer');
     assert.ok(layer.querySelector('circle'), 'the current gaze');
-    assert.match(live_monitor.byId('trial-status').textContent, /^Gaze 2\.0°, 1\.0° · 2 samples\/s$/);
+    // Two samples 20 ms apart are no span to measure a rate over yet.
+    assert.equal(live_monitor.byId('trial-status').textContent, 'Gaze 2.0°, 1.0°');
   });
 
   it('shows the tracker’s reason in place of a camera image, never a picture', async () => {

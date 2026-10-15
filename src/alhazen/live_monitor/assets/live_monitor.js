@@ -3291,11 +3291,22 @@ function gazeStatus(view, own, current) {
       'The trail is the last one this trial drew.';
   }
   if (!current) return 'No gaze sample: a blink, or the eye is lost.';
-  /* The rate over the last second of samples, by their own timestamps. */
-  const newest = own[own.length - 1][0];
-  const recent = own.filter((s) => s[0] > newest - 1).length;
-  return 'Gaze ' + minus(current[0].toFixed(1)) + '°, ' + minus(current[1].toFixed(1)) + '° · ' +
-    recent + ' samples/s';
+  const rate = gazeRate(own);
+  return 'Gaze ' + minus(current[0].toFixed(1)) + '°, ' + minus(current[1].toFixed(1)) + '°' +
+    (rate === null ? '' : ' · ' + rate + ' samples/s');
+}
+
+/** Samples a second over the last second of this trial, by the samples' own
+ *  timestamps (gaps excluded), or null before there is a span to measure: a
+ *  trial a tenth of a second old has not shown its rate yet. */
+function gazeRate(samples) {
+  const real = samples.filter((s) => s[1] !== null);
+  if (real.length < 2) return null;
+  const newest = real[real.length - 1][0];
+  const window = real.filter((s) => s[0] >= newest - 1);
+  const span = newest - window[0][0];
+  if (window.length < 2 || span < 0.25) return null;
+  return Math.round((window.length - 1) / span);
 }
 
 function queueGazePaint() {

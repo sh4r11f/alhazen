@@ -866,7 +866,11 @@ class SessionRunner:
         time. Its gaze follows frame by frame (live_monitor/gaze.py, wired in
         session/builder.py).
         """
-        if self._live_monitor is None:
+        # An optional capability of the live monitor, looked up here and
+        # nowhere else: a monitor written before the Trial view (a harness's
+        # stand-in, an experiment's own) simply gets no trial pictures.
+        publish_trial = getattr(self._live_monitor, "publish_trial", None)
+        if publish_trial is None:
             return
         view = trial_view(
             schematic=tuple(plan.schematic) if plan.schematic is not None else None,
@@ -889,7 +893,7 @@ class SessionRunner:
                 if self._tracker is None
                 else "This eye tracker gives the session no camera image.",
             }
-        self._live_monitor.publish_trial(view)
+        publish_trial(view)
 
     def _apply_stage_transition(self) -> bool:
         """Move the subject if the curriculum says so. Returns False when the

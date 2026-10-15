@@ -602,8 +602,6 @@ class FakeLiveMonitor:
         # Each frame's eye markers, as the runner handed them over.
         self.frame_eyes: list = []
         self.setting_batches: list[list[tuple[str, object]]] = []
-        self.trial_views: list[dict] = []
-        self.gaze_batches: list[list] = []
         self.stopped = False
         self.url = "http://127.0.0.1:0/"
 
@@ -613,15 +611,6 @@ class FakeLiveMonitor:
     def publish_camera(self, pixels, t: float, eyes=None) -> None:
         self.frames.append((pixels.copy(), t))
         self.frame_eyes.append(eyes)
-
-    # The Trial view's two channels (LiveMonitorController.publish_trial /
-    # publish_gaze), recorded like the rest.
-    def publish_trial(self, view: dict) -> None:
-        self.trial_views.append(view)
-
-    def publish_gaze(self, samples: list) -> bool:
-        self.gaze_batches.append(list(samples))
-        return True
 
     def poll_settings(self) -> list[tuple[str, object]]:
         return self.setting_batches.pop(0) if self.setting_batches else []
