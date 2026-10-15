@@ -45,6 +45,12 @@ today, and must go on doing so without growing methods it has no use for.
   ``calibration_target`` stream, handed over by the session builder before
   the tracker connects (calibration_targets.py). The EyeLink and TRACKPixx3
   backends offer it; a tracker that draws no target need not.
+- ``calibration_targets`` (a ``CalibrationTargets`` attribute): the target
+  the tracker's calibration draws, with its picture deck and record of what
+  was shown. The session's validation and drift correction draw the same
+  target from it (procedures.py), so the deck carries on from the
+  calibration; a tracker without it gets the rig's choice drawn by the
+  session (session/eyetracker.py). The EyeLink and TRACKPixx3 offer it.
 
 Three more serve dropout detection (docs/eye-tracker.md, "When the tracker
 drops out"), offered by the backends that stream real samples — the EyeLink

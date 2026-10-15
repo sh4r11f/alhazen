@@ -154,8 +154,9 @@ class Session:
         self.monitor.publisher = lambda status, message: self.published.append((status, message))
         self.monitor.emit = lambda name, payload: self.events.append((name, payload))
 
-    def make_target(self, display, screen, size, color, pos) -> FakeStimulus:
-        """Stands in for make_fixation: the subject looks where the target is."""
+    def make_target(self, pos) -> FakeStimulus:
+        """Stands in for the calibration target's maker (procedures.target_maker):
+        the subject looks where the target is."""
         self.tracker.looking_at = pos
         return FakeStimulus("target")
 
@@ -169,14 +170,16 @@ class Session:
 def session(monkeypatch):
     """A Session factory whose targets the fake subject can see: the
     procedures draw a recording stand-in on a simulated display, which has
-    no position, so the fixation factory is replaced with one that tells
-    the tracker where to look."""
+    no position, so the target maker is replaced with one that tells the
+    tracker where to look."""
 
     def make(
         tracker_cls: type = FollowingTracker, poll_keys: Any = None, **cfg_kwargs: Any
     ) -> Session:
         s = Session(tracker_cls, poll_keys, **cfg_kwargs)
-        monkeypatch.setattr(procedures, "make_fixation", s.make_target)
+        monkeypatch.setattr(
+            procedures, "target_maker", lambda targets, display, screen, clock: s.make_target
+        )
         return s
 
     return make

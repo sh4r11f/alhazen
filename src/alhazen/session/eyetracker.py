@@ -37,6 +37,7 @@ from typing import Any
 
 from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
 from alhazen.core.clock import Clock
+from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
 from alhazen.devices.eyetracker.guide import TARGET_COUNTS
 from alhazen.devices.eyetracker.procedures import (
     Advance,
@@ -44,6 +45,7 @@ from alhazen.devices.eyetracker.procedures import (
     GazeCorrection,
     ValidationResult,
     drift_correct,
+    target_record,
     validate,
 )
 from alhazen.devices.eyetracker.protocol import CalibrationResult, CameraFrame, EyeTracker
@@ -176,6 +178,14 @@ class EyeTrackerMonitor:
         self._clock = clock
         self._cfg = cfg
         self._poll_keys = poll_keys
+        # The calibration's target, which validation and drift correction
+        # draw too (procedures.py): the tracker's own when it draws one (the
+        # EyeLink, the TRACKPixx3), so the picture deck carries on from the
+        # calibration; else one of this monitor's, kept for the session, from
+        # the rig's choice — the standard target, still, on a stand-in.
+        self.calibration_targets: CalibrationTargets = getattr(
+            tracker, "calibration_targets", None
+        ) or CalibrationTargets(cfg.calibration_target)
         # The drift corrections in force, consulted by the input provider on
         # every gaze position (session/builder.py make_input_provider).
         self.correction = GazeCorrection()
@@ -185,6 +195,12 @@ class EyeTrackerMonitor:
         self.publisher: Publisher | None = None
         self.emit: Emitter | None = None
         self._last_publish = float("-inf")
+        # The stage of the last publish: the first report of a new stage (the
+        # calibration guide's wait, the first target) is published at once,
+        # whatever the throttle says, because it is the experimenter's only
+        # word on what the subject's screen — which shows nothing but
+        # targets — is waiting for.
+        self._published_stage: str | None = None
         # The newest camera frame, and why the last read failed (warned once
         # per distinct reason, not once per publish).
         self._frame: CameraFrame | None = None
@@ -250,21 +266,8 @@ class EyeTrackerMonitor:
         # What the target looked like, and each one shown, in order: where,
         # which picture, when — with the session seed, enough to recover a
         # random picture order. Only from a tracker that draws a target; a
-        # stand-in's event is what it always was.
-        target_record: dict[str, Any] = {}
-        if result.target_style:
-            target_record = {
-                "target_style": result.target_style,
-                "targets_shown": [
-                    {
-                        "ordinal": shown.ordinal,
-                        "target_px": list(shown.target_px),
-                        "image": shown.image,
-                        "t": shown.t,
-                    }
-                    for shown in result.shown
-                ],
-            }
+        # stand-in's event is what it always was. Validation and drift
+        # correction record theirs in the same shape (procedures.py).
         self._emit(
             "CALIBRATION",
             {
@@ -291,7 +294,7 @@ class EyeTrackerMonitor:
                     }
                     for target in result.targets
                 ],
-                **target_record,
+                **target_record(result.target_style, result.shown),
             },
         )
         # No validation of a calibration that did not happen (aborted) or
@@ -333,6 +336,7 @@ class EyeTrackerMonitor:
             poll_keys=self._poll_keys,
             correction=self.correction,
             advance=advance if advance is not None else self._advance(),
+            calibration_targets=self.calibration_targets,
             progress=self._on_progress,
         )
         self.validation = result
@@ -365,6 +369,7 @@ class EyeTrackerMonitor:
             self.correction,
             poll_keys=self._poll_keys,
             advance=self._advance(),
+            calibration_targets=self.calibration_targets,
             progress=self._on_progress,
         )
         self.drift = result
@@ -385,6 +390,7 @@ class EyeTrackerMonitor:
         """A stage boundary: always published, and it restarts the throttle."""
         log.info("eye tracker: %s — %s", stage, detail)
         self._last_publish = self._clock.now()
+        self._published_stage = stage
         if self.publisher is not None:
             self.publisher(PROCEDURE_STATUS, f"{stage}: {detail}")
 
@@ -398,10 +404,13 @@ class EyeTrackerMonitor:
         messages = self.service_live_monitor()
         now = self._clock.now()
         # A setting the page sent is published at once, whatever the throttle
-        # says: the experimenter who pressed + is waiting to see it land.
-        if not messages and now - self._last_publish < PROGRESS_PUBLISH_S:
+        # says: the experimenter who pressed + is waiting to see it land. So
+        # is a new stage's first report (_published_stage).
+        new_stage = stage != self._published_stage
+        if not messages and not new_stage and now - self._last_publish < PROGRESS_PUBLISH_S:
             return
         self._last_publish = now
+        self._published_stage = stage
         if self.publisher is not None:
             self.publisher(PROCEDURE_STATUS, " · ".join([f"{stage}: {detail}", *messages]))
 

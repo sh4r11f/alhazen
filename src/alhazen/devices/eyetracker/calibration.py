@@ -34,7 +34,7 @@ from typing import Any
 import numpy as np
 
 from alhazen.config.models import CalibrationTargetConfig
-from alhazen.devices.eyetracker.calibration_targets import TARGET_FOREGROUND, CalibrationTargets
+from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
 from alhazen.display.screen import Screen
 
 log = logging.getLogger(__name__)
@@ -251,7 +251,6 @@ def make_calibration_graphics(
     screen: Screen,
     targets: CalibrationTargets | None = None,
     now: Callable[[], float] = time.monotonic,
-    foreground: tuple[float, float, float] = TARGET_FOREGROUND,
 ) -> Any:
     """Build the object pylink calibrates through, for this window.
 
@@ -284,9 +283,12 @@ def make_calibration_graphics(
             # The target (standard disc with a hole, or a picture; still or
             # pulsating), every stimulus made now, before any target is up.
             self._target = drawn.presenter(visual, window, screen, now)
-            self._title = visual.TextStim(
-                window, text="", units="pix", height=20, color=foreground, pos=(0, 0)
-            )
+            # The Host PC's caption for its camera image ("Left eye, ...")
+            # is not drawn: nothing but targets — and the camera image the
+            # experimenter asks for on the setup screen — goes on the
+            # subject's screen (user decision, 2026-10-15). It is logged
+            # when it changes; the Host PC shows it on its own screen.
+            self._title: str | None = None
             self._camera_image: Any = None
             self._builder = CameraImageBuilder()
             self._frame: np.ndarray | None = None
@@ -340,11 +342,9 @@ def make_calibration_graphics(
             return 1
 
         def image_title(self, text: str) -> None:
-            self._title.text = text
-            self._title.pos = (
-                0,
-                -(self._image_size[1] * CAMERA_IMAGE_SCALE) / 2.0 - 20,
-            )
+            if text != self._title:
+                log.info("EyeLink camera image: %s", text)
+                self._title = text
 
         def set_image_palette(self, r: list[int], g: list[int], b: list[int]) -> None:
             self._builder.set_palette(r, g, b)
@@ -379,7 +379,6 @@ def make_calibration_graphics(
             else:
                 self._camera_image.image = image
             self._camera_image.draw()
-            self._title.draw()
             self._window.flip()
 
         def exit_image_display(self) -> None:

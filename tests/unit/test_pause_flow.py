@@ -976,9 +976,13 @@ class TestASimulationsBreakValidationCannotHang:
         from alhazen.devices.eyetracker import procedures
         from alhazen.testing import FakeStimulus
 
-        # A real window's fixation point needs PsychoPy; the walk's target is
-        # drawn through this factory, and a recording stand-in does as well.
-        monkeypatch.setattr(procedures, "make_fixation", lambda *args: FakeStimulus("target"))
+        # A real window's calibration target needs PsychoPy; the walk's target
+        # is made through this factory, and a recording stand-in does as well.
+        monkeypatch.setattr(
+            procedures,
+            "target_maker",
+            lambda *args: lambda pos: FakeStimulus("target"),
+        )
         clock = FakeClock()
         harness = SessionHarness(
             tmp_path,

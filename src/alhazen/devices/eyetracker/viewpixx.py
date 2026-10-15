@@ -94,7 +94,6 @@ from alhazen.devices.vpixx import LOCK_TIMEOUT_S as LINK_LOCK_TIMEOUT_S
 from alhazen.devices.vpixx import DpxLink, dpx_link
 from alhazen.devices.vpixx import dpx_fault as dpx_fault
 from alhazen.display.backend import DisplayBackend
-from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.display.screen import Screen
 from alhazen.errors import TrackerError
 
@@ -661,11 +660,9 @@ LOCK_TIMEOUT_S = 2.0
 # LOCK_TIMEOUT_S describes; the thread is abandoned, said at ERROR, and ends
 # by itself if the read ever returns (GazeReader.stop).
 READER_JOIN_S = 2.0
-# How often the calibration screen refreshes its eye status between keys.
+# How often the calibration walk rereads the eye status between keys (for
+# the live monitor and auto advance; nothing of it is drawn).
 STATUS_REFRESH_S = 0.1
-# How long a failed calibration's verdict stays on screen before the pause
-# menu replaces it.
-CALIBRATION_FAIL_HOLD_S = 2.5
 
 
 def _no_release() -> None:
@@ -1328,6 +1325,13 @@ class ViewPixxTracker:
         ``calibration_target`` stream, handed over by the session builder."""
         self._targets.use_rng(rng)
 
+    @property
+    def calibration_targets(self) -> CalibrationTargets:
+        """Optional capability (protocol.py): the target this tracker's
+        calibration draws, which the session's validation and drift
+        correction draw too (procedures.py)."""
+        return self._targets
+
     def set_progress_hook(self, hook: ProgressHook | None) -> None:
         """Optional capability (protocol.py): where the calibration walk says
         which target it is on. None switches the reports off."""
@@ -1488,55 +1492,62 @@ class ViewPixxTracker:
             self._progress(stage, detail)
 
     def _show_guide(self, event: Any, n_targets: int) -> bool:
-        """The guide screen, redrawn with the live eye line until SPACE or ESC.
+        """The wait before the first target: SPACE starts, ESC (or a pause
+        key) aborts.
 
-        True to start the walk, False to abort. The window closing (waitKeys
-        returning nothing with the window gone) is an abort, never a start.
+        The subject's screen stays empty — nothing but targets is ever drawn
+        there during a calibration (user decision, 2026-10-15). The guide's
+        facts (eye, layout, advance mode, keys) go to the session log once,
+        and the live eye line to the live monitor on every refresh, with the
+        keys that answer it. True to start the walk, False to abort. The
+        window closing (waitKeys returning nothing with the window gone) is
+        an abort, never a start.
         """
         assert self._display is not None  # calibrate() checked
         cfg = self._cfg
         window = self._display.window
-        first = True
+        start_line = f"press SPACE to start, {STOP_KEYS_LABEL} to go back to the pause menu"
+        _eyes, status = self._eye_status()
+        body = calibration_guide(
+            tracker="TRACKPixx3",
+            # The device fits both eyes whatever the session reads; what
+            # the experimenter has to know is which one the trial logic
+            # (fixation windows, gaze contingency) will be judged on.
+            eye=f"{cfg.eye.upper()} eye read by the session; both eyes are calibrated",
+            layout=cfg.calibration_type,
+            n_targets=n_targets,
+            area=cfg.calibration_area,
+            advance=cfg.calibration_advance,
+            keys=GUIDE_KEYS,
+            status=status,
+            start_line=start_line,
+        )
+        log.info("%s\n%s", GUIDE_TITLE, body)
+        # Whatever was on the screen (the pause menu, the last trial) is
+        # taken down: the subject sees the empty background until the first
+        # target.
+        window.flip()
+        # A press from before the wait began (the C that opened it) is not
+        # an answer to it. Cleared once, here, and never again while it
+        # waits (read_keys).
+        event.clearEvents("keyboard")
         while True:
-            _eyes, status = self._eye_status()
-            body = calibration_guide(
-                tracker="TRACKPixx3",
-                # The device fits both eyes whatever the session reads; what
-                # the experimenter has to know is which one the trial logic
-                # (fixation windows, gaze contingency) will be judged on.
-                eye=f"{cfg.eye.upper()} eye read by the session; both eyes are calibrated",
-                layout=cfg.calibration_type,
-                n_targets=n_targets,
-                area=cfg.calibration_area,
-                advance=cfg.calibration_advance,
-                keys=GUIDE_KEYS,
-                status=status,
-                start_line=f"press SPACE to start, {STOP_KEYS_LABEL} to go back to the pause menu",
-            )
-            self._display.show_menu(GUIDE_TITLE, body, color=TERMINAL_GREEN)
-            if first:
-                # A press from before the guide appeared (the C that opened
-                # it) is not an answer to it. Cleared once, here, and never
-                # again while the guide waits (read_keys).
-                event.clearEvents("keyboard")
-                first = False
-            self._report("calibration guide", status)
+            self._report("calibration guide", f"{status} · {start_line}")
             keys = read_keys(event, [ACCEPT_KEYS[0], ABORT_KEY, *PAUSE_KEYS], STATUS_REFRESH_S)
             if keys:
                 return keys[0] == ACCEPT_KEYS[0]
             if getattr(window, "_closed", False):
                 return False
+            _eyes, status = self._eye_status()
 
-    def _wait_for_keys(
-        self, event: Any, window: Any, target: TargetPresenter, status_line: Any
-    ) -> list[str] | None:
+    def _wait_for_keys(self, event: Any, window: Any, target: TargetPresenter) -> list[str] | None:
         """One refresh's wait for the experimenter's keys, between two reads
         of the eye status.
 
         A still target waits as it always has: one ``read_keys`` of
         ``STATUS_REFRESH_S``, the target left as drawn. A pulsating one is
         redrawn every frame meanwhile — keys polled without waiting, then the
-        target and status line drawn at the current size and flipped, the
+        target drawn at the current size and flipped, the
         flip pacing the loop — until the same refresh interval has passed on
         the session clock or a key arrives. Either way the eye status, the
         auto-advance count and the live-monitor report keep their one-per-
@@ -1550,7 +1561,6 @@ class ViewPixxTracker:
             if keys or getattr(window, "_closed", False) or self._clock.now() >= deadline:
                 return keys
             target.draw()
-            status_line.draw()
             window.flip()
 
     def _walk_targets(self, event: Any, visual: Any) -> CalibrationResult:
@@ -1564,17 +1574,13 @@ class ViewPixxTracker:
         # pulsating (calibration_targets.py). Every stimulus is made here,
         # before the guide, so the walk only moves and resizes them.
         target = self._targets.presenter(visual, window, self._screen, self._clock.now)
-        # The experimenter's only view of the camera: the TRACKPixx3 has no
-        # Host PC, and VPixx's own viewer (LabMaestro) must not run alongside
-        # a session — it shares the device server, and did hang with one.
-        status_line = visual.TextStim(
-            window,
-            text="",
-            pos=(0, -0.4 * self._screen.height_px),
-            height=max(18.0, 0.02 * self._screen.height_px),
-            color=(0.82, 0.82, 0.86),
-            units="pix",
-        )
+        # Nothing but the target is drawn on the subject's screen (user
+        # decision, 2026-10-15). Which eyes the camera sees — the
+        # experimenter's only view of it, since the TRACKPixx3 has no Host PC
+        # and VPixx's own viewer must not run alongside a session — goes to
+        # the live monitor with every refresh (_report, which also streams
+        # the camera) and to the log, per target and whenever it changes.
+        logged_status: str | None = None
 
         def result(
             ok: bool | None,
@@ -1617,14 +1623,16 @@ class ViewPixxTracker:
             target.show((x, y))
             shown_at = self._clock.now()
             steady = 0  # auto mode: consecutive refreshes with the configured eye in view
+            logged_status = None  # each target's eye line is logged once, then on change
             pressed: str | None = None
             eyes = (False, False)
             shown = False
             while pressed is None:
                 eyes, status = self._eye_status()
-                status_line.text = status
+                if status != logged_status:
+                    log.info("TRACKPixx3 calibration, target %d of %d: %s", index + 1, n, status)
+                    logged_status = status
                 target.draw()
-                status_line.draw()
                 window.flip()
                 if not shown:
                     # The target is on screen now. A press from before it
@@ -1636,7 +1644,7 @@ class ViewPixxTracker:
                     event.clearEvents("keyboard")
                     shown = True
                 self._report("calibrating", f"target {index + 1} of {n} · {status}")
-                keys = self._wait_for_keys(event, window, target, status_line)
+                keys = self._wait_for_keys(event, window, target)
                 if keys:
                     pressed = keys[0]
                 elif getattr(window, "_closed", False):
@@ -1694,24 +1702,21 @@ class ViewPixxTracker:
         # The fit was submitted and the device did not keep it — every gaze
         # read from here would be the tracking-lost sentinel, and a session
         # that looks calibrated but is not is exactly what must not happen
-        # quietly. Said on the screen the experimenter is looking at, then
-        # the pause menu follows and they can run it again.
+        # quietly. Said where the experimenter looks (the log, the live
+        # monitor, and the pause menu that follows, headed by this result's
+        # note), never on the subject's screen, which stays empty.
         log.error(
             "TRACKPixx3 calibration did NOT take: the device reports no calibration after "
             "%d targets. Check that the camera sees the eyes (position, focus, LED) and "
             "calibrate again.",
             n,
         )
-        # Two paragraphs, not two lines: what happened, then what to do. A
-        # blank line is a break that survives the display's prose reflow, so
-        # this needs no `reflow=False` — which a display backend written
-        # outside alhazen, before the argument existed, could not accept.
-        self._display.show_message(
-            "Calibration FAILED: the tracker reports no calibration.\n\n"
-            "Check the camera sees the eyes (position, focus, LED), then calibrate again."
+        self._report("calibration failed", "the tracker reports no calibration")
+        return result(
+            False,
+            "the device reports NO calibration after the walk — check the camera sees the "
+            "eyes (position, focus, LED), then calibrate again",
         )
-        event.waitKeys(maxWait=CALIBRATION_FAIL_HOLD_S, keyList=[*ACCEPT_KEYS, ABORT_KEY])
-        return result(False, "the device reports NO calibration after the walk — calibrate again")
 
     # ------------------------------------------------------------------
     # Optional capabilities (protocol.py): the camera and the eye line

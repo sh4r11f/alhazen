@@ -24,7 +24,6 @@ from alhazen.devices.eyetracker.eyelink import (
     EyeLinkTracker,
 )
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, TARGET_COUNTS, target_count
-from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.errors import TrackerError
 from alhazen.testing import FakeClock
 from fake_sdk import ABORT_EXPT, MISSING_DATA, FakeEyeLinkHost, install_fake_pylink
@@ -119,14 +118,24 @@ class FakeWindow:
 
 
 class FakeDisplay:
+    """A display that records what reaches the subject's screen: any text
+    panel (which a calibration must never draw) and every flip."""
+
     kind = "fake"
 
     def __init__(self) -> None:
         self.window = FakeWindow()
-        self.menus: list[tuple[str, str, tuple[float, float, float]]] = []
+        self.texts: list[str] = []
+        self.flips = 0
 
     def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
-        self.menus.append((title, body, color))
+        self.texts.append(f"{title}\n{body}")
+
+    def show_message(self, text: str, *, reflow: bool = True) -> None:
+        self.texts.append(text)
+
+    def flip(self, clear: bool = True) -> None:
+        self.flips += 1
 
 
 @pytest.fixture
@@ -195,12 +204,17 @@ def configured(fake_pylink, **cfg_kwargs) -> tuple[EyeLinkTracker, FakeEyeLink, 
     return tracker, connection, display
 
 
-def guide_body(display: FakeDisplay) -> str:
-    assert display.menus, "the calibration guide was never shown"
-    title, body, color = display.menus[-1]
-    assert title == GUIDE_TITLE
-    assert color == TERMINAL_GREEN
-    return body
+def guide_body(caplog: pytest.LogCaptureFixture, display: FakeDisplay) -> str:
+    """The guide as the session log has it: written there, never drawn —
+    nothing but targets goes on the subject's screen during a calibration."""
+    assert display.texts == [], "a calibration drew text on the subject's screen"
+    bodies = [
+        r.getMessage().split("\n", 1)[1]
+        for r in caplog.records
+        if r.getMessage().startswith(GUIDE_TITLE + "\n")
+    ]
+    assert bodies, "the calibration guide was never logged"
+    return bodies[-1]
 
 
 class TestConfigure:
@@ -236,11 +250,12 @@ class TestLayouts:
 
 
 class TestGuide:
-    def test_the_guide_precedes_the_host_setup(self, fake_pylink, fake_psychopy):
+    def test_the_guide_precedes_the_host_setup(self, fake_pylink, fake_psychopy, caplog):
         tracker, connection, display = configured(fake_pylink, calibration_type="HV9")
         fake_psychopy.keys.append("space")
-        tracker.calibrate()
-        body = guide_body(display)
+        with caplog.at_level(logging.INFO):
+            tracker.calibrate()
+        body = guide_body(caplog, display)
         assert "EyeLink (the Host PC drives the procedure)" in body
         assert "set on the Host PC" in body
         assert "HV9 — 9 targets over 60% of the screen" in body
@@ -250,11 +265,27 @@ class TestGuide:
         assert body.endswith("press SPACE to open the Host PC setup, ESC to skip")
         assert connection.setups == 1
 
-    def test_auto_advance_is_announced(self, fake_pylink, fake_psychopy):
-        tracker, _, display = configured(fake_pylink, calibration_advance="auto")
+    def test_the_subjects_screen_is_emptied_and_shows_no_text(self, fake_pylink, fake_psychopy):
+        """User decision (2026-10-15): nothing but targets on the subject's
+        screen during a calibration. Whatever was up (the pause menu) is
+        taken down with one empty flip before the wait, and no text panel is
+        ever drawn — the Host PC's procedure then draws only its targets
+        (and the camera image the experimenter asks for) through the
+        graphics (test_calibration_graphics)."""
+        tracker, connection, display = configured(fake_pylink)
+        flips_before = display.flips
         fake_psychopy.keys.append("space")
         tracker.calibrate()
-        assert "AUTO — each target is accepted by itself" in guide_body(display)
+        assert display.texts == []
+        assert display.flips == flips_before + 1
+        assert connection.setups == 1
+
+    def test_auto_advance_is_announced(self, fake_pylink, fake_psychopy, caplog):
+        tracker, _, display = configured(fake_pylink, calibration_advance="auto")
+        fake_psychopy.keys.append("space")
+        with caplog.at_level(logging.INFO):
+            tracker.calibrate()
+        assert "AUTO — each target is accepted by itself" in guide_body(caplog, display)
 
     def test_escape_at_the_guide_skips_the_host_setup(self, fake_pylink, fake_psychopy, caplog):
         tracker, connection, _ = configured(fake_pylink)
@@ -279,8 +310,10 @@ class TestGuide:
         tracker.set_progress_hook(lambda stage, detail: stages.append((stage, detail)))
         fake_psychopy.keys.append("space")
         tracker.calibrate()
+        # The keys that answer the wait go to the live monitor, since the
+        # subject's screen no longer says them.
         assert stages == [
-            ("calibration guide", "waiting for SPACE"),
+            ("calibration guide", "press SPACE to open the Host PC setup, ESC to skip"),
             ("calibrating", "on the Host PC's setup screen"),
         ]
         tracker.set_progress_hook(None)
