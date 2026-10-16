@@ -294,7 +294,17 @@ the light theme; the dark theme is unchanged.
    default task's own file. An entry with no file (a task whose table entry
    names none, or one the project lacks) runs on the defaults in its code and
    launches without `--params`. A launch with a file sends that file's
-   (edited) values, so its run folder has its `params.yaml`. An experiment
+   (edited) values, so its run folder has its `params.yaml`. The session
+   loads that copy, and is also told the file as chosen, with
+   `--params-source configs/task-light.yaml (Task parameters "Main (less
+   trials)")`, or `configs/task-light.yaml as edited on the Run page (...)`
+   when the values sent differ from the file's; an entry with no file is
+   named by its label. A task that names its params file in a message reads
+   it with `alhazen.task.params_source(args)` ([modes](modes.md#parameters-derived-from-the-invocation)),
+   so a refusal names the file the operator picked, not
+   `runs/<id>/params.yaml`. The flag goes only to a project whose alhazen
+   takes it (the `params-source` capability its probe reports); an older one
+   gets the launch it always got. An experiment
    with no parameter file at all shows no menu: its task runs on the defaults
    written in its code (run.py's `default_params=` or the task's own), and
    launches without `--params`. When the task's parameter choices cannot be
@@ -386,6 +396,23 @@ the light theme; the dark theme is unchanged.
    Headless box: untick it to watch the stage in a window.
 7. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
+   When the experiment's last launch failed — a session that refused its
+   parameters, or stopped early — the reason is shown above **Start run**,
+   with **Open the console** for the full output. The launcher reads it from
+   the run's console (`alhazen.cli.launch_failure`); the line printed last
+   wins:
+
+   | The console has | Shown as |
+   |---|---|
+   | a refusal, `INVALID: …` or `CANNOT <WORDS>: …` | **Run refused**, the text after the prefix and the lines that continue it, up to a blank line |
+   | a usage error, `<prog>: error: …` (an unknown or malformed flag) | **Run refused**, the message after `error:` |
+   | an uncaught exception | **Run stopped with an error**, the last traceback's exception line (`ConfigError: …`, the module path dropped) and its continuation; the frames stay in the Console |
+   | neither | **Run failed**, its last three non-empty lines, or the exit code when it printed nothing |
+
+   A run the workspace could not start at all shows the operating system's
+   error. The reason is capped at 12 lines; the Console keeps everything. It
+   is shown only while that run is the experiment's newest, so a failure
+   chosen from the history never reads as the verdict on the next Start.
 
 ### The random seed
 

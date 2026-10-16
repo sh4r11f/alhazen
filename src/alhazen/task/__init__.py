@@ -12,7 +12,7 @@ from alhazen.task.reward_policy import RewardPolicy
 from alhazen.task.subject_kind import SubjectKind, SubjectParams
 from alhazen.task.subject_mode import SubjectMode as SubjectMode
 from alhazen.task.subject_mode import response_phases as response_phases
-from alhazen.task.task import Task
+from alhazen.task.task import Task, params_source
 
 # `__all__` holds only the names docs/reference.md lists as public (a test in
 # tests/unit/test_docs_snippets.py holds it to that). The `X as X` imports
@@ -26,4 +26,5 @@ __all__ = [
     "Task",
     "TrialPlan",
     "TrialSetup",
+    "params_source",
 ]

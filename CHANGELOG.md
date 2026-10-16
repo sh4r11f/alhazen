@@ -53,6 +53,22 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   trackers' progress reports and the procedures' results
   (docs/live_monitor.md, *The procedure guide*). The same page is what the
   dashboard's Live monitor tab frames, so it is there too.
+- `--params-source` and `alhazen.task.params_source(args)`: the params file
+  as the operator chose it. The experiment workspace runs a copy of the Task
+  parameters entry's file (its run folder's `params.yaml`) and now passes
+  the original beside it (`configs/task-light.yaml (Task parameters "Main
+  (less trials)")`, "as edited on the Run page" when the values sent
+  differ), so a params hook that refuses a file names the one that was
+  picked. From a shell the helper is `args.params` as given. Sent only to a
+  project whose alhazen reports the new `params-source` capability. The
+  line printed before trial one adds `(chosen as …)` for such a copy.
+- The Run page shows why the experiment's last launch failed, above
+  **Start run**: a refusal (`INVALID:` / `CANNOT …:`, or a usage error) as **Run refused**,
+  an uncaught exception's last line as **Run stopped with an error**,
+  otherwise the console's last lines, with **Open the console** for the
+  rest. Read from the console by `alhazen.cli.launch_failure` and sent as
+  `failure` in the run detail (`/api/runs/<id>`); it used to say only "Run
+  failed" in the output card.
 - `LiveMonitorPanel.series`, for a `grouped_mean` panel: a second factor drawn
   in the colour rather than along the axis. Each level of `group` is one
   position on the axis and, at each, one mark per level of `series`, dodged

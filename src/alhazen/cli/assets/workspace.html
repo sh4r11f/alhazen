@@ -455,6 +455,14 @@
               <div id="duration-estimate"></div>
               <p id="launch-summary" class="launch-summary" aria-live="polite"></p>
               <p id="launch-note" class="help"></p>
+              <!-- Why the experiment's last launch failed: the refusal or the
+                   error it printed, beside Start, with the Console for the
+                   rest (renderFailure() in workspace.js). -->
+              <div id="launch-failure" class="launch-failure" aria-live="polite" hidden>
+                <h3 id="launch-failure-heading"></h3>
+                <p id="launch-failure-reason"></p>
+                <button type="button" id="launch-failure-console" class="launch-failure-console">Open the console</button>
+              </div>
               <button class="primary launch" type="submit" id="launch">▶ Start run</button>
             </div>
           </form>
@@ -470,7 +478,7 @@
                it has finished (workspace_upload.js mountSession; hidden for
                a launch that saved no session). -->
           <section id="upload-card" class="card upload-card" aria-label="Upload to the archive" hidden></section>
-          <section class="card output-card">
+          <section id="output-card" class="card output-card">
             <div class="card-heading">
               <h2>Run output</h2>
               <span id="run-status" class="status">READY</span>

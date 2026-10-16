@@ -2639,6 +2639,31 @@ function renderUpload(run, active) {
 }
 
 /**
+ * Beside Start: why the experiment's last launch failed — the refusal or the
+ * error its console ends on, as the server reads it (`run.failure`,
+ * alhazen.cli.launch_failure) — with a button to the Console for the full
+ * output. Shown only while the run on screen is the newest of the selected
+ * experiment, so an old failure chosen from the history never reads as the
+ * verdict on the next Start; hidden for every run that did not fail, and for
+ * a server too old to send `failure`.
+ */
+function renderFailure(run) {
+  const box = $('launch-failure');
+  const failure = run?.failure;
+  const newest = (state?.runs || []).find((r) => r.project === run?.project);
+  const shown = Boolean(failure && run.project === selected && newest?.id === run.id);
+  box.hidden = !shown;
+  if (!shown) return;
+  box.dataset.kind = failure.kind;
+  if ($('launch-failure-heading').textContent !== failure.heading) {
+    $('launch-failure-heading').textContent = failure.heading;
+  }
+  if ($('launch-failure-reason').textContent !== failure.reason) {
+    $('launch-failure-reason').textContent = failure.reason;
+  }
+}
+
+/**
  * Fetch the selected run and draw it: status badge, summary line, stop
  * button, live-monitor link, console tail, the command that started it and
  * the media gallery. Called on every poll, so the parts the reader interacts
@@ -2675,6 +2700,8 @@ async function refreshRun() {
   renderMonitor(run, active);
   // Upload to the archive, once the session this launch saved is finished.
   renderUpload(run, active);
+  // Why it failed, beside Start, when it is the experiment's last launch.
+  renderFailure(run);
   // Console: follow the tail only if the reader was already at the bottom,
   // so scrolling up to read an earlier line is not undone by the next poll.
   const consoleEl = $('console');
@@ -2714,7 +2741,8 @@ async function refreshRun() {
     heading = 'Your experiment is working';
     detail = 'Images appear as they are written; movies when recording finishes.';
   } else if (run.status === 'failed') {
-    heading = 'Run failed';
+    // In the words beside Start ("Run refused", ...) when the server read why.
+    heading = run.failure?.heading || 'Run failed';
     detail = 'The console has the error and the command.';
   } else {
     heading = 'No media in this run';
@@ -2907,6 +2935,12 @@ $('fields-tab').addEventListener('click', guard(() => switchEditor('fields')));
 $('yaml-tab').addEventListener('click', guard(() => switchEditor('yaml')));
 $('media-tab').addEventListener('click', () => outputTab('media'));
 $('console-tab').addEventListener('click', () => outputTab('console'));
+// The failure beside Start: its full output is the Console, which on a narrow
+// screen is below the form, so the output card is brought into view.
+$('launch-failure-console').addEventListener('click', () => {
+  outputTab('console');
+  $('output-card').scrollIntoView({block: 'start'});
+});
 $('monitor-tab').addEventListener('click', () => outputTab('monitor'));
 $('stop').addEventListener('click', guard(async () => {
   await api('/api/stop', {id: runId});
