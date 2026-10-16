@@ -731,6 +731,16 @@ class TestCommandContract:
             request, workspace.directory / "job", demographics={"age": "27", "sex": "female"}
         )
         emitted.update(token for token in command if token.startswith("--"))
+        # The params file as chosen: emitted beside --params for a launch from
+        # a Task parameters entry, by a project whose alhazen takes it
+        # (tests/unit/test_params_source.py).
+        monkeypatch.setitem(project, "capabilities", ["params-source"])
+        request = request_for(
+            workspace, mode="test", subject="s01", initials="HD",
+            parameters={"speed": 2}, parameter_set="task",
+        )
+        command = workspace._command(request, workspace.directory / "job")
+        emitted.update(token for token in command if token.startswith("--"))
         # The training flags: emitted for a Training launch by a project whose
         # run.py registers a ladder (tests/unit/test_workspace_training.py).
         emitted.update({"--ladder", "--stage"})

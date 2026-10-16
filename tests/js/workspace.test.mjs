@@ -2779,3 +2779,76 @@ describe('DATAPixx pump calibration identity', () => {
     ]);
   });
 });
+
+describe('why the last launch failed, beside Start', () => {
+  const REFUSED = {
+    kind: 'refused',
+    heading: 'Run refused',
+    reason: 'a session cannot show this background: configs/task-dark-background.yaml '
+      + '(Task parameters "Dark background (candidate)") sets background_value 0.2',
+  };
+  const failed = (overrides = {}) => runDetail({
+    status: 'failed', returncode: 1, finished: '2026-09-25T10:00:05',
+    log: 'INVALID: ' + REFUSED.reason + '\n', failure: REFUSED, ...overrides,
+  });
+
+  it('shows the refusal the server read from the console, with the Console a click away', async () => {
+    const app = await pageWith({ run: failed() });
+    const box = app.byId('launch-failure');
+    assert.equal(box.hidden, false);
+    assert.equal(box.dataset.kind, 'refused');
+    assert.equal(app.byId('launch-failure-heading').textContent, 'Run refused');
+    assert.equal(app.byId('launch-failure-reason').textContent, REFUSED.reason);
+    /* The output card stays as it was: its empty state still says the run failed. */
+    assert.match(app.byId('gallery-empty').textContent, /Run failed/);
+    assert.equal(app.byId('console-panel').hidden, true);
+
+    app.byId('launch-failure-console').fire('click');
+    assert.equal(app.byId('console-panel').hidden, false);
+    assert.equal(app.byId('media-panel').hidden, true);
+    assert.equal(app.byId('console-tab').classList.contains('selected'), true);
+    /* Below the form on a narrow screen, so it is brought into view. */
+    const scrolled = app.document.scrolledIntoView.map((s) => s.element.id);
+    assert.deepEqual(scrolled.slice(-1), ['output-card']);
+  });
+
+  it('says an error the same way, in its own words', async () => {
+    const failure = { kind: 'error', heading: 'Run stopped with an error', reason: 'OSError: x' };
+    const app = await pageWith({ run: failed({ failure }) });
+    assert.equal(app.byId('launch-failure').dataset.kind, 'error');
+    assert.equal(app.byId('launch-failure-heading').textContent, 'Run stopped with an error');
+    assert.equal(app.byId('launch-failure-reason').textContent, 'OSError: x');
+  });
+
+  it('is hidden for a run that did not fail, and once the next launch runs', async () => {
+    const app = await pageWith({ run: runDetail({ status: 'completed', returncode: 0 }) });
+    assert.equal(app.byId('launch-failure').hidden, true);
+    await redraw(app, failed());
+    assert.equal(app.byId('launch-failure').hidden, false);
+    await redraw(app, runDetail({ failure: null }));
+    assert.equal(app.byId('launch-failure').hidden, true);
+  });
+
+  it('is not shown for an older failure chosen from the history', async () => {
+    const app = loadWorkspace();
+    const old = failed({ id: 'r1', started: '2026-09-25T09:00:00' });
+    const newer = runDetail({ id: 'r2', status: 'completed', returncode: 0, failure: null });
+    app.server.state = { projects: [PROJECT], runs: [summary(newer), summary(old)], active: null };
+    app.server.details = { r1: old, r2: newer };
+    app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+    app.server.rigs = { 'configs/rig-mac.yaml': rig(true) };
+    await app.run('refresh()');
+    await settle();
+    assert.equal(app.byId('launch-failure').hidden, true);
+    app.byId('history').children[1].fire('click');
+    await settle();
+    assert.equal(app.run('runId'), 'r1');
+    assert.equal(app.byId('launch-failure').hidden, true);
+  });
+
+  it('stays hidden for a server too old to send a reason', async () => {
+    const { failure, ...old } = failed();
+    const app = await pageWith({ run: old });
+    assert.equal(app.byId('launch-failure').hidden, true);
+  });
+});
