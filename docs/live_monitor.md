@@ -164,23 +164,70 @@ live monitor on a second computer (the experiment workspace's Live monitor
 tab, or the URL from the session log) or press P/Space at the rig.
 
 While a calibration, validation or drift correction runs, the status reads
-**calibrating**, the buttons are off, and the notice follows the
-procedure's progress (`validating: target 3 of 5`); when it ends, the notice
-shows the result line and the *Eye tracker* panels update. A walk whose rig
-advances targets by hand (`calibration_advance: manual`) still takes SPACE at
-each target from the rig's keyboard. See [eye-tracker.md](eye-tracker.md).
+**calibrating** and the buttons are off. A walk whose rig advances targets by
+hand (`calibration_advance: manual`) still takes SPACE at each target from the
+rig's keyboard. See [eye-tracker.md](eye-tracker.md).
 
-The notice is the operator's view of a calibration: the subject's screen
-shows nothing but the targets, so what used to be written on it is here.
-Before the first target it says what the wait is for — `calibration guide:
-eyes: both tracked · press SPACE to start, P or ESC to go back to the pause
-menu` on a TRACKPixx3, `calibration guide: press SPACE to open the Host PC
-setup, ESC to skip` on an EyeLink — then the target and, on a TRACKPixx3, the
-eyes the camera sees (`calibrating: target 2 of 5 · eyes: left only`), and
-`calibration failed: the tracker reports no calibration` when the device did
-not keep the fit. A new stage's first line is published at once, whatever
-the progress throttle. The full guide (eye, layout, advance mode, keys) is
-in the session log.
+### The procedure guide
+
+The subject's screen shows nothing but the targets during a procedure, so
+what used to be written on it is on the live monitor instead, as a panel at
+the top of the page (above the Trial view and the plots, so a one-screen rig
+and the dashboard's Live monitor tab show it without scrolling):
+
+- the heading: **Calibration**, **Validation** or **Drift correction**;
+- the instruction, the largest text on the page, with the keys drawn as
+  keys: *Press Space to start, P or Esc to go back to the pause menu* while a
+  TRACKPixx3 waits at its guide, *Press Space to open the Host PC setup, Esc
+  to skip* on an EyeLink, *Press Space when the subject is looking at the
+  target* while a target is up in manual mode (*Keep the subject looking at
+  the target; it moves on by itself* in auto mode), *Calibrating on the Host
+  PC's setup screen* while the EyeLink's Host PC has the procedure, and
+  *Camera image: …* while its camera image is open;
+- the tracker's status line: on a TRACKPixx3 the eyes the camera sees
+  (`eyes: left only`), in the critical colour when it sees none;
+- the step: *Target 2 of 5*, with one mark per target (taken, up now, still
+  to come);
+- after a failure or a stop: the heading says so (*Calibration failed*,
+  *Validation stopped*), what went wrong (the result's own note — *The device
+  reports NO calibration after the walk*), and what to check (the note's own
+  "check …" clause when it has one, otherwise the usual next step: calibrate
+  again with C, validate again with V, drift-correct again with D).
+
+The panel appears when the procedure starts and goes when it succeeds. A
+procedure that failed or was stopped keeps it — so the operator has seen the
+failure — until the session resumes (a resume from the pause, or the next
+trial starting, which covers the calibration request before trial 1) or the
+next procedure starts. While it is up, the line under the Session buttons
+stays empty rather than repeat it small; the status line it carried before
+(`validating: target 3 of 5`) is still published as the state's `message`.
+The full guide (eye, layout, advance mode, keys) is in the session log.
+
+The panel is drawn from a structured field of the state, never from the
+status text. `state["procedure"]` is `null` when there is no procedure to
+show, and the saved copy in `figures/` never carries one; otherwise:
+
+| key | value |
+|---|---|
+| `kind` | `calibration`, `validation` or `drift_correction` |
+| `heading` | `Calibration`, `Validation` or `Drift correction` |
+| `stage` | the tracker's own word for where it is (`calibration guide`, `calibrating`, `camera image`, `validating`, `drift correcting`, `calibration failed`, `starting`, or a tracker's own) |
+| `instruction` | what the operator does now; empty once the procedure has ended |
+| `status_line`, `status_alert` | the tracker's status (the eye line) or null; `status_alert` true when it says something is wrong |
+| `step`, `n` | the target up now and how many there are, or null |
+| `outcome` | `running`, `failed` or `aborted` (a procedure that succeeds is not published: the field goes back to null) |
+| `failure`, `check` | what went wrong and what to check, once `outcome` is not `running` |
+| `t` | session clock of the last change |
+
+It is built by `session/procedure_guide.py` from the `(stage, detail)`
+progress reports the trackers already make and from each procedure's result
+(`CalibrationResult`, `ValidationResult`, `DriftResult`); a stage it does not
+know is shown with its detail as the instruction. `EyeTrackerMonitor`
+(session/eyetracker.py) holds it, publishes a new target at once whatever the
+progress throttle, publishes the end of every procedure itself (not every
+caller publishes after one), and drops a kept failure on
+`dismiss_procedure()`, which the runner calls on a resume and when a trial
+starts.
 
 ## The plots
 

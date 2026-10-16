@@ -28,6 +28,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 ## Unreleased
 
 ### Added
+- The live monitor's procedure guide: during a calibration, validation or
+  drift correction a panel at the top of the page says what to do in large
+  type — the procedure's heading, the instruction with its keys drawn as
+  keys (*Press Space to start, P or Esc to go back to the pause menu*), the
+  tracker's eye line, *Target 2 of 5* with one mark per target — and, after
+  a failure or a stop, what went wrong and what to check. It appears when the
+  procedure starts and goes when it succeeds; a failure stays until the
+  session resumes or the next procedure starts. It is drawn from a new
+  structured state field, `state["procedure"]` (kind, heading, stage,
+  instruction, status_line, status_alert, step, n, outcome, failure, check,
+  t; null when there is none), built by `session/procedure_guide.py` from the
+  trackers' progress reports and the procedures' results
+  (docs/live_monitor.md, *The procedure guide*). The same page is what the
+  dashboard's Live monitor tab frames, so it is there too.
 - `LiveMonitorPanel.series`, for a `grouped_mean` panel: a second factor drawn
   in the colour rather than along the axis. Each level of `group` is one
   position on the axis and, at each, one mark per level of `series`, dodged
@@ -120,6 +134,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   shared event shape.
 
 ### Changed
+- During an eye-tracker procedure the line under the live monitor's Session
+  buttons stays empty (the procedure guide says it, large); the status
+  message is still published. `EyeTrackerMonitor` publishes the end of every
+  procedure itself and each new target at once, and a trial that starts
+  after a procedure publishes "running", so a calibration answered at the
+  request before trial 1 no longer leaves the page saying "calibrating"
+  through the first trial.
 - Measure mode writes its report under the rig's data root,
   `<data_root>/measurements/rig-<name>_<stamp>.json`, for every rig, shared
   or the experiment's own. A measurement is data — a reading of the machine

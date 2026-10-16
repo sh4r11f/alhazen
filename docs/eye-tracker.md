@@ -89,11 +89,16 @@ eyes: both tracked
 press SPACE to start, P or ESC to go back to the pause menu
 ```
 
-- **The live monitor**'s procedure line says what the wait is for, with the
-  live eye line on the TRACKPixx3 — `calibration guide: eyes: both tracked ·
-  press SPACE to start, P or ESC to go back to the pause menu` — then
-  `calibrating: target 3 of 5 · eyes: left only` at every target. A new
-  stage's first line is published at once, whatever the progress throttle.
+- **The live monitor**'s procedure guide, a panel at the top of its page,
+  says what the wait is for in large type, with the live eye line on the
+  TRACKPixx3 — *Calibration* · *Press Space to start, P or Esc to go back to
+  the pause menu* · `eyes: both tracked` — then *Target 3 of 5* and the eye
+  line at every target, and what failed and what to check if the calibration
+  did not take ([live_monitor.md](live_monitor.md), *The procedure guide*).
+  The status line it was built from (`calibration guide: eyes: both tracked ·
+  press SPACE to start, …`, `calibrating: target 3 of 5 · eyes: left only`)
+  is still the state's message. A new stage's first line and each new target
+  are published at once, whatever the progress throttle.
   On the TRACKPixx3 the eye line is also logged once per target and whenever
   it changes, and the Camera panel streams the eye image as before.
 - **The pause menu** that follows a calibration the tracker did not take is
@@ -217,11 +222,12 @@ drift correction applied: offset 0.48° (limit 3°)
 
 With the live monitor on, the same three are buttons, live only while the
 session is paused. While a procedure runs the live monitor's status turns to
-**calibrating**, the buttons go inert, and the notice follows the walk —
-`calibrating: target 2 of 5 · eyes: both tracked`, `validating: target 4 of
-5` — published at most twice a second so the walk never waits on the
-browser. When it ends, the notice shows the result line and the panels
-update.
+**calibrating**, the buttons go inert, and the procedure guide at the top of
+the page follows the walk — the instruction, *Target 2 of 5*, the eye line —
+published at most twice a second (a new target at once) so the walk never
+waits on the browser. When it ends, the guide goes (or, after a failure,
+stays with what to check until the session resumes), the notice shows the
+result line and the panels update.
 
 The **Eye tracker** section of the panels holds:
 
@@ -474,8 +480,8 @@ a subject, a card to hold in front of one eye, and a rig config with
 
 - [ ] Start a session in `--mode test` and calibrate with both eyes in the
       camera image (**C** on the pause screen).
-- [ ] **Camera line.** Press **C** again. The live monitor's
-      `calibration guide: eyes: …` line (VPixx's pupil-size call; the subject
+- [ ] **Camera line.** Press **C** again. The live monitor's procedure guide
+      shows the eye line under its instruction (VPixx's pupil-size call; the subject
       display stays empty) should say `both tracked`. Hold the card in front of
       the subject's **left** eye. Expect `right only`, and write down what it
       says. Take the card away; ESC leaves the guide and keeps the
