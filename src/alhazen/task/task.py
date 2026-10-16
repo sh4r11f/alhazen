@@ -214,7 +214,10 @@ class Task:
         ``alhazen.cli.main.add_mode_arguments`` defines: ``mode``, ``rig``
         (the rig file's path), ``params`` (the params file the session
         loaded, or None for the model's defaults), ``run``, ``seed`` and the
-        rest. For the modes that
+        rest. To name the params file in a message, use
+        ``alhazen.task.params_source(args)``: the file as the operator chose
+        it, which differs from ``params`` for a session the experiment
+        workspace started (it runs a copy). For the modes that
         run trials, ``sub`` and ``ses`` are settled before this runs —
         from the flags, from the prompt, or simulate mode's ``sim`` and 1 —
         so they are what the session will record; ``demo`` and ``movie``
@@ -575,6 +578,32 @@ def default_params_path(task_class: Any) -> Path | None:
             f"installed editable: pip install -e .)"
         )
     return path
+
+
+def params_source(args: Any) -> str | None:
+    """The params file a session was started with, as the operator chose it,
+    for the words a params hook or a task says it in.
+
+    ``args`` is the parsed command line the params hook receives. From a
+    shell this is ``args.params``: the file the params were loaded from, as
+    given (``--params``, else run.py's or the task's own file). The
+    experiment workspace runs a copy of the file chosen in its Task
+    parameters menu (its run folder's ``params.yaml``), so ``args.params``
+    names that copy; it also passes ``--params-source`` with what was chosen
+    (the file's project-relative path and the menu entry, and "as edited on
+    the Run page" when its values were changed there), and that is returned
+    instead. None: the params model's own defaults, no file at all.
+
+    Read with ``getattr``, so a namespace built by other code, or by an
+    alhazen from before the flag, still answers. A task that must also run
+    on such an alhazen imports this helper inside ``try`` and falls back to
+    ``args.params``.
+    """
+    source = getattr(args, "params_source", None)
+    if source:
+        return str(source)
+    given = getattr(args, "params", None)
+    return str(given) if given else None
 
 
 def declared_params_hook(task_class: Any) -> Callable[[Any, Any], Any] | None:

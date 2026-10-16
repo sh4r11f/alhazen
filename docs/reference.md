@@ -134,7 +134,7 @@ explains each.
 
 ::: alhazen.task.task
     options:
-      members: [Task]
+      members: [Task, params_source]
 
 ::: alhazen.task.plan
     options:

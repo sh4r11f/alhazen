@@ -33,6 +33,7 @@ else:  # pragma: no cover - Python 3.10
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from alhazen.cli.launch_failure import launch_failure
 from alhazen.cli.people import PeopleError, PeopleRegistry
 from alhazen.cli.workspace_schema import TASK_NAME_KEY
 from alhazen.config.calibration_images import NAME_PATTERN
@@ -1204,6 +1205,9 @@ MODE_FLAGS = frozenset(
         # the ladder and the stage the Training panel chose.
         "--ladder",
         "--stage",
+        # Sent beside --params, to a project whose alhazen takes it
+        # (params-source capability): the file as chosen in Task parameters.
+        "--params-source",
     }
 )
 # The same for a standalone preview module: the flags `_script_command`
@@ -1397,12 +1401,19 @@ def _mode_command(
     experimenter: dict[str, Any] | None = None,
     demographics: dict[str, Any] | None = None,
     training: tuple[str, str] | None = None,
+    params_source: str | None = None,
 ) -> list[str]:
     """run.py's arguments for one of the modes: the launcher's flags, then the extras.
 
     ``training`` is ``(ladder, stage)`` for a training launch — training mode,
     or simulate mode rehearsing the stage — sent as ``--ladder``/``--stage``;
     such a launch sends no ``--params`` (the stage names its own).
+
+    ``params_source`` is the parameters as the operator chose them
+    (``Workspace._params_source``), sent as ``--params-source`` beside the
+    run folder's copy, so the session's messages name the file that was
+    chosen and not the copy; None sends nothing (no parameters, or an
+    alhazen that does not take the flag).
 
     Refusals come first, before anything is written to the run directory,
     in the words the person at the screen needs. TestCommandContract parses
@@ -1451,6 +1462,8 @@ def _mode_command(
     command += [no_browser]
     if has_parameters:
         command += ["--params", str(run_dir / "params.yaml")]
+        if params_source is not None:
+            command += ["--params-source", params_source]
     if mode.runs_trials:
         command += ["--ses", str(request.session)]
         if request.subject.strip():
@@ -2133,6 +2146,7 @@ class Workspace:
                 measure_subject=measurement_subject(project, request),
                 experimenter=experimenter,
                 demographics=demographics,
+                params_source=self._params_source(project, request),
             )
         # A standalone script reads --rig with its own argparse and hands it
         # to load_rig, which takes a file: a shared rig goes as the file the
@@ -2481,6 +2495,46 @@ class Workspace:
             )
         return task
 
+    def _params_source(self, project: dict[str, Any], request: Launch) -> str | None:
+        """The launch's parameters as the operator chose them, for
+        ``--params-source``: the Task parameters entry's file, by its
+        project-relative path, with the entry's label, e.g.
+        ``configs/task-light.yaml (Task parameters "Main (less trials)")``;
+        "as edited on the Run page" after the path when the values sent
+        differ from the file's. An entry with no file (the task's own
+        defaults) is named by its label alone.
+
+        None — send nothing, so the session names the copy it runs as it
+        always has — for a launch with no parameters or no entry label, and
+        for a project whose alhazen does not take the flag (its probe did
+        not report the params-source capability).
+        """
+        if "params-source" not in (project.get("capabilities") or []):
+            return None
+        if request.parameters is None and request.parameters_yaml is None:
+            return None
+        label = request.parameter_set
+        if label is None:
+            return None
+        sets = self.describe(project["id"])["parameter_sets"]
+        entry = next((e for e in sets if e["label"] == label), None)
+        where = f'(Task parameters "{label}")'
+        if entry is None or entry["params"] is None:
+            return f"the Run page's values {where}"
+        sent = (
+            parse_parameters(request.parameters_yaml)
+            if request.parameters_yaml is not None
+            else request.parameters
+        )
+        try:
+            chosen = self.config(project["id"], entry["params"])["values"]
+        except (OSError, ValueError):
+            chosen = None
+        # Unreadable now (moved, or broken since the menu was drawn): say
+        # only what was chosen, not whether it was edited.
+        edited = " as edited on the Run page" if chosen is not None and chosen != sent else ""
+        return f"{entry['params']}{edited} {where}"
+
     def _check_parameter_set(
         self, project: dict[str, Any], request: Launch, task: str | None
     ) -> None:
@@ -2811,6 +2865,9 @@ class Workspace:
         return {
             **run,
             "log": tail,
+            # Why a failed run failed, for the Run page beside Start
+            # (alhazen.cli.launch_failure); None for any other run.
+            "failure": launch_failure(tail, run),
             "artifacts": artifacts,
             "monitor": urls[-1] if urls else None,
             "measurement": measurement_status(directory),
