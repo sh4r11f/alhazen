@@ -24,8 +24,9 @@ Every result is a plain record from the devices layer; this module never
 measures anything itself. The three capabilities a tracker may have beyond
 the protocol — ``set_progress_hook``, ``camera_frame``, ``eye_status`` — are
 looked up with ``hasattr`` here and nowhere else, so a tracker without them
-(the EyeLink has no camera the session can read; the mouse has no eye) gets
-the same session with those panels saying so.
+(the EyeLink has no eye line, and its camera image comes only from its setup
+screen; the mouse has no eye) gets the same session with those panels saying
+so.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ from alhazen.devices.eyetracker.procedures import (
 from alhazen.devices.eyetracker.protocol import CalibrationResult, CameraFrame, EyeTracker
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.screen import Screen
-from alhazen.errors import TrackerError
+from alhazen.errors import NoCameraImageYet, TrackerError
 
 log = logging.getLogger(__name__)
 
@@ -209,6 +210,8 @@ class EyeTrackerMonitor:
         # (stream_camera), and state publishes stop carrying the pixels.
         self.camera_sink: CameraSink | None = None
         self._last_stream = float("-inf")
+        # The frame last sent to the sink (stream_camera sends each one once).
+        self._sent_frame: CameraFrame | None = None
         # Set by the runner with the camera sink: the settings the page sent.
         self.settings_source: SettingsSource | None = None
         # The expected iris size the device holds, as last read or set; None
@@ -536,7 +539,13 @@ class EyeTrackerMonitor:
                     "step": IRIS_SIZE_STEP_PX,
                 }
             ]
-        note = "live while paused or calibrating" if live else "last frame; live again when paused"
+        # When the image is live, in the tracker's words if it has its own
+        # (the EyeLink's comes only from its camera setup screen).
+        own = getattr(self._tracker, "camera_live_when", None)
+        if live:
+            note = f"live {own}" if own else "live while paused or calibrating"
+        else:
+            note = f"last frame; live again {own}" if own else "last frame; live again when paused"
         if self._camera_fault is not None:
             # "Last frame" only when there is one: a stream whose very first
             # read failed has nothing on screen to call the last.
@@ -628,22 +637,33 @@ class EyeTrackerMonitor:
             return
         self._last_stream = now
         self._read_camera()
-        if self._camera_fault is None and self._frame is not None:
-            self.camera_sink(self._frame)
+        # Only a frame not sent before. A tracker that reads its device on
+        # every call (the TRACKPixx3) hands back a new frame each time; one
+        # that keeps the newest image it was sent (the EyeLink, whose image
+        # arrives only on its setup screen) hands back the same one until a
+        # newer arrives, and resending it would make the page count a still
+        # picture as a live stream.
+        frame = self._frame
+        if self._camera_fault is None and frame is not None and frame is not self._sent_frame:
+            self._sent_frame = frame
+            self.camera_sink(frame)
 
     def _read_camera(self) -> None:
         """One frame from the tracker, or the reason there is none.
 
         A failure is reported on the panel and warned about once per reason:
         the same fault on every publish of a long pause is noise, a new fault
-        is news.
+        is news. A tracker with no image *yet* (NoCameraImageYet: the
+        EyeLink, before its setup screen has shown one) is not a fault: the
+        panel says why, and the log notes it once at info.
         """
         try:
             self._frame = self._tracker.camera_frame()  # type: ignore[attr-defined]
         except TrackerError as e:
             reason = str(e)
             if reason != self._camera_fault:
-                log.warning("camera image not read: %s", reason)
+                level = logging.INFO if isinstance(e, NoCameraImageYet) else logging.WARNING
+                log.log(level, "camera image not read: %s", reason)
             self._camera_fault = reason
             return
         self._camera_fault = None

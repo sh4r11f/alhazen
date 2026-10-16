@@ -26,13 +26,14 @@ from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide, target_count
 from alhazen.devices.eyetracker.protocol import (
     CalibrationResult,
+    CameraFrame,
     GazeSample,
     HostShape,
     ProgressHook,
 )
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.screen import Screen
-from alhazen.errors import TrackerError
+from alhazen.errors import NoCameraImageYet, TrackerError
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +112,15 @@ class EyeLinkTracker:
         "The EyeLink sends its camera image only during camera setup, never while it "
         "records. During a trial the eye image is on the Host PC's own display."
     )
+    # When the camera image is live, for the live monitor's camera panel
+    # (session/eyetracker.py): only while the setup screen shows it.
+    camera_live_when = "while the Host PC's camera setup screen shows it (ENTER there)"
+    # Why camera_frame() has nothing to give before the experimenter has
+    # opened the camera image on the setup screen.
+    NO_CAMERA_IMAGE_YET = (
+        "no EyeLink camera image yet: the Host PC sends it only on its camera setup "
+        "screen (press ENTER there during a calibration to see it here)"
+    )
 
     def __init__(
         self,
@@ -162,6 +172,10 @@ class EyeLinkTracker:
         # Where calibrate() reports its stages (the live monitor, via the
         # session's monitor); None until someone asks to be told.
         self._progress: ProgressHook | None = None
+        # The newest camera image the Host PC sent on its setup screen, as the
+        # live monitor draws it (camera_frame), and its caption. Never drawn
+        # on the subject's screen (calibration.py).
+        self._camera: CameraFrame | None = None
 
     # ------------------------------------------------------------------
     # Setup
@@ -287,7 +301,12 @@ class EyeLinkTracker:
         from alhazen.devices.eyetracker.calibration import make_calibration_graphics
 
         graphics = make_calibration_graphics(
-            tracker, self._display.window, screen, targets=self._targets, now=clock.now
+            tracker,
+            self._display.window,
+            screen,
+            targets=self._targets,
+            now=clock.now,
+            camera_sink=self._camera_image_arrived,
         )
         self._pylink.openGraphicsEx(graphics)
         if not self._cfg.calibration_target.is_default:
@@ -309,6 +328,39 @@ class EyeLinkTracker:
     def set_progress_hook(self, hook: ProgressHook | None) -> None:
         """Where calibrate() reports its stages; None to stop reporting."""
         self._progress = hook
+
+    # ------------------------------------------------------------------
+    # The camera image (optional capability, protocol.py)
+    # ------------------------------------------------------------------
+
+    def camera_frame(self) -> CameraFrame:
+        """The newest camera image the Host PC sent on its setup screen.
+
+        The EyeLink sends its eye image over the link only while the
+        experimenter has it open on the camera setup screen (ENTER), during a
+        calibration. That image is never drawn on the subject's screen; it
+        reaches the experimenter here, on the live monitor's camera view
+        (session/eyetracker.py streams it during the procedure, and the
+        Trial view keeps the last one with its age). Between camera setups
+        this is the last image received, stamped when it arrived, so its age
+        says how old it is. Before the first one: NoCameraImageYet (a
+        TrackerError that is not a fault), with what to do to see one.
+        """
+        if self._camera is None:
+            raise NoCameraImageYet(self.NO_CAMERA_IMAGE_YET)
+        return self._camera
+
+    def _camera_image_arrived(self, pixels: np.ndarray, caption: str | None) -> None:
+        """A finished camera image from the calibration graphics (8-bit grey,
+        the Host PC's overlays drawn white) and the Host PC's caption for it
+        ("Left eye ..."). Kept as the newest frame, and the
+        session's progress hook told: the hook is how a blocking procedure
+        hands the session a moment to stream the frame to the live monitor
+        (session/eyetracker.py ``_on_progress`` -> ``stream_camera``), which
+        throttles both the stream and the status line itself."""
+        self._camera = CameraFrame(pixels=pixels, t=self._clock.now())
+        where = "shown on the live monitor"
+        self._report("camera image", f"{caption} · {where}" if caption else where)
 
     def _report(self, stage: str, detail: str) -> None:
         if self._progress is not None:

@@ -47,9 +47,9 @@ DONE_TONE_HZ = 1200.0
 ERROR_TONE_HZ = 400.0
 BEEP_SECONDS = 0.1
 
-# How much the camera image is magnified on screen. The Host PC sends a small
-# image (typically 384x320); shown 1:1 it is too small to judge a pupil by.
-CAMERA_IMAGE_SCALE = 2
+# Luminance weights (ITU-R BT.601) for turning the Host PC's palette image into
+# the 8-bit grey frame the live monitor's camera channel carries.
+_LUMA = np.array([0.299, 0.587, 0.114])
 
 # Overlay colours for the camera image, by pylink colour index (RGB, 0-255).
 # The Host PC uses these to mark what it has found in the eye image.
@@ -181,6 +181,23 @@ class CameraImageBuilder:
         return image
 
 
+def grey_camera_image(image: np.ndarray, marked: np.ndarray) -> np.ndarray:
+    """The Host PC's camera image as the 8-bit grey frame the live monitor draws.
+
+    ``image`` is the palette image as assembled, ``marked`` the same image
+    with the Host PC's overlays (crosshairs, pupil box, search limits) drawn
+    into it. The live monitor's camera channel carries one grey byte per pixel
+    (live_monitor/runtime.py ``publish_camera``), so the overlays' colours
+    cannot travel; every overlay pixel is drawn white instead, the brightest
+    grey, so a green pupil box or a red search limit stays visible over the
+    eye rather than turning into a mid grey lost in it.
+    """
+    grey = np.rint(image[..., :3].astype(float) @ _LUMA).astype(np.uint8)
+    overlay = np.any(marked != image, axis=-1)
+    grey[overlay] = 255
+    return grey
+
+
 def draw_line_into(
     image: np.ndarray, x1: float, y1: float, x2: float, y2: float, color: tuple[int, int, int]
 ) -> None:
@@ -251,6 +268,7 @@ def make_calibration_graphics(
     screen: Screen,
     targets: CalibrationTargets | None = None,
     now: Callable[[], float] = time.monotonic,
+    camera_sink: Callable[[np.ndarray, str | None], None] | None = None,
 ) -> Any:
     """Build the object pylink calibrates through, for this window.
 
@@ -266,6 +284,15 @@ def make_calibration_graphics(
     ``get_input_key`` continuously, and a pulsating target is redrawn there,
     as SR Research's own animated-target example does. A still target is
     drawn once per ``draw_cal_target``, exactly as before the choice existed.
+
+    The camera image the experimenter asks for on the setup screen (ENTER) is
+    never drawn in this window, which is the subject's: nothing but targets
+    goes on the subject's screen during a calibration, the camera image
+    included (user decision, 2026-10-15). Each finished frame, with the Host
+    PC's overlays drawn into it, goes to ``camera_sink`` as 8-bit grey
+    (``grey_camera_image``) with the Host PC's caption for it (None until one
+    came) — the EyeLink backend hands it to the live
+    monitor's camera view — and the subject's screen stays empty meanwhile.
     """
     import pylink
     from psychopy import event, visual
@@ -284,15 +311,16 @@ def make_calibration_graphics(
             # pulsating), every stimulus made now, before any target is up.
             self._target = drawn.presenter(visual, window, screen, now)
             # The Host PC's caption for its camera image ("Left eye, ...")
-            # is not drawn: nothing but targets — and the camera image the
-            # experimenter asks for on the setup screen — goes on the
-            # subject's screen (user decision, 2026-10-15). It is logged
-            # when it changes; the Host PC shows it on its own screen.
+            # is not drawn, and neither is the image: nothing but targets
+            # goes on the subject's screen (user decision, 2026-10-15). The
+            # caption is logged when it changes (the Host PC shows it on its
+            # own screen); the image goes to camera_sink.
             self._title: str | None = None
-            self._camera_image: Any = None
             self._builder = CameraImageBuilder()
             self._frame: np.ndarray | None = None
             self._image_size = (0, 0)
+            # Made to keep the cursor hidden over the subject's screen while
+            # the Host PC drives the procedure; it is never read.
             self._mouse = event.Mouse(win=window, visible=False)
             self._beeps: dict[float, Any] = {}
             self._audio_failed = False
@@ -337,7 +365,11 @@ def make_calibration_graphics(
         # -- camera image ---------------------------------------------------
 
         def setup_image_display(self, width: int, height: int) -> int:
-            self._target.hide()  # the camera image replaces any target
+            # The camera image replaces any target, and the subject's screen
+            # is left empty while the experimenter looks at the image on the
+            # live monitor.
+            self._target.hide()
+            self._window.flip()
             self._image_size = (width, height)
             return 1
 
@@ -355,34 +387,17 @@ def make_calibration_graphics(
                 return
             # The base class's draw_cross_hair() calls back into draw_line()
             # and draw_lozenge() below, which paint into this frame — so it has
-            # to run while the frame is the current one, before presenting.
+            # to run while the frame is the current one, before it is sent.
+            plain = frame.copy()
             self._frame = frame
             self.draw_cross_hair()
-            self._present_frame(frame)
             self._frame = None
-
-        def _present_frame(self, frame: np.ndarray) -> None:
-            from PIL import Image
-
-            height, width = frame.shape[:2]
-            # Nearest-neighbour, not a smooth resample: this is a camera
-            # image the operator judges a pupil edge from, and interpolating
-            # would invent detail that is not in the data. Resampling.NEAREST
-            # rather than the old Image.NEAREST alias, which modern Pillow
-            # has moved.
-            image = Image.fromarray(frame).resize(
-                (width * CAMERA_IMAGE_SCALE, height * CAMERA_IMAGE_SCALE),
-                Image.Resampling.NEAREST,
-            )
-            if self._camera_image is None:
-                self._camera_image = visual.ImageStim(self._window, image=image, units="pix")
-            else:
-                self._camera_image.image = image
-            self._camera_image.draw()
-            self._window.flip()
+            # Never drawn on the subject's screen: handed to the operator's
+            # view (the live monitor), or, with no sink, to nobody.
+            if camera_sink is not None:
+                camera_sink(grey_camera_image(plain, frame), self._title)
 
         def exit_image_display(self) -> None:
-            self._camera_image = None
             self._window.flip()
 
         def draw_line(self, x1: float, y1: float, x2: float, y2: float, colorindex: int) -> None:
@@ -413,17 +428,14 @@ def make_calibration_graphics(
             return keys or None
 
         def get_mouse_state(self) -> tuple[tuple[float, float], int]:
-            # Reported in camera-image px, which is the frame the Host PC uses
-            # to move its search limits.
-            x, y = self._mouse.getPos()
+            # Reported in camera-image px, the frame the Host PC moves its
+            # search limits in. The image is not in this window (it is on the
+            # live monitor), so the subject window's mouse points at nothing
+            # in it: the image's centre, never pressed, so a hand resting on
+            # this machine's mouse cannot drag the Host PC's search limits.
+            # The Host PC's own mouse and keys still can.
             width, height = self._image_size
-            image_x = x / CAMERA_IMAGE_SCALE + width / 2.0
-            image_y = height / 2.0 - y / CAMERA_IMAGE_SCALE
-            pressed = int(any(self._mouse.getPressed()))
-            return (
-                (float(np.clip(image_x, 0, width)), float(np.clip(image_y, 0, height))),
-                pressed,
-            )
+            return ((width / 2.0, height / 2.0), 0)
 
         # -- sound ------------------------------------------------------------
 

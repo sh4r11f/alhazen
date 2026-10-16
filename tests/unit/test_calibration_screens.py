@@ -68,8 +68,9 @@ from alhazen.testing import FakeClock, FakeDisplay
 FAST = ProcedureTiming(settle_s=0.1, sample_s=0.1, stable_deg=1.0, timeout_s=1.0)
 
 # What may ever be made or drawn on the subject's screen during these
-# procedures: the standard target's two circles, a picture, and (EyeLink,
-# asked for by the experimenter on the setup screen) the camera image.
+# procedures: the standard target's two circles, or a picture. Not the
+# EyeLink's camera image either, which goes to the live monitor (user
+# decision, 2026-10-15, round 5; test_eyelink_camera_image.py).
 TARGET_KINDS = {"circle", "image"}
 
 
@@ -211,12 +212,12 @@ class TestNothingButTargetsOnTheSubjectsScreen:
         no_text(walk_sdk.recorder)
         assert display.menus == [] and display.messages == []
 
-    def test_every_eyelink_callback_draws_only_a_target_or_the_camera_image(
-        self, monkeypatch, caplog
-    ):
+    def test_every_eyelink_callback_draws_only_a_target(self, monkeypatch, caplog):
         """The Host PC drives the procedure through these callbacks — targets
         for calibration, validation and its own drift check, the camera
-        image on the setup screen, its caption. None of it is text."""
+        image on the setup screen, its caption. None of it is text, and the
+        camera image is not drawn either: it goes to the camera sink (the
+        live monitor), with its caption."""
         recorder = Recorder()
 
         class CustomDisplay:  # the part of pylink's base class the adapter calls
@@ -241,12 +242,18 @@ class TestNothingButTargetsOnTheSubjectsScreen:
         ):
             monkeypatch.setitem(sys.modules, name, module)
         clock = FakeClock()
+        sent: list[tuple[tuple[int, ...], str | None]] = []
         for config in (CalibrationTargetConfig(), CalibrationTargetConfig(motion="pulse")):
             targets = CalibrationTargets(config)
             targets.prepare(SCREEN, 0.6)
             window = FakeWindow(clock)
             graphics = make_calibration_graphics(
-                None, window, SCREEN, targets=targets, now=clock.now
+                None,
+                window,
+                SCREEN,
+                targets=targets,
+                now=clock.now,
+                camera_sink=lambda pixels, caption: sent.append((pixels.shape, caption)),
             )
             with caplog.at_level(logging.INFO):
                 graphics.setup_cal_display()
@@ -264,7 +271,8 @@ class TestNothingButTargetsOnTheSubjectsScreen:
                 graphics.clear_cal_display()
                 graphics.exit_cal_display()
         no_text(recorder)
-        assert {draw[0] for draw in recorder.draws} == TARGET_KINDS
+        assert {draw[0] for draw in recorder.draws} == {"circle"}
+        assert sent == [((2, 4), "Left eye  thresholds 70 210")] * 2
         captions = [
             r.getMessage() for r in caplog.records if "EyeLink camera image" in r.getMessage()
         ]

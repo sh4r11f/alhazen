@@ -42,6 +42,13 @@ class TrackerError(AlhazenError):
     experimenter should do (check a cable, fix an IP, switch backends)."""
 
 
+class NoCameraImageYet(TrackerError):
+    """A tracker's ``camera_frame()`` has no image to give yet, which is not a
+    fault: the EyeLink sends its camera image only on its setup screen, so
+    until the experimenter has opened it there is nothing to show. The live
+    monitor's camera panel says the message; the session log does not warn."""
+
+
 class RewardError(AlhazenError):
     """Reward hardware could not be initialized or a delivery failed. Loud by
     design: a session that silently stops rewarding starves the subject and
