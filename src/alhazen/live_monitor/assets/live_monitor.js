@@ -2920,11 +2920,13 @@ function render() {
   byId('counts').textContent = (state.n_trials || 0).toLocaleString() + ' trials · ' +
     (state.n_events || 0).toLocaleString() + ' events';
 
-  /* The session's line for what it is doing: the pause's notice, or, while
-   * an eye-tracker procedure runs ("calibrating"), its progress — which
-   * target it is on, whether it is waiting for SPACE. The buttons follow the
-   * session's own list of what it accepts (renderControls, below). */
-  byId('notice').textContent = state.message || '';
+  /* The session's line for what it is doing: the pause's notice. While an
+   * eye-tracker procedure has the guide panel up (renderProcedure) the panel
+   * says it, large, and the line under the buttons stays empty rather than
+   * repeat it small. The buttons follow the session's own list of what it
+   * accepts (renderControls, below). */
+  const guided = renderProcedure(state.procedure);
+  byId('notice').textContent = guided ? '' : state.message || '';
 
   /* Which table views the reader had open, so a new trial does not close
    * one they were reading. */
@@ -2994,6 +2996,84 @@ new ResizeObserver(() => {
   cancelAnimationFrame(resizeHandle);
   resizeHandle = requestAnimationFrame(() => panels.forEach(paintPanel));
 }).observe(document.body);
+
+/* ------------------------------------------------------------------ */
+/* Procedure guide                                                     */
+/* ------------------------------------------------------------------ */
+
+/* The eye-tracker procedure the operator is in, from the session's
+ * state.procedure (session/procedure_guide.py): its heading, the one thing
+ * to do now in large type, the tracker's eye line, which target of how many
+ * is up, and, after a failure or a stop, what went wrong and what to check.
+ * The session decides when it shows: from the procedure's start to its end,
+ * and after a failure until the session resumes or the next procedure
+ * starts. Nothing here reads the status line. */
+
+/** The rig keys an instruction names, drawn as keys. Whole words only, so a
+ *  capitalised word that is not a key ("NO calibration") stays text. */
+const PROCEDURE_KEYS = /\b(SPACE|ESC|ENTER|BACKSPACE|[CVDPRQ])\b/;
+
+/** `text` into `element`, each key it names as a <kbd> (keyLabel's case)
+ *  and the words between as spans. */
+function fillWithKeys(element, text) {
+  element.replaceChildren();
+  String(text || '').split(PROCEDURE_KEYS).forEach((part, index) => {
+    if (part) htmlEl(index % 2 ? 'kbd' : 'span', null, index % 2 ? keyLabel(part) : part, element);
+  });
+}
+
+/** The panel's heading: the procedure's own name, said to have failed or
+ *  been stopped once it has. */
+function procedureHeading(procedure) {
+  const heading = procedure.heading || 'Eye tracker';
+  if (procedure.outcome === 'failed') return heading + ' failed';
+  if (procedure.outcome === 'aborted') return heading + ' stopped';
+  return heading;
+}
+
+/** Draw state.procedure into the guide panel, or hide it. True when shown.
+ *  The saved copy in figures/ never shows it: it has no procedure running. */
+function renderProcedure(procedure) {
+  const panel = byId('procedure');
+  const shown = STATIC_STATE === null && !!procedure;
+  setShown(panel, shown);
+  if (!shown) return false;
+  panel.dataset.outcome = procedure.outcome || 'running';
+  panel.dataset.kind = procedure.kind || '';
+  byId('procedure-heading').textContent = procedureHeading(procedure);
+  const step = Number(procedure.step);
+  const n = Number(procedure.n);
+  const walking = Number.isInteger(step) && Number.isInteger(n) && n > 0 && step > 0;
+  byId('procedure-step').textContent = walking ? 'Target ' + step + ' of ' + n : '';
+  /* One mark per target: those already taken, the one up now, the rest.
+   * Drawn only for a walk of targets, and only up to a size a row can hold. */
+  const track = byId('procedure-track');
+  track.replaceChildren();
+  if (walking && n <= 40) {
+    for (let index = 1; index <= n; index += 1) {
+      const mark = htmlEl('li', null, null, track);
+      mark.dataset.state = index < step ? 'done' : index === step ? 'current' : 'todo';
+    }
+  }
+  setShown(track, track.children.length > 0);
+  const instruction = byId('procedure-instruction');
+  fillWithKeys(instruction, procedure.instruction);
+  setShown(instruction, !!procedure.instruction);
+  const status = byId('procedure-status');
+  status.textContent = procedure.status_line || '';
+  status.dataset.alert = String(!!procedure.status_alert);
+  setShown(status, !!procedure.status_line);
+  const failure = byId('procedure-failure');
+  setShown(failure, !!procedure.failure);
+  byId('procedure-failure-text').textContent = procedure.failure || '';
+  fillWithKeys(byId('procedure-check'), procedure.check);
+  setShown(byId('procedure-check'), !!procedure.check);
+  return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* end Procedure guide                                                 */
+/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /* Trial view                                                          */

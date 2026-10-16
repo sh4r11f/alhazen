@@ -39,6 +39,25 @@
   </nav>
 
   <main>
+    <!-- Procedure guide: the eye-tracker procedure the operator is in
+         (calibration, validation, drift correction), drawn from the
+         session's state.procedure by live_monitor.js ("Procedure guide").
+         The subject's screen shows nothing but targets meanwhile, so this is
+         where the operator reads what to do; first in the page, so a
+         one-screen rig sees it without scrolling. -->
+    <section id="procedure" class="procedure" aria-live="polite" hidden>
+      <div class="procedure-head">
+        <h2 id="procedure-heading"></h2>
+        <span id="procedure-step" class="procedure-step"></span>
+      </div>
+      <ol id="procedure-track" class="procedure-track" aria-hidden="true"></ol>
+      <p id="procedure-instruction" class="procedure-instruction"></p>
+      <p id="procedure-status" class="procedure-status"></p>
+      <div id="procedure-failure" class="procedure-failure" hidden>
+        <p id="procedure-failure-text" class="procedure-failure-text"></p>
+        <p id="procedure-check" class="procedure-check"></p>
+      </div>
+    </section>
     <!-- Trial view: the running trial's screen in degrees, with the eye's
          position over it (live_monitor.js, "Trial view"). The live page only;
          the copy saved in figures/ has no trial running. -->
