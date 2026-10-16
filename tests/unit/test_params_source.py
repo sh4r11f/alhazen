@@ -14,13 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import pytest
-from test_workspace import request_for, workspace
-
 from test_task_hooks import SilentTask, install, params_file, rig_file
+from test_workspace import request_for, workspace
 
 import alhazen.task
 from alhazen.cli.capabilities import CAPABILITIES
@@ -45,8 +43,10 @@ class TestTheHelper:
 
     def test_the_chosen_file_wins_over_the_copy_the_session_loads(self):
         args = parsed(
-            "--params", "/state/runs/abc/params.yaml",
-            "--params-source", 'configs/task-dark.yaml (Task parameters "Dark")',
+            "--params",
+            "/state/runs/abc/params.yaml",
+            "--params-source",
+            'configs/task-dark.yaml (Task parameters "Dark")',
         )
         assert args.params == "/state/runs/abc/params.yaml"
         assert params_source(args) == 'configs/task-dark.yaml (Task parameters "Dark")'
@@ -100,7 +100,11 @@ class TestTheWorkspaceSendsIt:
 
     def launch(self, workspace, **overrides):
         request = request_for(
-            workspace, mode="test", subject="s01", initials="HD", parameter_set="task",
+            workspace,
+            mode="test",
+            subject="s01",
+            initials="HD",
+            parameter_set="task",
             **overrides,
         )
         return workspace._command(request, workspace.directory / "job")
@@ -122,7 +126,9 @@ class TestTheWorkspaceSendsIt:
     def test_values_changed_on_the_run_page_say_so(self, workspace, monkeypatch):
         with_capability(workspace, monkeypatch)
         command = self.launch(workspace, parameters={**self.FILE, "speed": 2})
-        assert flag(command) == 'configs/task.yaml as edited on the Run page (Task parameters "task")'
+        assert flag(command) == (
+            'configs/task.yaml as edited on the Run page (Task parameters "task")'
+        )
 
     def test_an_unreadable_file_names_what_was_chosen_without_a_verdict(
         self, workspace, monkeypatch
@@ -141,11 +147,15 @@ class TestTheWorkspaceSendsIt:
             lambda key: {"parameter_sets": [{"label": "Defaults", "task": None, "params": None}]},
         )
         request = request_for(
-            workspace, mode="test", subject="s01", initials="HD",
-            parameter_set="Defaults", parameters={"speed": 2},
+            workspace,
+            mode="test",
+            subject="s01",
+            initials="HD",
+            parameter_set="Defaults",
+            parameters={"speed": 2},
         )
         assert workspace._params_source(workspace.project(request.project), request) == (
-            "the Run page's values (Task parameters \"Defaults\")"
+            'the Run page\'s values (Task parameters "Defaults")'
         )
 
     @pytest.mark.parametrize(
@@ -167,7 +177,10 @@ class TestTheWorkspaceSendsIt:
         project = workspace.project(workspace.projects[0]["id"])
         monkeypatch.setitem(project, "capabilities", capabilities)
         request = request_for(
-            workspace, mode="test", subject="s01", initials="HD",
+            workspace,
+            mode="test",
+            subject="s01",
+            initials="HD",
             **{"parameter_set": "task", **overrides},
         )
         command = workspace._command(request, workspace.directory / "job")
@@ -177,7 +190,10 @@ class TestTheWorkspaceSendsIt:
         """The fixture's run.py prints its argv: the child is told both."""
         with_capability(workspace, monkeypatch)
         request = request_for(
-            workspace, mode="simulate", subject="s01", parameter_set="task",
+            workspace,
+            mode="simulate",
+            subject="s01",
+            parameter_set="task",
             parameters=dict(self.FILE),
         )
         run = workspace.start(request)
@@ -185,7 +201,8 @@ class TestTheWorkspaceSendsIt:
         argv = json.loads(
             (Path(run["directory"]) / "console.log").read_text(encoding="utf-8").splitlines()[0]
         )
-        assert argv[argv.index("--params-source") + 1] == 'configs/task.yaml (Task parameters "task")'
+        chosen = argv[argv.index("--params-source") + 1]
+        assert chosen == 'configs/task.yaml (Task parameters "task")'
         assert argv[argv.index("--params") + 1] == str(Path(run["directory"]) / "params.yaml")
 
 
@@ -219,8 +236,11 @@ class TestATaskNamesTheChosenFile:
 
     def test_launched_by_the_workspace(self, tmp_path, monkeypatch, capsys):
         err = self.refusal(
-            tmp_path, monkeypatch, capsys,
-            "--params-source", 'configs/task-dark.yaml (Task parameters "Dark")',
+            tmp_path,
+            monkeypatch,
+            capsys,
+            "--params-source",
+            'configs/task-dark.yaml (Task parameters "Dark")',
         )
         assert 'INVALID: configs/task-dark.yaml (Task parameters "Dark") cannot run here' in err
         assert "params.yaml" not in err

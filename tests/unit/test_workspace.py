@@ -736,8 +736,12 @@ class TestCommandContract:
         # (tests/unit/test_params_source.py).
         monkeypatch.setitem(project, "capabilities", ["params-source"])
         request = request_for(
-            workspace, mode="test", subject="s01", initials="HD",
-            parameters={"speed": 2}, parameter_set="task",
+            workspace,
+            mode="test",
+            subject="s01",
+            initials="HD",
+            parameters={"speed": 2},
+            parameter_set="task",
         )
         command = workspace._command(request, workspace.directory / "job")
         emitted.update(token for token in command if token.startswith("--"))

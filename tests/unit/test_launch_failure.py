@@ -74,13 +74,13 @@ class TestTheRule:
         log = (
             "Traceback (most recent call last):\n  File \"a\", line 1\nKeyError: 'x'\n\n"
             "During handling of the above exception, another exception occurred:\n\n"
-            "Traceback (most recent call last):\n  File \"b\", line 2\n"
+            'Traceback (most recent call last):\n  File "b", line 2\n'
             "RuntimeError: the rig file names no monitor\n"
         )
         assert failure(log)["reason"] == "RuntimeError: the rig file names no monitor"
 
     def test_an_exception_without_a_message_is_its_type(self):
-        log = "Traceback (most recent call last):\n  File \"a\", line 1\nKeyboardInterrupt\n"
+        log = 'Traceback (most recent call last):\n  File "a", line 1\nKeyboardInterrupt\n'
         assert failure(log)["reason"] == "KeyboardInterrupt"
 
     def test_the_diagnostic_printed_last_wins(self):
@@ -89,12 +89,12 @@ class TestTheRule:
         traceback is the verdict."""
         refused_then_crashed = (
             "INVALID: session number must be a whole number\n"
-            "Traceback (most recent call last):\n  File \"a\", line 1\n"
+            'Traceback (most recent call last):\n  File "a", line 1\n'
             "OSError: the display is gone\n"
         )
         assert failure(refused_then_crashed)["kind"] == "error"
         crashed_then_refused = (
-            "Traceback (most recent call last):\n  File \"a\", line 1\nOSError: x\n" + DARK
+            'Traceback (most recent call last):\n  File "a", line 1\nOSError: x\n' + DARK
         )
         assert failure(crashed_then_refused)["kind"] == "refused"
 
