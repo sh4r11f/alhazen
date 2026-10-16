@@ -42,6 +42,20 @@ class TestTheRule:
         assert found["kind"] == "refused"
         assert found["reason"] == "run mode needs a rig that collects"
 
+    def test_a_usage_error_is_its_message_without_the_usage_lines(self):
+        """argparse prints the usage, wrapped over several lines, then
+        ``<prog>: error: <message>``; the message is what to fix."""
+        log = (
+            "usage: run.py (amodal-averaging) [-h] [--mode {run,test,simulate}]\n"
+            "                                 [--task {amodal-averaging}]\n"
+            "run.py (amodal-averaging): error: unrecognized arguments: --bogus-flag\n"
+        )
+        assert failure(log) == {
+            "kind": "refused",
+            "heading": "Run refused",
+            "reason": "unrecognized arguments: --bogus-flag",
+        }
+
     def test_a_refusal_keeps_the_lines_that_continue_it(self):
         log = (
             "INVALID: configs/task.yaml: 2 validation errors for Params\n"

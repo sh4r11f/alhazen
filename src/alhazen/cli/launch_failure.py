@@ -12,9 +12,12 @@ an earlier one may have been answered (a bad prompt answer is asked again):
 
 1. **A refusal**: a line that starts with alhazen's own refusal prefix,
    ``INVALID:`` or ``CANNOT <WORDS>:`` (``CANNOT RUN:``, ``CANNOT DEMO:``,
-   ...; ``REFUSAL``). The reason is the text after the prefix plus the lines
-   that continue it (``_continuation``), so a validation error that lists its
-   fields is kept whole.
+   ...; ``REFUSAL``), or the command line's usage error, ``<prog>: error:
+   <message>`` (argparse: an unknown or malformed flag; ``USAGE``). The
+   reason is the text after the prefix plus the lines that continue it
+   (``_continuation``), so a validation error that lists its fields is kept
+   whole; a usage error is its message alone (the usage lines before it are
+   the Console's).
 2. **An uncaught exception**: the last ``Traceback (most recent call last):``
    block's exception line, ``Type: message`` with the type's module path
    dropped (``alhazen.errors.ConfigError`` reads ``ConfigError``), and the
@@ -35,6 +38,8 @@ from typing import Any
 
 # alhazen's refusal lines (cli/main.py and every mode prints these).
 REFUSAL = re.compile(r"^(INVALID|CANNOT(?: [A-Z]+)+):[ \t]*(.*)$")
+# argparse's usage error, its last line: "run.py (my-task): error: <message>".
+USAGE = re.compile(r"^[^\s:][^:]*: error: (.+)$")
 TRACEBACK = "Traceback (most recent call last):"
 # An exception line closing a traceback: a (dotted) name, then ':' or the end.
 EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*)(:[ \t]?(.*))?$")
@@ -76,11 +81,14 @@ def _capped(lines: list[str]) -> str:
 
 
 def _refusal(lines: list[str]) -> tuple[int, str] | None:
-    """The last refusal line's index and reason, or None."""
+    """The last refusal or usage-error line's index and reason, or None."""
     for index in range(len(lines) - 1, -1, -1):
         match = REFUSAL.match(lines[index])
         if match:
             return index, _capped([match.group(2), *_continuation(lines, index + 1)])
+        usage = USAGE.match(lines[index])
+        if usage:
+            return index, _capped([usage.group(1)])
     return None
 
 
@@ -119,7 +127,7 @@ def launch_failure(log: str, run: dict[str, Any]) -> dict[str, str] | None:
     found = [hit for hit in (_refusal(lines), _exception(lines)) if hit is not None]
     if found:
         index, reason = max(found, key=lambda hit: hit[0])
-        kind = "refused" if REFUSAL.match(lines[index]) else "error"
+        kind = "error" if lines[index].startswith(TRACEBACK) else "refused"
         return _failure(kind, reason)
     tail = [line for line in lines if line.strip()][-TAIL_LINES:]
     if tail:

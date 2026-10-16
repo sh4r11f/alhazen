@@ -405,6 +405,7 @@ the light theme; the dark theme is unchanged.
    | The console has | Shown as |
    |---|---|
    | a refusal, `INVALID: …` or `CANNOT <WORDS>: …` | **Run refused**, the text after the prefix and the lines that continue it, up to a blank line |
+   | a usage error, `<prog>: error: …` (an unknown or malformed flag) | **Run refused**, the message after `error:` |
    | an uncaught exception | **Run stopped with an error**, the last traceback's exception line (`ConfigError: …`, the module path dropped) and its continuation; the frames stay in the Console |
    | neither | **Run failed**, its last three non-empty lines, or the exit code when it printed nothing |
 

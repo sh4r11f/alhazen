@@ -2799,8 +2799,10 @@ describe('why the last launch failed, beside Start', () => {
     assert.equal(box.dataset.kind, 'refused');
     assert.equal(app.byId('launch-failure-heading').textContent, 'Run refused');
     assert.equal(app.byId('launch-failure-reason').textContent, REFUSED.reason);
-    /* The output card stays as it was: its empty state still says the run failed. */
-    assert.match(app.byId('gallery-empty').textContent, /Run failed/);
+    /* The output card's empty state says it in the same words, and points
+     * at the Console as before. */
+    assert.match(app.byId('gallery-empty').textContent, /Run refused/);
+    assert.match(app.byId('gallery-empty').textContent, /console has the error/);
     assert.equal(app.byId('console-panel').hidden, true);
 
     app.byId('launch-failure-console').fire('click');

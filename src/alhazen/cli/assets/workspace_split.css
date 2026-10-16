@@ -577,8 +577,11 @@ main { padding: 0 32px; max-width: none; }
 /* ---- Why the last launch failed (2026-10-15) ----
  * Beside Start (renderFailure in workspace.js): the refusal or error the
  * run printed, in reading type, wrapped, with the Console a button away.
- * Held to a few lines' height in the sticky launch bar; a long reason
- * scrolls inside it. Tokens only, so light and dark follow the theme. */
+ * In the sticky launch bar of a wide window it is held to eight whole
+ * lines, and a longer reason scrolls inside it; on a narrow screen the bar
+ * stops being sticky while it shows, so the reason is shown whole at the
+ * end of the form instead of covering it. Tokens only, so light and dark
+ * follow the theme. */
 .launch-failure {
   margin: 4px 0 12px;
   padding: 12px 14px;
@@ -595,7 +598,7 @@ main { padding: 0 32px; max-width: none; }
 }
 .launch-failure p {
   margin: 0 0 10px;
-  max-height: 11.5em;
+  max-height: calc(8 * 1.5em);
   overflow-y: auto;
   font-size: 14px;
   line-height: 1.5;
@@ -609,5 +612,6 @@ main { padding: 0 32px; max-width: none; }
   font-weight: 650;
 }
 @media (max-width: 860px) {
-  .launch-failure p { max-height: 16em; }
+  .launch-footer:has(> .launch-failure:not([hidden])) { position: relative; }
+  .launch-failure p { max-height: none; overflow-y: visible; }
 }

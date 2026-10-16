@@ -2741,7 +2741,8 @@ async function refreshRun() {
     heading = 'Your experiment is working';
     detail = 'Images appear as they are written; movies when recording finishes.';
   } else if (run.status === 'failed') {
-    heading = 'Run failed';
+    // In the words beside Start ("Run refused", ...) when the server read why.
+    heading = run.failure?.heading || 'Run failed';
     detail = 'The console has the error and the command.';
   } else {
     heading = 'No media in this run';

@@ -38,7 +38,7 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   project whose alhazen reports the new `params-source` capability. The
   line printed before trial one adds `(chosen as …)` for such a copy.
 - The Run page shows why the experiment's last launch failed, above
-  **Start run**: a refusal (`INVALID:` / `CANNOT …:`) as **Run refused**,
+  **Start run**: a refusal (`INVALID:` / `CANNOT …:`, or a usage error) as **Run refused**,
   an uncaught exception's last line as **Run stopped with an error**,
   otherwise the console's last lines, with **Open the console** for the
   rest. Read from the console by `alhazen.cli.launch_failure` and sent as
