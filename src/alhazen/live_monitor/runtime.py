@@ -1106,6 +1106,7 @@ def live_monitor_state(
     on_invalid_panel: Callable[[str, str], None] | None = None,
     controls: Mapping[str, Any] | None = None,
     commands: Sequence[Mapping[str, Any]] = (),
+    procedure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct the stable wire shape consumed by the bundled frontend.
 
@@ -1155,6 +1156,12 @@ def live_monitor_state(
     session/operator_commands.py); ``commands`` its newest acknowledgements
     of the page's commands, oldest first. A state without ``controls``
     (built by a test or a tool) leaves the page's buttons off.
+
+    ``procedure`` is the guide to the eye-tracker procedure the operator is
+    in (session/procedure_guide.py: heading, instruction, eye line, step,
+    outcome, failure, check), published as ``state["procedure"]``; None —
+    the default, and the saved copy's — when there is none, and the page
+    then shows no guide panel.
     """
     for panel in extra_panels:
         missing = [key for key in ("title", "data") if key not in panel]
@@ -1198,6 +1205,8 @@ def live_monitor_state(
         # [workstream B] operator commands
         **({"controls": dict(controls)} if controls is not None else {}),
         "commands": [dict(record) for record in commands],
+        # The eye-tracker procedure guide (session/procedure_guide.py), or None.
+        "procedure": dict(procedure) if procedure is not None else None,
         "updated_at": time.time(),
     }
 

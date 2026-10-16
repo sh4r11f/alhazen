@@ -17,8 +17,11 @@ devices layer (which does the measuring)::
          │   │   │      drift_correct() ▶ procedures.drift_correct()
          │   │   └── correction (GazeCorrection) ──▶ the input provider
          │   └────── emit(CALIBRATION / VALIDATION / DRIFT_CORRECTION) ──▶ event bus
-         └────────── panels() ──▶ the "Eye tracker" live monitor section
-                       (camera image, calibration, validation, drift)
+         ├────────── panels() ──▶ the "Eye tracker" live monitor section
+         │             (camera image, calibration, validation, drift)
+         └────────── procedure ──▶ state["procedure"]: the live monitor's
+                       guide panel while a procedure runs, and after one
+                       that failed (session/procedure_guide.py)
 
 Every result is a plain record from the devices layer; this module never
 measures anything itself. The three capabilities a tracker may have beyond
@@ -32,7 +35,8 @@ from __future__ import annotations
 
 import base64
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
@@ -52,6 +56,16 @@ from alhazen.devices.eyetracker.protocol import CalibrationResult, CameraFrame, 
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.screen import Screen
 from alhazen.errors import TrackerError
+from alhazen.session.procedure_guide import (
+    Kind,
+    ProcedureGuide,
+    ended_calibration,
+    ended_drift,
+    ended_validation,
+    failed_with_error,
+    progressed,
+    started,
+)
 
 log = logging.getLogger(__name__)
 
@@ -219,6 +233,19 @@ class EyeTrackerMonitor:
         # menu, the live monitor): the builder records it in the rig's
         # calibration ledger (session/startup_calibration.py).
         self.on_calibrated: Callable[[CalibrationResult], None] | None = None
+        # The live monitor's guide to the procedure running now, or to the
+        # last one if it failed or was stopped and nobody has resumed since
+        # (``procedure``, ``dismiss_procedure``); None otherwise.
+        self._guide: ProcedureGuide | None = None
+        # How the running walk advances ("manual"/"auto"), for the guide's
+        # instruction while a target is up.
+        self._guide_advance: str = cfg.calibration_advance
+        # How many procedures are running: a calibration runs its validation
+        # inside itself, and only the outermost one's end is published.
+        self._depth = 0
+        # The one-line verdicts of the procedures the outermost one ran, for
+        # the publish at its end.
+        self._verdicts: list[str] = []
 
     # ------------------------------------------------------------------
     # Procedures
@@ -232,7 +259,10 @@ class EyeTrackerMonitor:
         cleared here — a "passed" from an hour ago must not sit on the
         live monitor next to a model it never measured.
         """
-        self._stage("calibrating", "starting")
+        with self._procedure("calibration", "calibrating", self._cfg.calibration_advance):
+            return self._calibrate()
+
+    def _calibrate(self) -> CalibrationResult:
         # The viewpixx and EyeLink backends report their stages; a tracker
         # without the hook simply reports nothing between start and result.
         set_hook = getattr(self._tracker, "set_progress_hook", None)
@@ -245,6 +275,7 @@ class EyeTrackerMonitor:
                 set_hook(None)
         result = reported if reported is not None else self._no_result()
         self.calibration = result
+        self._end_guide(ended_calibration, result, result.summary())
         log.log(logging.INFO if result.ok else logging.WARNING, result.summary())
         if result.ok:
             self.correction.reset(result.t)
@@ -326,7 +357,11 @@ class EyeTrackerMonitor:
         The validation a block break runs by itself passes "auto" when nobody
         may be at the keyboard to accept a target (session/pause_control.py).
         """
-        self._stage("validating", "starting")
+        walk = advance if advance is not None else self._advance()
+        with self._procedure("validation", "validating", walk or self._cfg.calibration_advance):
+            return self._validate(walk)
+
+    def _validate(self, advance: Advance | None) -> ValidationResult:
         result = validate(
             self._tracker,
             self._display,
@@ -335,11 +370,12 @@ class EyeTrackerMonitor:
             self._cfg,
             poll_keys=self._poll_keys,
             correction=self.correction,
-            advance=advance if advance is not None else self._advance(),
+            advance=advance,
             calibration_targets=self.calibration_targets,
             progress=self._on_progress,
         )
         self.validation = result
+        self._end_guide(ended_validation, result, result.summary())
         # The procedure logged its verdict; the per-target errors follow it
         # here, in the log as well as the event payload. For an experiment
         # whose design names a validation limit, the log is where "which
@@ -359,7 +395,13 @@ class EyeTrackerMonitor:
 
     def drift_correct(self) -> DriftResult:
         """Measure the offset on a centre target and apply it if it is a drift."""
-        self._stage("drift correcting", "starting")
+        walk = self._advance()
+        with self._procedure(
+            "drift_correction", "drift correcting", walk or self._cfg.calibration_advance
+        ):
+            return self._drift_correct(walk)
+
+    def _drift_correct(self, advance: Advance | None) -> DriftResult:
         result = drift_correct(
             self._tracker,
             self._display,
@@ -368,11 +410,12 @@ class EyeTrackerMonitor:
             self._cfg,
             self.correction,
             poll_keys=self._poll_keys,
-            advance=self._advance(),
+            advance=advance,
             calibration_targets=self.calibration_targets,
             progress=self._on_progress,
         )
         self.drift = result
+        self._end_guide(ended_drift, result, result.summary())
         self._emit("DRIFT_CORRECTION", result.payload())
         return result
 
@@ -385,6 +428,66 @@ class EyeTrackerMonitor:
     # ------------------------------------------------------------------
     # Reporting
     # ------------------------------------------------------------------
+
+    @contextmanager
+    def _procedure(self, kind: Kind, stage: str, advance: str) -> Iterator[None]:
+        """One procedure, from its first publish to its last.
+
+        It opens the live monitor's guide (``procedure``) before the stage's
+        first publish, so that publish already carries it. A procedure that
+        raises leaves its guide failed with the error, never "running". The
+        end of the outermost one (a calibration runs its validation inside
+        itself) is published with the guide as it ended — gone after a
+        success, kept after a failure — because not every caller publishes
+        after a procedure: the calibration request before trial 1 does not,
+        and without this its panel would still be asking for SPACE.
+        """
+        if self._depth == 0:
+            self._verdicts = []
+        self._depth += 1
+        self._guide = started(kind, self._clock.now())
+        self._guide_advance = advance
+        try:
+            self._stage(stage, "starting")
+            yield
+        except BaseException as error:
+            if self._guide is not None and self._guide.outcome == "running":
+                self._guide = failed_with_error(self._guide, error, self._clock.now())
+            raise
+        finally:
+            self._depth -= 1
+            if self._depth == 0 and self.publisher is not None:
+                line = " · ".join(self._verdicts) or f"{stage}: stopped"
+                self.publisher(PROCEDURE_STATUS, line)
+
+    def _end_guide(
+        self,
+        ended: Callable[[ProcedureGuide, Any], ProcedureGuide | None],
+        result: CalibrationResult | ValidationResult | DriftResult,
+        verdict: str,
+    ) -> None:
+        """The guide once ``result`` is in: None after a success, the failure
+        kept otherwise (procedure_guide.ended_*)."""
+        self._verdicts.append(verdict)
+        if self._guide is not None:
+            self._guide = ended(self._guide, result)
+
+    @property
+    def procedure(self) -> dict[str, Any] | None:
+        """The live monitor's ``state["procedure"]``: the running procedure's
+        guide, or the last one's failure until ``dismiss_procedure``; None
+        when there is nothing to show (procedure_guide.ProcedureGuide)."""
+        return self._guide.as_state() if self._guide is not None else None
+
+    def dismiss_procedure(self) -> bool:
+        """Take down a failed or stopped procedure's guide, kept so the
+        operator has seen it: the session has resumed. A running procedure's
+        guide stays. True when there was one to take down, so the caller
+        knows to publish."""
+        if self._guide is None or self._guide.outcome == "running":
+            return False
+        self._guide = None
+        return True
 
     def _stage(self, stage: str, detail: str) -> None:
         """A stage boundary: always published, and it restarts the throttle."""
@@ -403,11 +506,28 @@ class EyeTrackerMonitor:
         """
         messages = self.service_live_monitor()
         now = self._clock.now()
+        # The guide follows every report, published or not, so the publish
+        # that does go out carries the newest step and eye line.
+        before = self._guide
+        if before is not None:
+            self._guide = progressed(before, stage, detail, advance=self._guide_advance, t=now)
         # A setting the page sent is published at once, whatever the throttle
         # says: the experimenter who pressed + is waiting to see it land. So
-        # is a new stage's first report (_published_stage).
+        # is a new stage's first report (_published_stage), and a new target:
+        # the guide's "target 3 of 5" is what the operator watches.
         new_stage = stage != self._published_stage
-        if not messages and not new_stage and now - self._last_publish < PROGRESS_PUBLISH_S:
+        new_step = (
+            before is not None
+            and self._guide is not None
+            and self._guide.step is not None
+            and self._guide.step != before.step
+        )
+        if (
+            not messages
+            and not new_stage
+            and not new_step
+            and now - self._last_publish < PROGRESS_PUBLISH_S
+        ):
             return
         self._last_publish = now
         self._published_stage = stage
