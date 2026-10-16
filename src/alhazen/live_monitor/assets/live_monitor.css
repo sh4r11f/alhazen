@@ -1041,11 +1041,12 @@ button.control:focus-visible,
 .procedure-failure-text {
   margin: 0;
   max-width: 40ch;
-  color: var(--critical);
+  color: var(--ink);
   font: 750 24px/1.3 var(--font);
   letter-spacing: -.01em;
+  text-wrap: balance;
 }
-.procedure-check { margin: 10px 0 0; max-width: 60ch; color: var(--ink); font: 600 17px/1.45 var(--font); }
+.procedure-check { margin: 10px 0 0; max-width: 60ch; color: var(--ink-2); font: 600 17px/1.45 var(--font); }
 .procedure[data-outcome="failed"] { border-color: var(--critical); }
 .procedure[data-outcome="failed"] .procedure-head h2 { color: var(--critical); }
 .procedure[data-outcome="aborted"] .procedure-head h2 { color: var(--ink-2); }
