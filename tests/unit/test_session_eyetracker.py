@@ -403,9 +403,14 @@ class TestProcedures:
 
 class TestPublishing:
     def test_stage_boundaries_always_publish_with_the_procedure_status(self, session) -> None:
+        """The start, and the end with the verdict: not every caller
+        publishes after a procedure (the request before trial 1 does not)."""
         s = session(validate_after_calibration=False)
         s.monitor.calibrate()
-        assert s.published == [(PROCEDURE_STATUS, "calibrating: starting")]
+        assert s.published == [
+            (PROCEDURE_STATUS, "calibrating: starting"),
+            (PROCEDURE_STATUS, s.monitor.calibration.summary()),
+        ]
 
     def test_progress_is_throttled(self, session) -> None:
         s = session(validate_after_calibration=False)
@@ -430,6 +435,7 @@ class TestPublishing:
             (PROCEDURE_STATUS, "calibrating: starting"),
             (PROCEDURE_STATUS, "calibration guide: waiting for SPACE"),
             (PROCEDURE_STATUS, "calibrating: target 1 of 5"),
+            (PROCEDURE_STATUS, s.monitor.calibration.summary()),
         ]
 
     def test_a_validation_reports_each_target(self, session) -> None:
@@ -476,6 +482,191 @@ class TestPublishing:
 # ----------------------------------------------------------------------
 # Panels
 # ----------------------------------------------------------------------
+
+
+class GuideTracker(FollowingTracker):
+    """Reports the TRACKPixx3's stages a tenth of a second apart (its
+    refresh), as ``reports`` lists them, then returns ``calibration``. A
+    report of None is a moment where the test looks at the monitor."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock)
+        self.reports: list[tuple[str, str] | None] = []
+        self.during: list[dict[str, Any] | None] = []
+        self.monitor: EyeTrackerMonitor | None = None
+
+    def set_progress_hook(self, hook: Any) -> None:
+        self.hooks.append(hook)
+
+    def calibrate(self) -> CalibrationResult | None:  # type: ignore[override]
+        for item in self.reports:
+            self._clock.advance(0.1)  # type: ignore[attr-defined]
+            if item is None:
+                assert self.monitor is not None
+                self.during.append(self.monitor.procedure)
+                self.during.append({"dismissed": self.monitor.dismiss_procedure()})
+            else:
+                self.hooks[-1](*item)
+        return super().calibrate()
+
+
+TPX_GUIDE = "eyes: both tracked · press SPACE to start, P or ESC to go back to the pause menu"
+
+
+class TestProcedureGuide:
+    """``EyeTrackerMonitor.procedure``: the live monitor's guide panel, on
+    every publish from a procedure's start, kept after a failure until
+    ``dismiss_procedure`` (session/procedure_guide.py)."""
+
+    @staticmethod
+    def guided(session, **cfg: Any) -> Session:
+        s = session(GuideTracker, **cfg)
+        s.tracker.monitor = s.monitor
+        s.states: list[tuple[str, str, dict[str, Any] | None]] = []  # type: ignore[misc]
+        s.monitor.publisher = lambda status, message: s.states.append(
+            (status, message, s.monitor.procedure)
+        )
+        return s
+
+    def test_it_opens_with_the_procedure_follows_each_target_and_goes_when_it_took(
+        self, session
+    ) -> None:
+        s = self.guided(session, validate_after_calibration=False)
+        s.tracker.reports = [
+            ("calibration guide", TPX_GUIDE),
+            ("calibrating", "target 1 of 3 · eyes: both tracked"),
+            ("calibrating", "target 1 of 3 · eyes: both tracked"),
+            ("calibrating", "target 2 of 3 · eyes: left only"),
+        ]
+        s.tracker.calibration = result(True)
+        s.monitor.calibrate()
+        guides = [guide for _status, _message, guide in s.states]
+        assert all(status == PROCEDURE_STATUS for status, _m, _g in s.states)
+        first = guides[0]
+        assert first is not None
+        assert (first["heading"], first["outcome"], first["instruction"]) == (
+            "Calibration",
+            "running",
+            "Starting",
+        )
+        guide = guides[1]
+        assert guide is not None
+        assert guide["instruction"] == (
+            "Press SPACE to start, P or ESC to go back to the pause menu"
+        )
+        assert guide["status_line"] == "eyes: both tracked"
+        # Each new target is published at once, inside the 0.5 s throttle; the
+        # same target reported again is not.
+        steps = [(g["step"], g["n"], g["status_line"]) for g in guides[2:-1] if g is not None]
+        assert steps == [(1, 3, "eyes: both tracked"), (2, 3, "eyes: left only")]
+        assert guides[2] is not None
+        assert guides[2]["instruction"] == "Press SPACE when the subject is looking at the target"
+        # The end, with the verdict, takes the panel down.
+        assert guides[-1] is None
+        assert s.states[-1][1] == s.monitor.calibration.summary()
+        assert s.monitor.procedure is None
+
+    def test_a_failure_is_kept_with_what_to_check_until_dismissed(self, session) -> None:
+        s = self.guided(session, validate_after_calibration=False)
+        s.tracker.reports = [
+            ("calibrating", "target 5 of 5 · eyes: both tracked"),
+            ("calibration failed", "the tracker reports no calibration"),
+        ]
+        s.tracker.calibration = result(
+            False,
+            note="the device reports NO calibration after the walk — check the camera sees "
+            "the eyes (position, focus, LED), then calibrate again",
+        )
+        s.monitor.calibrate()
+        # The tracker's own failure report is on the page at once.
+        reported = s.states[-2][2]
+        assert reported is not None and reported["outcome"] == "failed"
+        kept = s.monitor.procedure
+        assert kept is not None and s.states[-1][2] == kept
+        assert kept["outcome"] == "failed"
+        assert kept["failure"] == "The device reports NO calibration after the walk"
+        assert kept["check"] == (
+            "Check the camera sees the eyes (position, focus, LED), then calibrate again"
+        )
+        assert s.monitor.dismiss_procedure() is True
+        assert s.monitor.procedure is None
+        assert s.monitor.dismiss_procedure() is False
+
+    def test_an_aborted_calibration_is_kept_too(self, session) -> None:
+        s = self.guided(session, validate_after_calibration=False)
+        s.tracker.reports = [("calibration guide", TPX_GUIDE)]
+        s.tracker.calibration = result(None, aborted=True, note="stopped at the guide (ESC)")
+        s.monitor.calibrate()
+        kept = s.monitor.procedure
+        assert kept is not None
+        assert (kept["outcome"], kept["failure"]) == ("aborted", "Stopped at the guide (ESC)")
+
+    def test_a_running_procedure_is_not_dismissed(self, session) -> None:
+        s = self.guided(session, validate_after_calibration=False)
+        s.tracker.reports = [("calibration guide", TPX_GUIDE), None]
+        s.tracker.calibration = result(True)
+        s.monitor.calibrate()
+        during, dismissed = s.tracker.during
+        assert during is not None and during["outcome"] == "running"
+        assert dismissed == {"dismissed": False}
+
+    def test_the_next_procedure_replaces_a_kept_failure(self, session) -> None:
+        s = self.guided(session, validate_after_calibration=False)
+        s.tracker.calibration = result(False, note="Host PC: POOR")
+        s.monitor.calibrate()
+        assert s.monitor.procedure is not None
+        s.states.clear()
+        s.monitor.validate()
+        opened = s.states[0][2]
+        assert opened is not None
+        assert (opened["heading"], opened["outcome"]) == ("Validation", "running")
+        # The simulated display walks in auto mode, and the instruction says so.
+        targets = [g for _s, _m, g in s.states if g is not None and g["step"] is not None]
+        assert [g["step"] for g in targets] == [1, 2, 3, 4, 5]
+        assert targets[0]["instruction"] == (
+            "Keep the subject looking at the target; it moves on by itself"
+        )
+        assert s.monitor.procedure is None, "the validation passed"
+
+    def test_a_validation_that_does_not_pass_after_a_calibration_is_what_stays(
+        self, session
+    ) -> None:
+        s = self.guided(session)
+        s.tracker.calibration = result(True)
+        s.tracker.offset_px = (200.0, 0.0)  # far outside the limit
+        s.monitor.calibrate()
+        kept = s.monitor.procedure
+        assert kept is not None
+        assert (kept["heading"], kept["outcome"]) == ("Validation", "failed")
+        assert kept["failure"].startswith("Validation FAILED")
+        # One end publish, after the validation the calibration ran, with
+        # both verdicts.
+        assert s.states[-1][1] == (
+            f"{s.monitor.calibration.summary()} · {s.monitor.validation.summary()}"
+        )
+
+    def test_drift_correction_stopped_with_esc_is_aborted(self, session) -> None:
+        s = self.guided(session, poll_keys=lambda: ["escape"])
+        s.monitor.drift_correct()
+        kept = s.monitor.procedure
+        assert kept is not None
+        assert (kept["heading"], kept["outcome"]) == ("Drift correction", "aborted")
+
+    def test_a_procedure_that_raises_leaves_its_failure_and_says_so(self, session) -> None:
+        s = self.guided(session, validate_after_calibration=False)
+        s.tracker.calibrate_error = TrackerError("the device stopped answering")
+        with pytest.raises(TrackerError):
+            s.monitor.calibrate()
+        kept = s.monitor.procedure
+        assert kept is not None
+        assert kept["outcome"] == "failed"
+        assert kept["failure"] == "Stopped with an error: the device stopped answering"
+        assert s.states[-1] == (PROCEDURE_STATUS, "calibrating: stopped", kept)
+
+    def test_no_guide_before_any_procedure(self, session) -> None:
+        s = session()
+        assert s.monitor.procedure is None
+        assert s.monitor.dismiss_procedure() is False
 
 
 class TestPanelSet:

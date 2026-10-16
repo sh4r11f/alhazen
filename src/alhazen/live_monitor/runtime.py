@@ -36,6 +36,11 @@ from alhazen.live_monitor.spec import LiveMonitorSpec
 
 log = logging.getLogger(__name__)
 
+# How long a publish waits for the snapshot it replaces to reach the queue's
+# pipe (LiveMonitorController.publish). Only a publish that lands on top of
+# one made a moment before ever waits, and then for about a millisecond.
+REPLACE_WAIT_S = 0.05
+
 # The two files the live monitor leaves in a run's `figures/` at teardown:
 # its final state, and the page with that state baked in. Run-directory file
 # names are an on-disk contract that changes only in a MAJOR version
@@ -245,8 +250,14 @@ class LiveMonitorController:
             return
         except queue.Full:
             pass
+        # Replace the unread one. A snapshot put a moment ago can still be in
+        # the queue's feeder thread, not yet in the pipe, where get_nowait
+        # cannot see it — and then the NEWER snapshot was the one dropped,
+        # every time two publishes came back to back (a procedure's last
+        # report and its end; the end and the pause that follows). The wait
+        # is for that thread, a millisecond or so, bounded by REPLACE_WAIT_S.
         with suppress(queue.Empty):
-            self._updates.get_nowait()
+            self._updates.get(timeout=REPLACE_WAIT_S)
         try:
             self._updates.put_nowait(snapshot)
         except queue.Full:
@@ -1106,6 +1117,7 @@ def live_monitor_state(
     on_invalid_panel: Callable[[str, str], None] | None = None,
     controls: Mapping[str, Any] | None = None,
     commands: Sequence[Mapping[str, Any]] = (),
+    procedure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct the stable wire shape consumed by the bundled frontend.
 
@@ -1155,6 +1167,12 @@ def live_monitor_state(
     session/operator_commands.py); ``commands`` its newest acknowledgements
     of the page's commands, oldest first. A state without ``controls``
     (built by a test or a tool) leaves the page's buttons off.
+
+    ``procedure`` is the guide to the eye-tracker procedure the operator is
+    in (session/procedure_guide.py: heading, instruction, eye line, step,
+    outcome, failure, check), published as ``state["procedure"]``; None —
+    the default, and the saved copy's — when there is none, and the page
+    then shows no guide panel.
     """
     for panel in extra_panels:
         missing = [key for key in ("title", "data") if key not in panel]
@@ -1198,6 +1216,8 @@ def live_monitor_state(
         # [workstream B] operator commands
         **({"controls": dict(controls)} if controls is not None else {}),
         "commands": [dict(record) for record in commands],
+        # The eye-tracker procedure guide (session/procedure_guide.py), or None.
+        "procedure": dict(procedure) if procedure is not None else None,
         "updated_at": time.time(),
     }
 

@@ -498,6 +498,21 @@ def server():
         controller.stop()
 
 
+class TestPublishReplacesTheUnreadSnapshot:
+    def test_two_publishes_back_to_back_leave_the_newer(self) -> None:
+        """The second of two publishes a moment apart (a procedure's end
+        right after its last report, the pause right after that) used to be
+        the one dropped: the first was still in the queue's feeder thread,
+        where the replace could not take it out. The page must get the newer
+        state, every time."""
+        for _ in range(20):
+            controller = LiveMonitorController(auto_open=False)
+            controller.publish(_state(1, "calibrating"))
+            controller.publish(_state(2, "paused"))
+            revision, status, *_rest = controller._updates.get(timeout=1)
+            assert (revision, status) == (2, "paused")
+
+
 class TestRequestValidation:
     """What the server refuses, and that refusing it leaves the server serving."""
 

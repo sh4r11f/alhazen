@@ -39,6 +39,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   follows carries on the deck. `--calibration-target/-images/-motion` and the
   workspace's Rig section accept a mouse_sim rig; the stand-in `--mouse` puts
   in place of a real tracker is unchanged.
+- The live monitor's procedure guide: during a calibration, validation or
+  drift correction a panel at the top of the page says what to do in large
+  type — the procedure's heading, the instruction with its keys drawn as
+  keys (*Press Space to start, P or Esc to go back to the pause menu*), the
+  tracker's eye line, *Target 2 of 5* with one mark per target — and, after
+  a failure or a stop, what went wrong and what to check. It appears when the
+  procedure starts and goes when it succeeds; a failure stays until the
+  session resumes or the next procedure starts. It is drawn from a new
+  structured state field, `state["procedure"]` (kind, heading, stage,
+  instruction, status_line, status_alert, step, n, outcome, failure, check,
+  t; null when there is none), built by `session/procedure_guide.py` from the
+  trackers' progress reports and the procedures' results
+  (docs/live_monitor.md, *The procedure guide*). The same page is what the
+  dashboard's Live monitor tab frames, so it is there too.
 - `LiveMonitorPanel.series`, for a `grouped_mean` panel: a second factor drawn
   in the colour rather than along the axis. Each level of `group` is one
   position on the axis and, at each, one mark per level of `series`, dodged
@@ -141,6 +155,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   info), and the panel says to press ENTER on the setup screen. The subject
   window's mouse no longer moves the Host PC's search limits. A camera frame
   that a tracker keeps is sent to the live monitor once, not on every refresh.
+- During an eye-tracker procedure the line under the live monitor's Session
+  buttons stays empty (the procedure guide says it, large); the status
+  message is still published. `EyeTrackerMonitor` publishes the end of every
+  procedure itself and each new target at once, and a trial that starts
+  after a procedure publishes "running", so a calibration answered at the
+  request before trial 1 no longer leaves the page saying "calibrating"
+  through the first trial.
 - Measure mode writes its report under the rig's data root,
   `<data_root>/measurements/rig-<name>_<stamp>.json`, for every rig, shared
   or the experiment's own. A measurement is data — a reading of the machine
@@ -225,6 +246,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `make_calibration_graphics` lost its unused `foreground` argument.
 
 ### Fixed
+- The live monitor no longer drops the newer of two states published back to
+  back. The replace of an unread snapshot could not reach one still in the
+  queue's feeder thread, so the second publish was the one discarded (with a
+  "queue remained full" warning): a procedure's end right after its last
+  report, or the pause right after a procedure, could leave the page on the
+  older state. The publish now waits for that thread, at most
+  `REPLACE_WAIT_S` (0.05 s), and only when two publishes collide.
 - `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It
   dropped late alignment marks and refitted once, and the refit moved the
   line by a few hundredths of a millisecond, enough to put a mark that was

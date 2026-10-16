@@ -443,6 +443,12 @@ class TestAProcedureThatSucceedsTakesTheHeadingBackDown:
             self.drift = None
             self.validation = None
             self.publisher = None
+            # The live monitor's procedure guide (EyeTrackerMonitor.procedure):
+            # none to show, and none to take down.
+            self.procedure = None
+
+        def dismiss_procedure(self) -> bool:
+            return False
 
         def validate(self):
             self.validation = self._results.pop(0)
@@ -668,6 +674,10 @@ class TestASimulationsBreakResumesByItself:
             validation = None
             publisher = None
             has_camera = False
+            procedure = None
+
+            def dismiss_procedure(self) -> bool:
+                return False
 
             def validate(self):
                 self.validation = ValidationResult(

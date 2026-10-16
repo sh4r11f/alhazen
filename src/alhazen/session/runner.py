@@ -429,7 +429,7 @@ class SessionRunner:
             has_training=training is not None,
             manual_reward=manual_reward,
             manual_reward_payload=self._manual_reward_payload,
-            publish=self._publish_live_monitor,
+            publish=self._publish_from_pause,
             last_message=lambda: self._live_monitor_message,
             emit_session_event=self._emit_session_event,
             on_session_command=self.on_session_command,
@@ -437,6 +437,10 @@ class SessionRunner:
         )
         self._live_monitor_revision = 0
         self._live_monitor_message: str | None = None
+        # The status of the last publish: a trial that starts right after a
+        # procedure (the calibration request before trial 1 publishes nothing
+        # once it is answered) says "running" itself (_start_tracker_trial).
+        self._live_monitor_status: str | None = None
         # A session cancelled at the instructions screen flows through the
         # same teardown a finished one does, so without this the mirror
         # recorded status="complete" for a run with zero trials —
@@ -1178,7 +1182,17 @@ class SessionRunner:
 
     def _start_tracker_trial(self, ctx: TrialContext, attempt: int) -> None:
         """Open the tracker's recording segment and refresh its operator
-        overlay, before the trial's first frame."""
+        overlay, before the trial's first frame.
+
+        A trial starting is the session running again, however it got here
+        (a resume, the calibration request before trial 1 answered): a failed
+        procedure's guide comes off the live monitor, and a live monitor
+        still saying "calibrating" is told "running".
+        """
+        if self._eyetracker is not None:
+            dismissed = self._eyetracker.dismiss_procedure()
+            if dismissed or self._live_monitor_status == PROCEDURE_STATUS:
+                self._publish_live_monitor("running")
         if self._tracker is None:
             return
         self._tracker.start_trial(ctx.trial_index, f"attempt {attempt}")
@@ -1248,10 +1262,26 @@ class SessionRunner:
             on_invalid_panel=self._report_invalid_panel,
             controls=self._operator.controls(status) if self._operator is not None else None,
             commands=self._operator.recent() if self._operator is not None else (),
+            # The guide panel to an eye-tracker procedure (running, or failed
+            # and not yet resumed past); never in the saved copy, which is a
+            # record of the session, not of a moment at the rig.
+            procedure=(
+                self._eyetracker.procedure if self._eyetracker is not None and not full else None
+            ),
         )
+        self._live_monitor_status = status
         self._live_monitor_message = message
         self._live_monitor.publish(state)
         return state
+
+    def _publish_from_pause(self, status: str, message: str | None = None) -> dict[str, Any]:
+        """The pause controller's live monitor publisher. It says "running"
+        exactly when the pause ends in a resume, and a resume is what takes a
+        failed procedure's guide down (EyeTrackerMonitor.dismiss_procedure):
+        until then the guide stays, so the operator has seen the failure."""
+        if status == "running" and self._eyetracker is not None:
+            self._eyetracker.dismiss_procedure()
+        return self._publish_live_monitor(status, message)
 
     def _live_training_stage(self) -> dict[str, Any] | None:
         """The training-ladder stage, for the live monitor's header; None
