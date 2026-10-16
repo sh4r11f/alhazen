@@ -36,6 +36,11 @@ from alhazen.live_monitor.spec import LiveMonitorSpec
 
 log = logging.getLogger(__name__)
 
+# How long a publish waits for the snapshot it replaces to reach the queue's
+# pipe (LiveMonitorController.publish). Only a publish that lands on top of
+# one made a moment before ever waits, and then for about a millisecond.
+REPLACE_WAIT_S = 0.05
+
 # The two files the live monitor leaves in a run's `figures/` at teardown:
 # its final state, and the page with that state baked in. Run-directory file
 # names are an on-disk contract that changes only in a MAJOR version
@@ -245,8 +250,14 @@ class LiveMonitorController:
             return
         except queue.Full:
             pass
+        # Replace the unread one. A snapshot put a moment ago can still be in
+        # the queue's feeder thread, not yet in the pipe, where get_nowait
+        # cannot see it — and then the NEWER snapshot was the one dropped,
+        # every time two publishes came back to back (a procedure's last
+        # report and its end; the end and the pause that follows). The wait
+        # is for that thread, a millisecond or so, bounded by REPLACE_WAIT_S.
         with suppress(queue.Empty):
-            self._updates.get_nowait()
+            self._updates.get(timeout=REPLACE_WAIT_S)
         try:
             self._updates.put_nowait(snapshot)
         except queue.Full:

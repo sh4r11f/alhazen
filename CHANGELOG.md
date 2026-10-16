@@ -225,6 +225,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `make_calibration_graphics` lost its unused `foreground` argument.
 
 ### Fixed
+- The live monitor no longer drops the newer of two states published back to
+  back. The replace of an unread snapshot could not reach one still in the
+  queue's feeder thread, so the second publish was the one discarded (with a
+  "queue remained full" warning): a procedure's end right after its last
+  report, or the pause right after a procedure, could leave the page on the
+  older state. The publish now waits for that thread, at most
+  `REPLACE_WAIT_S` (0.05 s), and only when two publishes collide.
 - `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It
   dropped late alignment marks and refitted once, and the refit moved the
   line by a few hundredths of a millisecond, enough to put a mark that was
