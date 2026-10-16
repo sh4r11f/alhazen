@@ -950,8 +950,11 @@ the camera box never shows a live picture during a trial:
   (`IN_RECORD_MODE` against `IN_SETUP_MODE`/`IN_IMAGE_MODE` in `eyelink.h`),
   and SR Research support states that "the video which can be accessed during
   camera setup is not available during recording"; during a trial the eye
-  images are only on the Host PC's own display (bottom left). alhazen's
-  EyeLink backend has no `camera_frame` at all: the Host PC shows the image.
+  images are only on the Host PC's own display (bottom left). What the
+  camera setup sends is routed here, never to the subject's screen (round 5):
+  the backend's `camera_frame` is the newest image from the setup screen,
+  stamped when it arrived, so the box shows it with its age; before the first
+  one the Camera panel says to press ENTER on the setup screen.
   Sources: SR Research, *EyeLink Programmer's Guide*, "Calibration Camera
   Image Presentation Example" and `eyelink.h`
   (sr-research.com/download/dispdoc); SR Research support on the PsychoPy
@@ -966,6 +969,10 @@ the camera box never shows a live picture during a trial:
   which is lost samples. Doing it every frame would also cost the frame loop
   a USB round trip.
 - **mouse_sim, scripted, the automated participant.** No camera.
+
+A kept image (the EyeLink's) is sent on the camera channel once, when it is
+new, not again on every refresh of a pause, so the page never counts a
+still picture as a live stream.
 
 What the box shows instead, honestly: on a tracker with a camera, the newest
 real frame from the last pause or calibration (the camera channel keeps it),

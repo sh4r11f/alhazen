@@ -28,6 +28,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 ## Unreleased
 
 ### Added
+- The mouse stand-in (`eyetracker.backend: mouse_sim`) takes
+  `eyetracker.calibration_target` and walks its calibration as the
+  TRACKPixx3 does: the guide's wait, then the rig's target (standard, chosen
+  pictures or random pictures; still or pulsating) at each point of
+  `calibration_type` (HV5/HV9/HV13, checked when the rig loads), through the
+  same presenter and picture deck, with the same keys, advance modes and live
+  monitor stages. Nothing is fitted (the result says so), the CALIBRATION
+  event records `target_style` and `targets_shown`, and the validation that
+  follows carries on the deck. `--calibration-target/-images/-motion` and the
+  workspace's Rig section accept a mouse_sim rig; the stand-in `--mouse` puts
+  in place of a real tracker is unchanged.
 - `LiveMonitorPanel.series`, for a `grouped_mean` panel: a second factor drawn
   in the colour rather than along the axis. Each level of `group` is one
   position on the axis and, at each, one mark per level of `series`, dodged
@@ -120,6 +131,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   shared event shape.
 
 ### Changed
+- The EyeLink's camera image is no longer drawn on the subject's display,
+  including when the experimenter opens it on the Host PC's setup screen. The
+  calibration graphics hand each image (8-bit grey, the Host PC's overlays
+  drawn white) to the live monitor: the Eye tracker Camera panel streams it
+  while the setup screen shows it, and the Trial view keeps the last one with
+  its age. The EyeLink backend gains `camera_frame()`; before the first image
+  it raises `NoCameraImageYet` (a `TrackerError` that is not a fault, noted at
+  info), and the panel says to press ENTER on the setup screen. The subject
+  window's mouse no longer moves the Host PC's search limits. A camera frame
+  that a tracker keeps is sent to the live monitor once, not on every refresh.
 - Measure mode writes its report under the rig's data root,
   `<data_root>/measurements/rig-<name>_<stamp>.json`, for every rig, shared
   or the experiment's own. A measurement is data — a reading of the machine
