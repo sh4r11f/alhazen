@@ -74,14 +74,14 @@ TARGET_INSTRUCTIONS: dict[str, str] = {
 # eyes …" — is used instead: split_check). The keys named are the pause
 # menu's (session/pause.py) and the startup request's.
 FAILED_CHECKS: dict[str, str] = {
-    "calibration": "Check the eye tracker and the subject's position, then calibrate again (C)",
-    "validation": "Calibrate again (C), validate again (V), or go on with this calibration",
-    "drift_correction": "Drift-correct again (D), or calibrate again (C)",
+    "calibration": "Check the eye tracker and the subject's position, then calibrate again with C",
+    "validation": "Calibrate again with C, validate again with V, or go on with this calibration",
+    "drift_correction": "Drift-correct again with D, or calibrate again with C",
 }
 ABORTED_CHECKS: dict[str, str] = {
-    "calibration": "Calibrate again (C) when ready",
-    "validation": "Validate again (V) when ready",
-    "drift_correction": "Drift-correct again (D) when ready",
+    "calibration": "Calibrate again with C when ready",
+    "validation": "Validate again with V when ready",
+    "drift_correction": "Drift-correct again with D when ready",
 }
 
 # The drift correction's note for an ESC (procedures.drift_correct): a

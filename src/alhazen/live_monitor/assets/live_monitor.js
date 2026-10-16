@@ -3046,10 +3046,11 @@ function renderProcedure(procedure) {
   const walking = Number.isInteger(step) && Number.isInteger(n) && n > 0 && step > 0;
   byId('procedure-step').textContent = walking ? 'Target ' + step + ' of ' + n : '';
   /* One mark per target: those already taken, the one up now, the rest.
-   * Drawn only for a walk of targets, and only up to a size a row can hold. */
+   * Drawn only while a walk of targets runs, and only up to a size a row can
+   * hold; once it has failed or stopped, the step says where. */
   const track = byId('procedure-track');
   track.replaceChildren();
-  if (walking && n <= 40) {
+  if (walking && n <= 40 && (procedure.outcome || 'running') === 'running') {
     for (let index = 1; index <= n; index += 1) {
       const mark = htmlEl('li', null, null, track);
       mark.dataset.state = index < step ? 'done' : index === step ? 'current' : 'todo';

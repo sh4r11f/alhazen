@@ -40,7 +40,7 @@ const TARGET = {
 const FAILED = {
   ...GUIDE, stage: 'calibration failed', instruction: '', step: null, n: null, status_line: null,
   outcome: 'failed', failure: 'The device reports NO calibration after the walk',
-  check: 'Check the camera sees the eyes (position, focus, LED), then calibrate again (C)',
+  check: 'Check the camera sees the eyes (position, focus, LED), then calibrate again with C',
 };
 
 const state = (revision, status, procedure, message) => ({
@@ -119,7 +119,7 @@ describe('the procedure guide', () => {
     assert.equal(page.byId('procedure-failure-text').textContent,
       'The device reports NO calibration after the walk');
     assert.equal(page.byId('procedure-check').textContent,
-      'Check the camera sees the eyes (position, focus, LED), then calibrate again (C)');
+      'Check the camera sees the eyes (position, focus, LED), then calibrate again with C');
     assert.deepEqual(keys(page.byId('procedure-check')), ['C']);
     /* "NO" is a word, not a key; the failure text has no keys drawn at all. */
     assert.deepEqual(keys(page.byId('procedure-failure-text')), []);
@@ -133,9 +133,13 @@ describe('the procedure guide', () => {
   it('calls a stopped procedure stopped', async () => {
     const page = await livePage([state(1, 'paused', {
       ...FAILED, kind: 'validation', heading: 'Validation', outcome: 'aborted',
-      failure: 'Validation aborted after 2 target(s)', check: 'Validate again (V) when ready',
+      failure: 'Validation aborted after 2 target(s)', check: 'Validate again with V when ready',
+      step: 2, n: 5,
     })]);
     assert.equal(page.byId('procedure-heading').textContent, 'Validation stopped');
+    /* Where it stopped is said; the marks are for a walk still running. */
+    assert.equal(page.byId('procedure-step').textContent, 'Target 2 of 5');
+    assert.ok(!shown(page.byId('procedure-track')));
     assert.equal(page.byId('procedure').dataset.outcome, 'aborted');
     assert.deepEqual(keys(page.byId('procedure-check')), ['V']);
   });
