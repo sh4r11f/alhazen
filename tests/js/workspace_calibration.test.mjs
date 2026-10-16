@@ -124,7 +124,10 @@ describe('the calibration choice, pure', () => {
       appearance: 'standard', images: [], image_size_dva: 2.5, motion: 'pulse',
       pulse: { rate_hz: 0.5, min_scale: 1.0, max_scale: 1.4 },
     });
-    assert.ok(!C.drawsTarget(rigWith({ backend: 'mouse_sim' }).values));
+    // The mouse stand-in draws the target too (round 5); the scripted
+    // replay has no window.
+    assert.ok(C.drawsTarget(rigWith({ backend: 'mouse_sim' }).values));
+    assert.ok(!C.drawsTarget(rigWith({ backend: 'scripted' }).values));
     assert.ok(!C.drawsTarget(rigWith(null).values));
   });
 
@@ -239,11 +242,18 @@ describe('the Rig section’s calibration target', () => {
   });
 
   it('is absent for a rig whose tracker draws no target', async () => {
-    for (const eyetracker of [null, { backend: 'mouse_sim' }]) {
+    for (const eyetracker of [null, { backend: 'scripted' }]) {
       const app = await page({ eyetracker });
       chooseMode(app, 'test');
       assert.equal(app.byId('calibration').hidden, true);
     }
+  });
+
+  it('is offered for a mouse_sim rig, whose calibration draws the target', async () => {
+    const app = await page({ eyetracker: { backend: 'mouse_sim' } });
+    chooseMode(app, 'test');
+    assert.equal(app.byId('calibration').hidden, false);
+    assert.equal(app.byId('calibration-controls').hidden, false);
   });
 
   it('tells a project on an older alhazen to update rather than offering it', async () => {

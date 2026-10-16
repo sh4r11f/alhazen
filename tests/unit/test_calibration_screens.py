@@ -311,26 +311,41 @@ class TestNothingButTargetsOnTheSubjectsScreen:
         assert display.texts == []
         assert {draw[1] for draw in render_psychopy.draws} == {(0.0, 0.0)}
 
-    def test_the_mouse_stand_in_calibrates_drawing_nothing_and_validates_with_targets_only(
-        self, render_psychopy
+    def test_the_mouse_stand_in_calibrates_and_validates_with_targets_only(
+        self,
+        walk_sdk,  # noqa: F811
     ):
-        """The mouse has no calibration to run (it draws nothing at all); the
-        validation that follows it draws the calibration's standard target and
-        nothing else — the mouse is where the gaze is, so it measures."""
+        """The mouse walks the calibration targets (user decision, round 5:
+        mouse_sim draws the rig's calibration target as the real trackers
+        do; test_mouse_sim_calibration.py), and the validation that follows
+        draws the same target. Nothing but targets either way."""
         from alhazen.devices.eyetracker.mouse_sim import MouseSimTracker
 
+        give_the_event_module_a_mouse()
         clock = FakeClock()
         display = RenderDisplay(clock)
-        tracker = MouseSimTracker(display, SCREEN, clock)
+        walk_sdk.state.clock, walk_sdk.state.window = clock, display.window
+        walk_sdk.state.schedule = list(KEYS) + [(30.0, "escape")]
         cfg = EyeTrackerConfig(backend="mouse_sim", calibration_advance="auto")
+        tracker = MouseSimTracker(display, SCREEN, clock, cfg)
+        tracker.configure(SCREEN, clock)
         monitor = EyeTrackerMonitor(tracker, display, SCREEN, clock, cfg, poll_keys=lambda: [])
         result = monitor.calibrate()  # validates afterwards (validate_after_calibration)
-        assert result.ok is None and monitor.validation is not None
-        no_text(render_psychopy)
+        assert result.ok is None and not result.aborted and len(result.shown) == 5
+        assert monitor.validation is not None
+        no_text(walk_sdk.recorder)
         assert display.texts == []
-        kinds = [stim.kind for stim in render_psychopy.made]
-        assert kinds == ["circle", "circle"]  # the standard target's disc and hole
+        kinds = [stim.kind for stim in walk_sdk.recorder.made]
+        assert kinds == ["circle", "circle"] * 2  # disc and hole: calibration, validation
         assert monitor.validation.target_style == "standard target, still"
+
+
+def give_the_event_module_a_mouse() -> None:
+    """The mouse stand-in's psychopy.event.Mouse, on walk_sdk's event module."""
+    event = sys.modules["psychopy.event"]
+    event.Mouse = lambda win=None, visible=True: types.SimpleNamespace(
+        setVisible=lambda v: None, getPos=lambda: (0.0, 0.0)
+    )
 
 
 # ---------------------------------------------------------------------------
