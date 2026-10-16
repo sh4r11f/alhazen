@@ -41,7 +41,7 @@ from alhazen.config.models import (
 )
 from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse_on
 from alhazen.core.clock import Clock, MonotonicClock
-from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
+from alhazen.core.commands import CommandSource, KeyboardCommands, MergedCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import named_stream, resolve_seed, spawn_streams
@@ -64,6 +64,7 @@ from alhazen.display.psychopy_backend import PsychoPyDisplay
 from alhazen.display.screen import Screen
 from alhazen.display.simulated import SimulatedDisplay
 from alhazen.errors import ConfigError
+from alhazen.live_monitor.gaze import GazeFeed
 from alhazen.live_monitor.runtime import LiveMonitorController
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import TrialSource
@@ -80,6 +81,7 @@ from alhazen.session.identity import (
     recorded_command,
     source_file,
 )
+from alhazen.session.operator_commands import OperatorCommands
 from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
@@ -157,6 +159,20 @@ def make_input_provider(
         )
 
     return provide
+
+
+# The engine's per-frame input hook: (trial_index, frame_index, flip time, inputs).
+FrameInputHook = Callable[[int, int, float, InputFrame], None]
+
+
+def _also_feeding(note: FrameInputHook, feed: GazeFeed) -> FrameInputHook:
+    """``note`` first — the record of the frame — then the Trial view's gaze."""
+
+    def on_frame_input(trial_index: int, frame: int, t: float, inputs: InputFrame) -> None:
+        note(trial_index, frame, t, inputs)
+        feed.note(trial_index, frame, t, inputs)
+
+    return on_frame_input
 
 
 def make_gaze_input_provider(tracker: EyeTracker, screen: Screen) -> Callable[[], InputFrame]:
@@ -747,6 +763,20 @@ def build_session(
                     time.sleep,
                 )
 
+        # [workstream B] The live monitor's buttons reach a running trial
+        # through the engine's own command source: the keyboard (or nobody,
+        # unattended) merged with the page's queue, one command per frame
+        # (core/commands.py MergedCommands). The same OperatorCommands goes to
+        # the runner, which reads the page while paused and acknowledges
+        # every command in one record (session/operator_commands.py).
+        operator_commands = (
+            OperatorCommands(live_monitor_controller)
+            if live_monitor_controller is not None
+            else None
+        )
+        if operator_commands is not None:
+            commands = MergedCommands(commands, operator_commands.take_for_trial)
+
         # Registered before open(): closing a display that never opened does
         # nothing, and PsychoPy's open() creates the window before it checks
         # the framebuffer against the rig config, so a refusal there leaves a
@@ -1030,6 +1060,17 @@ def build_session(
             frame_qa = frame_qa.model_copy(update={"policy": "log"})
         frame_monitor = FrameMonitor(frame_qa, refresh_hz)
         frame_inputs = FrameInputBuffer()
+        # Every frame's inputs go to the frame-input buffer, and — when there
+        # is a live monitor and a tracker to read — its gaze to the Trial
+        # view too (live_monitor/gaze.py: decimated, batched, never blocking).
+        # publish_gaze is looked up like the runner's publish_trial: a
+        # stand-in controller without it gets no gaze stream.
+        on_frame_input: FrameInputHook = frame_inputs.note
+        publish_gaze = getattr(live_monitor_controller, "publish_gaze", None)
+        if publish_gaze is not None and tracker is not None:
+            on_frame_input = _also_feeding(
+                on_frame_input, GazeFeed(publish_gaze, screen.px_per_deg)
+            )
 
         overlay: Callable[[TrialContext], None] | None = None
         if photodiode_cfg is not None:
@@ -1083,7 +1124,7 @@ def build_session(
             # is built below: the engine only ever calls this while the runner is
             # running, by which time the name is bound.
             on_session_command=(lambda command: runner.on_session_command(command)),
-            on_frame_input=frame_inputs.note,
+            on_frame_input=on_frame_input,
             reward_requests=queued_reward,
         )
 
@@ -1169,6 +1210,7 @@ def build_session(
             identity=identity,
             recording=recording,
             startup_calibration=startup_calibration,
+            operator_commands=operator_commands,
         )
         # Built. Every release registered above now belongs to the runner's
         # teardown, so they are dropped here without running.

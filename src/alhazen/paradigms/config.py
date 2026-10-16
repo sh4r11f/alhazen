@@ -18,9 +18,10 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 import numpy as np
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from alhazen.config.models import Model
+from alhazen.config.sections import section
 from alhazen.core.engine import TrialResult
 from alhazen.errors import ConfigError
 from alhazen.paradigms.adjustment import AdjustmentTrials
@@ -122,7 +123,10 @@ class BlockConfig(Model):
 
 
 class SchedulerConfig(Model):
-    """Which paradigm serves this task's trials."""
+    """Which paradigm serves this task's trials. Shown under Session on the
+    Run page (``section``)."""
+
+    model_config = ConfigDict(json_schema_extra=section("session"))
 
     kind: Literal["sequence", "constant", "staircase", "questplus", "adjustment"] = "sequence"
     # sequence / constant / adjustment: how many presentations of each cell.

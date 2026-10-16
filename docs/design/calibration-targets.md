@@ -78,12 +78,19 @@ waiting and flips between reads instead of one blocking wait, so its refresh
 rhythm, auto-advance count and live-monitor report are unchanged (to within a
 frame per refresh; `test_auto_advance_accepts_after_the_same_count_of_refreshes`).
 
-Which procedures share the appearance follows the existing policy: the
-calibration target is the calibration's (both backends, every recalibration,
-and on an EyeLink also the Host PC's own validation and drift check on its
-setup screen, which draw through the same graphics). alhazen's own validation
-and drift correction (`procedures.py`) keep their 0.5 deg fixation disc, as
-before; nothing about them changed.
+Which procedures share the appearance: the calibration target is the
+calibration's (both backends, every recalibration, and on an EyeLink also
+the Host PC's own validation and drift check on its setup screen, which draw
+through the same graphics). Since 2026-10-15 (user decision) alhazen's own
+validation and drift correction (`procedures.py`) draw it too, on every
+tracker, through the same presenter and — on the EyeLink and TRACKPixx3 —
+the tracker's own `CalibrationTargets` (the optional capability
+`calibration_targets`), so the picture deck carries on; a stand-in draws the
+standard target, still. Until then they drew a 0.5 deg white fixation disc.
+During all of these the subject's screen shows nothing but the targets: the
+guide, the TRACKPixx3 status line and failure message and the EyeLink's
+camera caption go to the log and the live monitor (docs/eye-tracker.md,
+"The calibration guide").
 
 ## 5. Failure analysis
 

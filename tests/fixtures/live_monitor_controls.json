@@ -1,0 +1,91 @@
+{
+  "_about": "The controls blocks a session with a tracker and a reward line publishes (session/operator_commands.py). tests/unit/test_operator_commands.py checks the session still publishes exactly these; tests/js/live_monitor_controls.test.mjs draws the buttons from them, so the page and the session are tested on the same table.",
+  "running": {
+    "shown": [
+      "pause",
+      "resume",
+      "calibrate",
+      "validate",
+      "drift_correct",
+      "manual_reward",
+      "skip_trial",
+      "quit"
+    ],
+    "available": [
+      "pause",
+      "manual_reward",
+      "skip_trial",
+      "quit"
+    ],
+    "refused": {
+      "resume": "Resume is available only while the session is paused",
+      "calibrate": "Calibrate works only while the task is paused; pause it first",
+      "validate": "Validate works only while the task is paused; pause it first",
+      "drift_correct": "Drift correct works only while the task is paused; pause it first"
+    },
+    "keys": {
+      "pause": "P",
+      "resume": "SPACE",
+      "calibrate": "C",
+      "validate": "V",
+      "drift_correct": "D",
+      "manual_reward": "R",
+      "skip_trial": "ESC",
+      "quit": "CTRL-C"
+    },
+    "labels": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "calibrate": "Calibrate",
+      "validate": "Validate",
+      "drift_correct": "Drift correct",
+      "manual_reward": "Reward",
+      "skip_trial": "Skip trial",
+      "quit": "Quit"
+    }
+  },
+  "paused": {
+    "shown": [
+      "pause",
+      "resume",
+      "calibrate",
+      "validate",
+      "drift_correct",
+      "manual_reward",
+      "skip_trial",
+      "quit"
+    ],
+    "available": [
+      "resume",
+      "calibrate",
+      "validate",
+      "drift_correct",
+      "manual_reward",
+      "quit"
+    ],
+    "refused": {
+      "pause": "the session is already paused",
+      "skip_trial": "Skip trial is available only while a trial is running"
+    },
+    "keys": {
+      "pause": "P",
+      "resume": "SPACE",
+      "calibrate": "C",
+      "validate": "V",
+      "drift_correct": "D",
+      "manual_reward": "R",
+      "skip_trial": "ESC",
+      "quit": "Q"
+    },
+    "labels": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "calibrate": "Calibrate",
+      "validate": "Validate",
+      "drift_correct": "Drift correct",
+      "manual_reward": "Reward",
+      "skip_trial": "Skip trial",
+      "quit": "Quit"
+    }
+  }
+}

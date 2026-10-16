@@ -58,7 +58,6 @@ from alhazen.devices.eyetracker.viewpixx import (
     shrink_image,
     vpixx_archive,
 )
-from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.errors import TrackerError
 from alhazen.testing import FakeClock
 from fake_sdk import FakeLibdpx, FakeTrackPixx, install_fake_pypixxlib, per_eye
@@ -770,22 +769,24 @@ class FakeText:
 
 
 class FakeDisplay:
+    """A display that records any text panel put on the subject's screen —
+    which a calibration must never do (user decision, 2026-10-15)."""
+
     kind = "fake"
 
     def __init__(self) -> None:
         self.window = FakeWindow()
-        self.messages: list[str] = []
-        # (title, body, colour) of every menu-style panel — the guide.
-        self.menus: list[tuple[str, str, tuple[float, float, float]]] = []
+        self.texts: list[str] = []
 
     # Deliberately without `reflow`: a display backend written outside
     # alhazen before the argument existed. The tracker must never pass it.
     def show_message(self, text: str) -> None:
-        self.messages.append(text)
+        self.texts.append(text)
+        self.window.timeline.append("text")
 
     def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
-        self.menus.append((title, body, color))
-        self.window.timeline.append("guide")
+        self.texts.append(f"{title}\n{body}")
+        self.window.timeline.append("text")
 
 
 def calibrating(fake_pypixxlib, fake_psychopy=None, **cfg_kwargs) -> ViewPixxTracker:
@@ -807,14 +808,17 @@ def calibrating(fake_pypixxlib, fake_psychopy=None, **cfg_kwargs) -> ViewPixxTra
     return tracker
 
 
-def guide_body(tracker: ViewPixxTracker) -> str:
-    """The last guide panel the display drew."""
-    menus = tracker._display.menus  # type: ignore[union-attr]
-    assert menus, "the calibration guide was never shown"
-    title, body, color = menus[-1]
-    assert title == GUIDE_TITLE
-    assert color == TERMINAL_GREEN
-    return body
+def guide_body(tracker: ViewPixxTracker, caplog: pytest.LogCaptureFixture) -> str:
+    """The guide as the session log has it: written there, never drawn —
+    nothing but targets goes on the subject's screen during a calibration."""
+    assert tracker._display.texts == [], "a calibration drew text on the subject's screen"  # type: ignore[union-attr]
+    bodies = [
+        r.getMessage().split("\n", 1)[1]
+        for r in caplog.records
+        if r.getMessage().startswith(GUIDE_TITLE + "\n")
+    ]
+    assert bodies, "the calibration guide was never logged"
+    return bodies[-1]
 
 
 # The guide screen comes first, and SPACE there starts the walk.
@@ -822,11 +826,14 @@ START = "space"
 
 
 class TestCalibrationGuide:
-    def test_the_guide_is_shown_before_the_first_target(self, fake_pypixxlib, fake_psychopy):
+    def test_the_guide_is_logged_before_the_first_target(
+        self, fake_pypixxlib, fake_psychopy, caplog
+    ):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV9", eye="right")
         fake_psychopy.keys.extend([START] + ["space"] * 9)
-        tracker.calibrate()
-        body = guide_body(tracker)
+        with caplog.at_level(logging.INFO):
+            tracker.calibrate()
+        body = guide_body(tracker, caplog)
         # It says which eye the session reads, what the walk is and how it
         # advances, and what the keys do — the questions an experimenter has
         # before the first target, in one place.
@@ -835,32 +842,54 @@ class TestCalibrationGuide:
         assert "HV9 — 9 targets" in body
         assert "MANUAL" in body and "press SPACE" in body
         assert "BACKSPACE" in body and "ESC" in body
-        # And it came first: every guide panel went on the window before the
-        # first target did, so a subject never sees a target they were not
-        # told about.
+        # And it is the only thing the window ever showed besides the empty
+        # background: targets, nothing else — no panel, no status line
+        # (user decision, 2026-10-15).
         timeline = tracker._display.window.timeline  # type: ignore[union-attr]
-        assert "target" in timeline and timeline[0] == "guide"
-        assert all(entry == "guide" for entry in timeline[: timeline.index("target")])
+        assert timeline and set(timeline) == {"target"}
+        assert fake_psychopy.texts == []
 
-    def test_the_guide_shows_the_live_eye_line(self, fake_pypixxlib, fake_psychopy):
+    def test_the_wait_before_the_first_target_shows_an_empty_screen(
+        self, fake_pypixxlib, fake_psychopy
+    ):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        # Three refreshes at the wait, then start; ESC at the first target.
+        fake_psychopy.keys.extend([None, None, START, "escape"])
+        flips = tracker._display.window.flips  # type: ignore[union-attr]
+        tracker.calibrate()
+        window = tracker._display.window  # type: ignore[union-attr]
+        # One flip of the empty background takes the pause menu down, then
+        # nothing until the first target; no text was ever made or drawn.
+        assert window.flips >= flips + 1
+        assert set(window.timeline) == {"target"}
+        assert fake_psychopy.texts == [] and tracker._display.texts == []  # type: ignore[union-attr]
+
+    def test_the_live_eye_line_goes_to_the_live_monitor(self, fake_pypixxlib, fake_psychopy):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_pypixxlib.libdpx.pupils = per_eye(right=(0.0, 0.0), left=(3.0, 2.0))
-        # Two refreshes at the guide, then start.
+        reports: list[tuple[str, str]] = []
+        tracker.set_progress_hook(lambda stage, detail: reports.append((stage, detail)))
+        # Two refreshes at the wait, then start.
         fake_psychopy.keys.extend([None, START] + ["space"] * 5)
         tracker.calibrate()
-        menus = tracker._display.menus  # type: ignore[union-attr]
-        assert len(menus) == 2  # redrawn every refresh while it waits
-        assert all("eyes: left only" in body for _, body, _ in menus)
+        guide = [detail for stage, detail in reports if stage == "calibration guide"]
+        assert len(guide) == 2  # reread every refresh while it waits
+        # Which eyes are seen, and the keys that answer the wait: what the
+        # screen used to say, said where the experimenter looks.
+        assert all("eyes: left only" in detail for detail in guide)
+        assert all("press SPACE to start" in detail for detail in guide)
+        assert tracker._display.texts == []  # type: ignore[union-attr]
 
     def test_the_guide_says_auto_when_the_rig_advances_by_itself(
-        self, fake_pypixxlib, fake_psychopy
+        self, fake_pypixxlib, fake_psychopy, caplog
     ):
         tracker = calibrating(
             fake_pypixxlib, fake_psychopy, calibration_type="HV5", calibration_advance="auto"
         )
         fake_psychopy.keys.extend(["escape"])
-        tracker.calibrate()
-        assert "AUTO" in guide_body(tracker)
+        with caplog.at_level(logging.INFO):
+            tracker.calibrate()
+        assert "AUTO" in guide_body(tracker, caplog)
 
     def test_escape_at_the_guide_aborts_with_nothing_sampled(self, fake_pypixxlib, fake_psychopy):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
@@ -1046,11 +1075,12 @@ class TestCalibrationKeys:
         assert result.aborted
         assert fake_pypixxlib.calibration_points == []
 
-    def test_the_guide_names_the_pause_key(self, fake_pypixxlib, fake_psychopy):
+    def test_the_guide_names_the_pause_key(self, fake_pypixxlib, fake_psychopy, caplog):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_psychopy.keys.extend(["escape"])
-        tracker.calibrate()
-        body = guide_body(tracker)
+        with caplog.at_level(logging.INFO):
+            tracker.calibrate()
+        body = guide_body(tracker, caplog)
         assert "P or ESC" in body
         assert "go back to the pause menu" in body
 
@@ -1747,55 +1777,75 @@ class TestCalibrationRecording:
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_pypixxlib.libdpx.pupils = (0.0, 0.0, 0.0, 0.0)
         fake_psychopy.keys.extend([START, "space", "space", "escape"])
-        with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
+        reports: list[tuple[str, str]] = []
+        tracker.set_progress_hook(lambda stage, detail: reports.append((stage, detail)))
+        with caplog.at_level(logging.INFO, logger="alhazen.devices.eyetracker.viewpixx"):
             result = tracker.calibrate()
         assert fake_pypixxlib.calibration_points == []
         assert not fake_pypixxlib.finished_calibration
-        assert any("NO EYE" in shown for text in fake_psychopy.texts for shown in text.shown)
-        # The guide said so as well, before the walk started.
-        assert "NO EYE" in guide_body(tracker)
+        # Said to the live monitor at the target (never on the subject's
+        # screen), and by the guide in the log before the walk started.
+        assert any("NO EYE" in detail for stage, detail in reports if stage == "calibrating")
+        assert "NO EYE" in guide_body(tracker, caplog)
         assert result.aborted
         # And each refused SPACE is in the log, naming the target, so a
         # session log alone explains why the walk did not move.
         refusals = [r.message for r in caplog.records if "not accepted" in r.message]
         assert refusals == ["target 1 of 5 not accepted: no eye in the camera image"] * 2
 
-    def test_the_status_line_names_the_tracked_eyes(self, fake_pypixxlib, fake_psychopy):
+    def test_the_tracked_eyes_reach_the_live_monitor_and_the_log_not_the_screen(
+        self, fake_pypixxlib, fake_psychopy, caplog
+    ):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_pypixxlib.libdpx.pupils = per_eye(right=(0.0, 0.0), left=(3.0, 2.0))
+        reports: list[tuple[str, str]] = []
+        tracker.set_progress_hook(lambda stage, detail: reports.append((stage, detail)))
         fake_psychopy.keys.extend([START] + ["space"] * 5)
-        tracker.calibrate()
-        assert any("left only" in shown for text in fake_psychopy.texts for shown in text.shown)
+        with caplog.at_level(logging.INFO, logger="alhazen.devices.eyetracker.viewpixx"):
+            tracker.calibrate()
+        assert all("left only" in detail for stage, detail in reports if stage == "calibrating")
+        # Logged when it changes: once per target here, since it never does.
+        logged = [
+            r.getMessage()
+            for r in caplog.records
+            if "TRACKPixx3 calibration, target" in r.getMessage()
+        ]
+        assert logged == [
+            f"TRACKPixx3 calibration, target {i} of 5: eyes: left only" for i in range(1, 6)
+        ]
+        assert fake_psychopy.texts == []  # no status line is made, let alone drawn
         assert len(fake_pypixxlib.calibration_points) == 5
 
-    def test_a_calibration_the_device_did_not_keep_is_reported(self, fake_pypixxlib, fake_psychopy):
+    def test_a_calibration_the_device_did_not_keep_is_reported(
+        self, fake_pypixxlib, fake_psychopy, caplog
+    ):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_pypixxlib.calibrated_after_finish = False
+        reports: list[tuple[str, str]] = []
+        tracker.set_progress_hook(lambda stage, detail: reports.append((stage, detail)))
         fake_psychopy.keys.extend([START] + ["space"] * 5)
-        result = tracker.calibrate()
+        with caplog.at_level(logging.ERROR):
+            result = tracker.calibrate()
         assert fake_pypixxlib.finished_calibration
-        assert tracker._display is not None
-        messages = tracker._display.messages  # type: ignore[attr-defined]
-        assert messages and "FAILED" in messages[0]
-        # What happened, then what to do: two paragraphs, so the display's
-        # prose reflow keeps them apart without being asked (and this fake,
-        # which takes no `reflow`, would have raised had it been asked).
-        from alhazen.display import reflow
-
-        assert reflow(messages[0]).split("\n\n") == [
-            "Calibration FAILED: the tracker reports no calibration.",
-            "Check the camera sees the eyes (position, focus, LED), then calibrate again.",
-        ]
-        # And the result says so, for the live monitor and the log.
+        # Not on the subject's screen (user decision, 2026-10-15): in the log,
+        # to the live monitor, and in the result's note, which heads the
+        # pause menu that follows (pause_control._procedure_fault) with what
+        # happened and what to do.
+        assert tracker._display.texts == []  # type: ignore[union-attr]
+        assert "did NOT take" in caplog.text
+        assert ("calibration failed", "the tracker reports no calibration") in reports
         assert result.ok is False and not result.aborted
         assert result.verdict == "NOT calibrated"
+        assert "check the camera sees the eyes (position, focus, LED)" in result.note
         assert "calibrate again" in result.note
+        # And it does not hold the session for a message nobody is shown.
+        assert fake_psychopy.keys == []
 
     def test_a_kept_calibration_says_nothing_on_screen(self, fake_pypixxlib, fake_psychopy):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_psychopy.keys.extend([START] + ["space"] * 5)
         tracker.calibrate()
-        assert tracker._display.messages == []  # type: ignore[attr-defined]
+        assert tracker._display.texts == []  # type: ignore[union-attr]
 
 
 class TestCameraImage:

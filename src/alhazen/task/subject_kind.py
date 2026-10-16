@@ -42,9 +42,10 @@ from collections.abc import Mapping
 from enum import Enum
 from typing import Any
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from alhazen.config.models import Model
+from alhazen.config.sections import section
 from alhazen.errors import ConfigError
 from alhazen.task.reward_policy import RewardPolicy
 
@@ -66,7 +67,9 @@ class SubjectParams(Model):
     pulse; the rig file says which line it goes out on).
     """
 
-    subject_kind: SubjectKind | None = None
+    # Both are shown under Session on the Run page (RewardPolicy declares
+    # its own section).
+    subject_kind: SubjectKind | None = Field(default=None, json_schema_extra=section("session"))
     reward: RewardPolicy | None = None
 
     @model_validator(mode="after")

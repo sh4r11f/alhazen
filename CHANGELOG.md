@@ -27,48 +27,48 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
-### Fixed
-- `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It
-  dropped late alignment marks and refitted once, and the refit moved the
-  line by a few hundredths of a millisecond, enough to put a mark that was
-  just inside the tolerance just outside it (a run refused at 0.51 ms over
-  0.50, with a residual sd of 0.03 ms and no step or drift); it now drops
-  and refits until the line settles, each pass only adding to the dropped
-  set and the 5% budget still bounding the total. And it refused any two
-  late marks in a row as a clock that moved; a scheduler busy for a moment
-  delays the two or three stamps written in that moment (`fix_acquired` and
-  `stim_on` of one trial, half a second apart, with the next mark back on
-  the line), so a run of up to three late marks is dropped when the line
-  resumes on both sides, and a longer run, an early mark, or a run at either
-  end of the recording is refused as before.
-
-### Changed
-- Measure mode writes its report under the rig's data root,
-  `<data_root>/measurements/rig-<name>_<stamp>.json`, for every rig, shared
-  or the experiment's own. A measurement is data — a reading of the machine
-  as it was that day — and is kept with the data, beside the calibration
-  ledger and out of the repository with it; before, it went beside the rig
-  file, in `configs/measurements/`, and showed in every experiment's
-  `git status` as files nobody meant to commit. Measure mode no longer needs
-  an experiment `configs/` folder, so a shared rig can be measured from
-  anywhere. A gamma fit still goes beside the rig file: the rig reads it back.
-  Reports already in `configs/measurements/` are not moved; move them by hand
-  to `data/measurements/` if they should stay with the rest.
-- A run folder's `rig.yaml` is the complete rig the session was started with:
-  the rig file merged over any shared rig it `extends`, with every setting
-  written out, the defaults alhazen filled in included. Before, it was the rig
-  file byte for byte, which for a rig that extends a shared one (every
-  experiment's) showed only the experiment's half, and for any rig left the
-  defaults unsaid. It loads as a rig file that gives the same rig
-  (`--rig .../rig.yaml`). A default the rig refuses written out, because it
-  does nothing under the settings chosen (`max_dropped_per_trial` under a
-  frame-QA policy other than `abort_run`, a `pulse` on a still calibration
-  target), is left out, and the file's header says so. A script that loaded a
-  run's `rig.yaml` as a rig gets the same rig as before; one that compared its
-  bytes with the rig file should read `rig-source.yaml` instead
-  (docs/data.md §2).
-
 ### Added
+- The mouse stand-in (`eyetracker.backend: mouse_sim`) takes
+  `eyetracker.calibration_target` and walks its calibration as the
+  TRACKPixx3 does: the guide's wait, then the rig's target (standard, chosen
+  pictures or random pictures; still or pulsating) at each point of
+  `calibration_type` (HV5/HV9/HV13, checked when the rig loads), through the
+  same presenter and picture deck, with the same keys, advance modes and live
+  monitor stages. Nothing is fitted (the result says so), the CALIBRATION
+  event records `target_style` and `targets_shown`, and the validation that
+  follows carries on the deck. `--calibration-target/-images/-motion` and the
+  workspace's Rig section accept a mouse_sim rig; the stand-in `--mouse` puts
+  in place of a real tracker is unchanged.
+- The live monitor's procedure guide: during a calibration, validation or
+  drift correction a panel at the top of the page says what to do in large
+  type — the procedure's heading, the instruction with its keys drawn as
+  keys (*Press Space to start, P or Esc to go back to the pause menu*), the
+  tracker's eye line, *Target 2 of 5* with one mark per target — and, after
+  a failure or a stop, what went wrong and what to check. It appears when the
+  procedure starts and goes when it succeeds; a failure stays until the
+  session resumes or the next procedure starts. It is drawn from a new
+  structured state field, `state["procedure"]` (kind, heading, stage,
+  instruction, status_line, status_alert, step, n, outcome, failure, check,
+  t; null when there is none), built by `session/procedure_guide.py` from the
+  trackers' progress reports and the procedures' results
+  (docs/live_monitor.md, *The procedure guide*). The same page is what the
+  dashboard's Live monitor tab frames, so it is there too.
+- `--params-source` and `alhazen.task.params_source(args)`: the params file
+  as the operator chose it. The experiment workspace runs a copy of the Task
+  parameters entry's file (its run folder's `params.yaml`) and now passes
+  the original beside it (`configs/task-light.yaml (Task parameters "Main
+  (less trials)")`, "as edited on the Run page" when the values sent
+  differ), so a params hook that refuses a file names the one that was
+  picked. From a shell the helper is `args.params` as given. Sent only to a
+  project whose alhazen reports the new `params-source` capability. The
+  line printed before trial one adds `(chosen as …)` for such a copy.
+- The Run page shows why the experiment's last launch failed, above
+  **Start run**: a refusal (`INVALID:` / `CANNOT …:`, or a usage error) as **Run refused**,
+  an uncaught exception's last line as **Run stopped with an error**,
+  otherwise the console's last lines, with **Open the console** for the
+  rest. Read from the console by `alhazen.cli.launch_failure` and sent as
+  `failure` in the run detail (`/api/runs/<id>`); it used to say only "Run
+  failed" in the output card.
 - `LiveMonitorPanel.series`, for a `grouped_mean` panel: a second factor drawn
   in the colour rather than along the axis. Each level of `group` is one
   position on the axis and, at each, one mark per level of `series`, dodged
@@ -91,6 +91,197 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   The run layout baseline (`tests/fixtures/contracts.json`) gains the one name.
 - The workspace's run viewer lists `rig-merged.yaml` among a run's text
   files; before, a run's merged rig could only be opened from disk.
+- The live monitor's Session buttons command a running task, not only a
+  paused one: Pause, Skip trial, Reward and Quit act during a trial; Resume,
+  Calibrate, Validate, Drift correct, Reward and Quit while paused; the stage
+  keys in both when a curriculum runs. The three eye-tracker procedures work
+  only while the task is paused, on every rig: during a trial they are off,
+  saying "… works only while the task is paused; pause it first", and the
+  server refuses them with a 409 and that reason. Each
+  button shows its key at the rig, is on only when the session will act on it
+  (a dimmed one says why), and reads "sent" until the task acknowledges it.
+  Quit asks first, in the page (no browser dialog). A click reaches a running
+  trial through the same command source as the keyboard
+  (`core.commands.MergedCommands`): no synthetic keystrokes, no window focus.
+  The buttons are drawn into every `[data-controls-host]` on the page.
+- `OPERATOR_COMMAND`, a reserved event: every command the session takes from
+  the live monitor, and every rig key the session refuses, with `name`,
+  `request_id`, `source` (`live_monitor` or `keyboard`),
+  `result` (`applied`, `refused`, `failed` or `discarded`) and a `note`. The
+  newest 20 travel in each live monitor state as `commands`, and at once on
+  `GET /api/commands`.
+- **Task parameters in sections on the Run page.** The fields editor groups
+  rows under Stimulus, Timing, Session and Other, each with its count; the
+  search hides emptied headings. A params model declares a field's section
+  with `alhazen.section("stimulus" | "timing" | "session" | "other")` in the
+  field's or a nested model's `json_schema_extra` (`x-alhazen-section`;
+  `alhazen.config.sections`). Undeclared fields are inferred from their
+  top-level name (documented rules, docs/workspace.md), so experiments on an
+  older alhazen render fully inferred. alhazen's `Duration` declares Timing,
+  `SchedulerConfig` and `RewardPolicy` Session, `SubjectParams.subject_kind`
+  Session (additive JSON-schema keys; validation unchanged).
+- **The estimate says how many conditions run and how many trials of each**,
+  beside the total ("72 conditions × 8 trials = 576 trials · 8 blocks";
+  "24 conditions, 8–16 trials each" when unequal; "trials decided by the
+  staircase" with each estimator's bounds for adaptive plans). The counts
+  come from the drained schedule: `PlannedSchedule.cell_counts` (filled by
+  `drain`), `AdaptiveSchedule.estimators` / `per_estimator` / `decided_by`
+  (filled by `adaptive_bounds`), all optional with defaults. The answer's
+  `counts` gain `per_condition`; every uncertainty line is kept.
+- The live monitor's Trial view: the running trial's screen in dva (stimuli
+  and gaze windows on a degree grid) with the current gaze and a trail that
+  restarts each trial, beside a camera box that shows the last real frame from
+  a pause or calibration with its age, or the tracker's reason there is none.
+  `TrialPlan.schematic` lets a task supply its exact picture in the new shape
+  vocabulary (`alhazen.display.schematic`), drawn exactly as given, with the
+  plan's regions added unless the picture carries region shapes itself;
+  without one only the regions (gaze windows) are drawn, nothing derived from
+  the stimuli, and the page says so once. A shape's name shows on hover
+  exactly as given (`region_shapes` names each window after its key:
+  *Fixation window*); the legend keys stimuli, outlines and paths
+  (role `annotation`), gaze windows and approximate outlines. The gaze travels at up to 60 Hz on its own non-blocking channel
+  (`/api/gaze`), the picture once per trial (`/api/trial`). Every eye-tracker
+  backend states why it gives no camera image during a trial
+  (`camera_while_recording`). A label on the picture is sized to the picture
+  as shown (12 px on a desktop, down to 10 px on a phone), split evenly over
+  two lines when it does not fit, then ellipsized with its whole text on
+  hover, and kept inside the border; labels are filled text (the annotation
+  outline rule had drawn them as hollow letters). The 5° scale bar moves to
+  another corner when a label sits on its bottom-left one. docs/live_monitor.md,
+  "Trial view".
+- `CalibrationTargets` is offered by the EyeLink and TRACKPixx3 backends as
+  the optional capability `calibration_targets` (protocol.py), and
+  `procedures.validate` / `procedures.drift_correct` take
+  `calibration_targets=` to draw it. `ValidationResult` and `DriftResult`
+  gain `target_style` and `shown`; the VALIDATION and DRIFT_CORRECTION events
+  gain `target_style` and `targets_shown` (ordinal, position, picture, time)
+  in the CALIBRATION event's shape, only when a target was drawn (a simulated
+  display's events are unchanged). `procedures.target_maker` makes the
+  calibration's target for one procedure; `procedures.target_record` is the
+  shared event shape.
+
+### Changed
+- The EyeLink's camera image is no longer drawn on the subject's display,
+  including when the experimenter opens it on the Host PC's setup screen. The
+  calibration graphics hand each image (8-bit grey, the Host PC's overlays
+  drawn white) to the live monitor: the Eye tracker Camera panel streams it
+  while the setup screen shows it, and the Trial view keeps the last one with
+  its age. The EyeLink backend gains `camera_frame()`; before the first image
+  it raises `NoCameraImageYet` (a `TrackerError` that is not a fault, noted at
+  info), and the panel says to press ENTER on the setup screen. The subject
+  window's mouse no longer moves the Host PC's search limits. A camera frame
+  that a tracker keeps is sent to the live monitor once, not on every refresh.
+- During an eye-tracker procedure the line under the live monitor's Session
+  buttons stays empty (the procedure guide says it, large); the status
+  message is still published. `EyeTrackerMonitor` publishes the end of every
+  procedure itself and each new target at once, and a trial that starts
+  after a procedure publishes "running", so a calibration answered at the
+  request before trial 1 no longer leaves the page saying "calibrating"
+  through the first trial.
+- Measure mode writes its report under the rig's data root,
+  `<data_root>/measurements/rig-<name>_<stamp>.json`, for every rig, shared
+  or the experiment's own. A measurement is data — a reading of the machine
+  as it was that day — and is kept with the data, beside the calibration
+  ledger and out of the repository with it; before, it went beside the rig
+  file, in `configs/measurements/`, and showed in every experiment's
+  `git status` as files nobody meant to commit. Measure mode no longer needs
+  an experiment `configs/` folder, so a shared rig can be measured from
+  anywhere. A gamma fit still goes beside the rig file: the rig reads it back.
+  Reports already in `configs/measurements/` are not moved; move them by hand
+  to `data/measurements/` if they should stay with the rest.
+- **The rig keyboard's C during a trial no longer pauses and calibrates.**
+  Calibration, validation and drift correction run only while the task is
+  paused, on every rig, from the page and from the keyboard alike, judged by
+  one table (`live_monitor/controls.py`; `KEYBOARD_COMMAND_NAMES` maps each
+  key's command into it). The engine hands the in-trial C to the runner, which
+  logs the refusal, records an `OPERATOR_COMMAND` with `source: keyboard`,
+  `result: refused` and `request_id: keyboard-<n>`, and lists it under the
+  live monitor's buttons; the trial goes on. Pause with P, then C on the pause
+  menu. V and D were never bound during a trial and still are not. Live
+  monitor acknowledgement records gain `source`. `TrialEngine` no longer sets
+  the record's `pause_action`, and `PauseController` no longer reads it.
+- The dashboard takes the Split design: an icon rail that widens on hover, the Run
+  page as settings on the left and an instrument pane on the right (the launch
+  summary before a run, the live monitor during one, media, console and upload
+  after), Manrope type, the Penrose mark with the wordmark "Alhazen", a warm
+  oxblood palette, and light by default (System and Dark stay one click away and
+  are remembered). The live monitor's chrome, operator buttons and Trial view
+  follow the same language; chart colours are unchanged. Nunito is no longer
+  shipped. On a phone the live monitor's panel names wrap onto as many rows as
+  they need beside or above the theme button, every one whole, instead of one
+  row that scrolled sideways and hid the last name under the button; an off
+  operator button never takes the hover or pressed look.
+- A run folder's `rig.yaml` is the complete rig the session was started with:
+  the rig file merged over any shared rig it `extends`, with every setting
+  written out, the defaults alhazen filled in included. Before, it was the rig
+  file byte for byte, which for a rig that extends a shared one (every
+  experiment's) showed only the experiment's half, and for any rig left the
+  defaults unsaid. It loads as a rig file that gives the same rig
+  (`--rig .../rig.yaml`). A default the rig refuses written out, because it
+  does nothing under the settings chosen (`max_dropped_per_trial` under a
+  frame-QA policy other than `abort_run`, a `pulse` on a still calibration
+  target), is left out, and the file's header says so. A script that loaded a
+  run's `rig.yaml` as a rig gets the same rig as before; one that compared its
+  bytes with the rig file should read `rig-source.yaml` instead
+  (docs/data.md §2).
+- The live monitor server passes a command only in a status that allows it
+  (`alhazen.live_monitor.controls`) and only if the session lists it as
+  available (the state's `controls` block); otherwise 409 with the reason.
+  Each queued command carries the status it was accepted in, and the session
+  acts on it only in that status. Before, every command was refused unless the
+  session was paused, so the buttons stayed greyed out until P was pressed in
+  the PsychoPy window.
+- Commands discarded at the start of a pause or after a procedure are
+  acknowledged as `discarded` instead of being dropped silently.
+- The Run page's parameter editor labels a `Duration` row by the duration,
+  its unit beside ("fixation hold (ms)"), where it showed "ms" under
+  `fixation_hold`. The estimate's counts line reads at body size.
+- Validation and drift correction draw the calibration's target (user
+  decision, 2026-10-15): `eyetracker.calibration_target` — the standard disc
+  with a hole or a picture, still or pulsating, the same size and pulse — on
+  every tracker, through the presenter the calibration draws with, instead
+  of the 0.5° white disc. On an EyeLink and a TRACKPixx3 it is the tracker's
+  own, so the picture deck carries on from the calibration (a chosen set in
+  its order, a random one from the session seed's `calibration_target`
+  stream, never the same picture twice in a row); a stand-in draws the
+  standard target, still. `procedures.TARGET_SIZE_DVA` and `TARGET_COLOR`
+  are gone.
+- A calibration shows nothing but its targets on the subject's screen (user
+  decision, 2026-10-15), on every tracker path. The calibration guide is no
+  longer drawn: it goes to the session log once per calibration, and the
+  live monitor's procedure line says what the wait is for and the keys that
+  answer it (`calibration guide: eyes: both tracked · press SPACE to start,
+  P or ESC to go back to the pause menu`). The TRACKPixx3 walk draws no eye
+  status line (the live monitor gets it at every refresh, the log per target
+  and on change) and no *Calibration FAILED* message (the log, the live
+  monitor and the pause menu's heading say it, with what to check; the 2.5 s
+  hold is gone). The EyeLink graphics no longer draw the Host PC's caption
+  under the camera image (logged when it changes). The screen is cleared to
+  the background when C is pressed. A new stage's first progress line is
+  published to the live monitor at once, whatever the throttle.
+  `make_calibration_graphics` lost its unused `foreground` argument.
+
+### Fixed
+- The live monitor no longer drops the newer of two states published back to
+  back. The replace of an unread snapshot could not reach one still in the
+  queue's feeder thread, so the second publish was the one discarded (with a
+  "queue remained full" warning): a procedure's end right after its last
+  report, or the pause right after a procedure, could leave the page on the
+  older state. The publish now waits for that thread, at most
+  `REPLACE_WAIT_S` (0.05 s), and only when two publishes collide.
+- `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It
+  dropped late alignment marks and refitted once, and the refit moved the
+  line by a few hundredths of a millisecond, enough to put a mark that was
+  just inside the tolerance just outside it (a run refused at 0.51 ms over
+  0.50, with a residual sd of 0.03 ms and no step or drift); it now drops
+  and refits until the line settles, each pass only adding to the dropped
+  set and the 5% budget still bounding the total. And it refused any two
+  late marks in a row as a clock that moved; a scheduler busy for a moment
+  delays the two or three stamps written in that moment (`fix_acquired` and
+  `stim_on` of one trial, half a second apart, with the next mark back on
+  the line), so a run of up to three late marks is dropped when the line
+  resumes on both sides, and a longer run, an early mark, or a run at either
+  end of the recording is refused as before.
 
 ## 2.16.0 - 2026-10-13
 

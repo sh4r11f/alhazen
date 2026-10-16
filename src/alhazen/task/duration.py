@@ -193,6 +193,12 @@ class PlannedSchedule:
     note: str = ""
     # How many distinct cells it serves, its block number aside.
     n_cells: int | None = None
+    # Each distinct cell (as the inner scheduler holds it, block number
+    # aside) and how many trials of it the plan serves, in the order the
+    # cells were first served. ``drain`` fills it; a schedule built some
+    # other way may leave it None, and the estimate then counts the
+    # conditions ``blocks`` lists.
+    cell_counts: tuple[tuple[Condition, int], ...] | None = None
 
     @property
     def n_trials(self) -> int:
@@ -217,6 +223,14 @@ class AdaptiveSchedule:
     max_breaks: int | None = 0
     validate_after_break: bool = False
     note: str = ""
+    # When the plan is one estimator per level (an interleaved staircase or
+    # QUEST+): how many there are, and the bounds the stopping rule puts on
+    # each one's trials (``max`` None: no bound). None when the trials are
+    # not split by level that way (one estimator, or a task's own search).
+    estimators: int | None = None
+    per_estimator: tuple[int, int | None] | None = None
+    # Who decides each condition's trials, in a few words ("the staircase").
+    decided_by: str = "the stopping rule"
 
     def __post_init__(self) -> None:
         if self.min_trials < 0 or (
@@ -260,7 +274,8 @@ def drain(source: Any) -> PlannedSchedule:
     if not _queue_based(source):
         raise TypeError(f"{type(source).__name__} is not a fixed plan this can drain")
     blocks: list[list[Condition]] = []
-    cells: set[str] = set()
+    # cell key -> [the cell's condition, trials served], first served first.
+    cells: dict[str, list[Any]] = {}
     current_block: int | None = None
     breaks = 0
     served = 0
@@ -283,11 +298,14 @@ def drain(source: Any) -> PlannedSchedule:
         # The cell as the inner scheduler holds it, without the block number
         # a BlockPlan stamps on what it serves.
         inner = source._served[1] if isinstance(source, BlockPlan) and source._served else condition
-        cells.add(repr(sorted(inner.params.items(), key=lambda kv: kv[0])))
+        key = repr(sorted(inner.params.items(), key=lambda kv: kv[0]))
+        cell = cells.setdefault(key, [inner, 0])
+        cell[1] += 1
         source.record(condition, TrialResult(outcome=_COMPLETED, record={}))
     return PlannedSchedule(
         blocks=tuple(tuple(b) for b in blocks),
         n_cells=len(cells),
+        cell_counts=tuple((c, n) for c, n in cells.values()),
         breaks=breaks,
         validate_after_break=bool(getattr(source, "validate_after_break", False)),
     )
@@ -333,6 +351,7 @@ def adaptive_bounds(cfg: SchedulerConfig, conditions: list[Condition]) -> Adapti
         rule = f"QUEST+ runs {cfg.quest.n_trials} trials for each of {n_est} level(s)"
     min_trials = low * n_est
     max_trials = None if high is None else high * n_est
+    decided_by = "the staircase" if cfg.kind == "staircase" else "QUEST+"
     min_breaks = 0
     max_breaks: int | None = 0
     validate = False
@@ -352,6 +371,9 @@ def adaptive_bounds(cfg: SchedulerConfig, conditions: list[Condition]) -> Adapti
         min_breaks=min_breaks,
         max_breaks=max_breaks,
         validate_after_break=validate,
+        estimators=n_est,
+        per_estimator=(low, high),
+        decided_by=decided_by,
     )
 
 

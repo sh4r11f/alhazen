@@ -50,7 +50,7 @@ def make_tracker(
             raise ConfigError(
                 "eyetracker backend 'mouse_sim' needs an open display to read the mouse from"
             )
-        return MouseSimTracker(display, screen, clock)
+        return MouseSimTracker(display, screen, clock, cfg)
     raise ConfigError(
         f"eyetracker backend {cfg.backend!r} is test-only: it replays a gaze trajectory that "
         f"only test code can supply. Use 'eyelink' or 'viewpixx' on the rig, or 'mouse_sim' "

@@ -136,6 +136,57 @@ class TestTheProceduresRunFromTheMenu:
     """V and D run a validation and a drift correction through the session's
     eye-tracker monitor, then return to the menu like C does."""
 
+    def test_c_in_a_trial_is_refused_then_c_v_d_on_the_pause_menu_run(self, tmp_path):
+        """The rule on every rig (2026-10-14): the eye-tracker procedures run
+        only while the task is paused. C pressed during a trial is refused
+        (logged, OPERATOR_COMMAND from the keyboard) and the trial goes on to
+        its end; after P, C, V and D on the pause menu run their procedures
+        as before, and SPACE resumes."""
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2 + 20.0, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        calibrations: list = []
+        tracker.calibrate = lambda: calibrations.append(1)  # type: ignore[method-assign]
+        commands = TimedKeys(
+            clock,
+            # C on the trial's first frame (refused; the trial goes on), then P
+            # on a later frame (paused).
+            batches=[[Command.CALIBRATE], [], [Command.PAUSE]],
+            presses=[(0.0, "c"), (30.0, "v"), (60.0, "d"), (90.0, "space")],
+        )
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=2,
+            commands=commands,
+            use_pause_menu=True,
+            tracker=tracker,
+            clock=clock,
+        )
+
+        harness.runner.run()
+
+        events = harness.collector.events
+        names = [event.name for event in events]
+        refused = [e for e in events if e.name == "OPERATOR_COMMAND"]
+        assert [(e.payload["name"], e.payload["source"], e.payload["result"]) for e in refused] == [
+            ("calibrate", "keyboard", "refused")
+        ]
+        assert refused[0].payload["note"] == (
+            "Calibrate works only while the task is paused; pause it first"
+        )
+        # The refused C did not pause: the trial went on (its next frame's
+        # FIX_ON came after the refusal), and the one pause is the P's, with
+        # no calibrate action attached.
+        assert names[:4] == ["TRIAL_START", "OPERATOR_COMMAND", "FIX_ON", "PAUSED"]
+        (paused,) = [e for e in events if e.name == "PAUSED"]
+        assert paused.payload == {}
+        # On the pause menu the three procedures ran.
+        assert len(calibrations) == 1
+        monitor = harness.eyetracker
+        assert monitor is not None
+        assert monitor.validation is not None and not monitor.validation.aborted
+        assert monitor.drift is not None and monitor.drift.applied
+
     def test_validate_and_drift_correct_then_resume(self, tmp_path):
         clock = FakeClock()
         # A subject who stares 20 px (half a degree) right of the screen's
@@ -392,6 +443,12 @@ class TestAProcedureThatSucceedsTakesTheHeadingBackDown:
             self.drift = None
             self.validation = None
             self.publisher = None
+            # The live monitor's procedure guide (EyeTrackerMonitor.procedure):
+            # none to show, and none to take down.
+            self.procedure = None
+
+        def dismiss_procedure(self) -> bool:
+            return False
 
         def validate(self):
             self.validation = self._results.pop(0)
@@ -456,6 +513,9 @@ class FakeLiveMonitor:
 
     def publish(self, state) -> None:
         self.published.append((state.get("status"), state.get("message")))
+
+    def publish_commands(self, records) -> None:
+        """The acknowledgement channel; nothing reads it here."""
 
     def publish_camera(self, pixels, t, eyes=None) -> None:
         self.frames += 1
@@ -614,6 +674,10 @@ class TestASimulationsBreakResumesByItself:
             validation = None
             publisher = None
             has_camera = False
+            procedure = None
+
+            def dismiss_procedure(self) -> bool:
+                return False
 
             def validate(self):
                 self.validation = ValidationResult(
@@ -922,9 +986,13 @@ class TestASimulationsBreakValidationCannotHang:
         from alhazen.devices.eyetracker import procedures
         from alhazen.testing import FakeStimulus
 
-        # A real window's fixation point needs PsychoPy; the walk's target is
-        # drawn through this factory, and a recording stand-in does as well.
-        monkeypatch.setattr(procedures, "make_fixation", lambda *args: FakeStimulus("target"))
+        # A real window's calibration target needs PsychoPy; the walk's target
+        # is made through this factory, and a recording stand-in does as well.
+        monkeypatch.setattr(
+            procedures,
+            "target_maker",
+            lambda *args: lambda pos: FakeStimulus("target"),
+        )
         clock = FakeClock()
         harness = SessionHarness(
             tmp_path,

@@ -78,35 +78,156 @@ whose length is negative (larger than 4 KiB gets a 413). `--live-monitor` and `-
 rig for one run. `--no-live-monitor-browser` starts the server without launching
 the default browser; the URL is written to the session log.
 
-## Focus safety and controls
+## Session controls
 
-The live monitor is deliberately read-only during a running experiment. Clicking
-a browser on the presentation computer necessarily transfers OS focus before
-Python can react, so a web Pause button cannot honestly promise not to affect
-subject input.
+The sidebar's **Session** buttons command the running task directly, so the
+operator never has to click into the PsychoPy window: **Pause** (P),
+**Resume** (Space), **Calibrate** (C), **Validate** (V), **Drift correct** (D),
+**Reward** (R), **Skip trial** (Esc), **Quit** (Ctrl-C during a trial, Q while
+paused), and, when a curriculum runs, **Promote**, **Demote** and **Hold
+stage** (], [, H). Each button shows the key it stands for at the rig. The
+same buttons are drawn into every element of the page marked
+`data-controls-host` (a view can put a set under itself).
 
-Press **P** on the experimenter keyboard first. Once the subject display says
-the run is paused, the live monitor enables Resume, Calibrate, Validate, Drift
-correct, Give reward, Quit, and curriculum controls. The server also rejects
-control requests unless its authoritative session state is `paused`;
-disabling the buttons is not the security boundary. Space, C, V, D, R and Q
-remain available from the keyboard while paused, so closing the browser
-cannot strand a session.
+What a button does depends on what the session is doing:
 
-Commands queued before a pause begins are **discarded**. A click accepted in
-the milliseconds between the browser seeing "paused" and the runner resuming
-would otherwise sit in the queue and fire at the next pause — a reward
-delivered, or a session quit, minutes after the click that asked for it.
+| Status | Buttons that act |
+| --- | --- |
+| running (a trial or the gap between trials) | Pause, Skip trial, Reward, Quit, stage keys |
+| paused | Resume, Calibrate, Validate, Drift correct, Reward, Quit, stage keys |
+| calibrating (a procedure is running), starting, ended | none |
 
-The eye-tracker procedures and manual reward leave the run paused. Resume is
-always an explicit action. Each successful or failed reward is written to
-`events.csv`, including its configured pulse train.
+The three eye-tracker procedures (**Calibrate**, **Validate**, **Drift
+correct**) work only while the task is paused, on every rig (it is not a rig
+setting): a procedure takes the subject's screen over, so the operator pauses
+first and then chooses one. During a trial they are off, with the reason
+"Calibrate works only while the task is paused; pause it first", and the
+server refuses them with a 409 and the same reason.
+
+The rig keyboard follows the same rule, judged by the same table
+(`live_monitor/controls.py`; `KEYBOARD_COMMAND_NAMES` names each key's
+command in it): C pressed during a trial no longer pauses and calibrates in
+one press. The trial goes on; the refusal is logged ("calibrate key during a
+trial refused: …"), written to `events.csv` as an `OPERATOR_COMMAND` with
+`source: keyboard`, `result: refused`, `request_id: keyboard-<n>` and the
+same note, and listed under the page's buttons as *Calibrate (key at the
+rig)*. It is not drawn on the rig's screen: during a trial that is the
+subject's screen. V and D have no binding during a trial at all (they are
+pause-menu rows, read only while paused), so no in-trial key can start a
+validation or a drift correction. On the pause menu C, V and D run their
+procedures as before.
+
+A button the session will not act on is shown dimmed with its reason (on
+hover, and in a line under the buttons when it is clicked; it keeps its dimmed
+look under the pointer, pressed, tapped and clicked, and keeps the focus when
+the buttons are redrawn): a rig with no eye
+tracker says so under Calibrate, a run with nobody at the keyboard (an
+unattended run resumes every pause at once) under Pause. **Quit** asks first,
+in the page.
+
+**One path for every command.** A click is not a synthetic keystroke and
+needs no window focus. The server (`live_monitor/controls.py`) passes a
+command only in a status that allows it and only if the session listed it as
+available, and stamps it with that status; anything else is refused with a 409
+and the reason. During a trial the command reaches the engine through the
+same command source the keyboard feeds (`core.commands.MergedCommands`), so a
+Pause clicked in the page and P pressed at the rig end the trial through the
+same code and leave the same `PAUSED` event. While paused, the pause menu
+takes it, exactly as it takes Space, C, V, D, R and Q from the keyboard,
+which stay live, so closing the browser cannot strand a session. The
+procedures and a manual reward leave the run paused; resuming is always an
+explicit action.
+
+**Acknowledged by the task.** Every command the session takes off the queue
+is acknowledged once: **applied**, **refused** (the session cannot act on it),
+**failed** (it tried: a reward the pump refused) or **discarded** (it arrived
+when it no longer applied). The acknowledgement is written to `events.csv` as
+an `OPERATOR_COMMAND` event (`name`, `request_id`, `source: live_monitor`,
+`result`, `note`), published as `commands` (the newest 20) in every state
+snapshot, and sent at once on its own channel, so a Reward clicked mid-trial
+reads "applied" without waiting for the trial to end. The page shows a
+clicked button as sent until its acknowledgement arrives, and lists the
+newest acknowledgements under the buttons.
+
+**Stale commands are discarded, and say so.** A command is acted on only in
+the status it was accepted in. A Resume accepted a moment before the keyboard
+resumed never fires in the next trial; a Reward or Pause queued as a trial
+ended is discarded when the pause begins; a click accepted while a procedure
+ran is discarded when it ends. Each is acknowledged as discarded with the
+reason, rather than vanishing.
+
+**Focus.** Clicking a browser on the presentation computer moves keyboard
+focus away from the PsychoPy window, as a Resume clicked in the browser always
+did. Commands need no focus, but a task whose subject answers with the
+keyboard reads those keys from the PsychoPy window: on such a rig, open the
+live monitor on a second computer (the experiment workspace's Live monitor
+tab, or the URL from the session log) or press P/Space at the rig.
 
 While a calibration, validation or drift correction runs, the status reads
-**calibrating**, the buttons are inert, and the notice follows the
-procedure's progress (`validating: target 3 of 5`); when it ends, the notice
-shows the result line and the *Eye tracker* panels update. See
-[eye-tracker.md](eye-tracker.md).
+**calibrating** and the buttons are off. A walk whose rig advances targets by
+hand (`calibration_advance: manual`) still takes SPACE at each target from the
+rig's keyboard. See [eye-tracker.md](eye-tracker.md).
+
+### The procedure guide
+
+The subject's screen shows nothing but the targets during a procedure, so
+what used to be written on it is on the live monitor instead, as a panel at
+the top of the page (above the Trial view and the plots, so a one-screen rig
+and the dashboard's Live monitor tab show it without scrolling):
+
+- the heading: **Calibration**, **Validation** or **Drift correction**;
+- the instruction, the largest text on the page, with the keys drawn as
+  keys: *Press Space to start, P or Esc to go back to the pause menu* while a
+  TRACKPixx3 waits at its guide, *Press Space to open the Host PC setup, Esc
+  to skip* on an EyeLink, *Press Space when the subject is looking at the
+  target* while a target is up in manual mode (*Keep the subject looking at
+  the target; it moves on by itself* in auto mode), *Calibrating on the Host
+  PC's setup screen* while the EyeLink's Host PC has the procedure, and
+  *Camera image: …* while its camera image is open;
+- the tracker's status line: on a TRACKPixx3 the eyes the camera sees
+  (`eyes: left only`), in the critical colour when it sees none;
+- the step: *Target 2 of 5*, with one mark per target (taken, up now, still
+  to come);
+- after a failure or a stop: the heading says so (*Calibration failed*,
+  *Validation stopped*), what went wrong (the result's own note — *The device
+  reports NO calibration after the walk*), and what to check (the note's own
+  "check …" clause when it has one, otherwise the usual next step: calibrate
+  again with C, validate again with V, drift-correct again with D).
+
+The panel appears when the procedure starts and goes when it succeeds. A
+procedure that failed or was stopped keeps it — so the operator has seen the
+failure — until the session resumes (a resume from the pause, or the next
+trial starting, which covers the calibration request before trial 1) or the
+next procedure starts. While it is up, the line under the Session buttons
+stays empty rather than repeat it small; the status line it carried before
+(`validating: target 3 of 5`) is still published as the state's `message`.
+The full guide (eye, layout, advance mode, keys) is in the session log.
+
+The panel is drawn from a structured field of the state, never from the
+status text. `state["procedure"]` is `null` when there is no procedure to
+show, and the saved copy in `figures/` never carries one; otherwise:
+
+| key | value |
+|---|---|
+| `kind` | `calibration`, `validation` or `drift_correction` |
+| `heading` | `Calibration`, `Validation` or `Drift correction` |
+| `stage` | the tracker's own word for where it is (`calibration guide`, `calibrating`, `camera image`, `validating`, `drift correcting`, `calibration failed`, `starting`, or a tracker's own) |
+| `instruction` | what the operator does now; empty once the procedure has ended |
+| `status_line`, `status_alert` | the tracker's status (the eye line) or null; `status_alert` true when it says something is wrong |
+| `step`, `n` | the target up now and how many there are, or null |
+| `outcome` | `running`, `failed` or `aborted` (a procedure that succeeds is not published: the field goes back to null) |
+| `failure`, `check` | what went wrong and what to check, once `outcome` is not `running` |
+| `t` | session clock of the last change |
+
+It is built by `session/procedure_guide.py` from the `(stage, detail)`
+progress reports the trackers already make and from each procedure's result
+(`CalibrationResult`, `ValidationResult`, `DriftResult`); a stage it does not
+know is shown with its detail as the instruction. `EyeTrackerMonitor`
+(session/eyetracker.py) holds it, publishes a new target at once whatever the
+progress throttle, publishes the end of every procedure itself (not every
+caller publishes after one), and drops a kept failure on
+`dismiss_procedure()`, which the runner calls on a resume and when a trial
+starts.
 
 ## The plots
 
@@ -731,6 +852,230 @@ a rebuild landed on a button that was no longer on the page, and the browser
 then reports no click, so steps went missing under repeated presses. Each
 press also steps on from the value just sent rather than the one last
 published. `click` is kept for the keyboard, which reports no press.
+
+## Trial view
+
+The **Trial** entry in the sidebar (and the top of *All panels*) shows the
+screen the subject is looking at, in degrees of visual angle, with the eye's
+position over it: the trial's stimuli and gaze windows on a 5° grid, the
+current gaze point, and a trail of the last 0.5, 1 or 2 seconds (or the whole
+trial; the *Trail* menu, remembered per browser). The trail starts again with
+every trial. A frame with no gaze sample (a blink, a lost eye) breaks the
+trail and hides the point, and the line under the picture says so. Beside the
+picture is the camera box, and under it the task controls (the same buttons as
+the sidebar's, rendered into `<div data-controls-host>`). The saved copy in
+`figures/` has no Trial view: it has no trial running.
+
+### The picture
+
+Every coordinate is in dva, centred on the screen, y up: the frame stimulus
+placement already uses through `Screen.deg2px`. Six shapes, in
+`alhazen.display.schematic`:
+
+| Shape | Geometry |
+|---|---|
+| `Circle(center, radius)` | a disc or ring |
+| `Rect(center, size, angle_deg=0)` | a rectangle turned counter-clockwise about its centre |
+| `Line(start, end)` | a segment |
+| `Polygon(points)` | a closed outline through three or more points |
+| `Dots(points, radius)` | a dot field |
+| `Label(at, text)` | a short label (an annotation by default) |
+
+Each also takes `name=` (shown on hover), `role=` and `approximate=`. The
+role says how it is drawn: `stimulus` (on the subject's screen, filled),
+`region` (a window a gaze is judged against, a dashed outline, never filled:
+nothing is on the screen there) or `annotation` (the operator's mark, on no
+screen; a thin solid outline, keyed *Outline or path* in the legend; a label
+needs no key). `approximate=True` draws the outline dotted and puts *Approximate
+outline* in the legend: a bounding shape, or the place a moving stimulus
+starts from, is never passed off as exact. The hover shows `name` exactly as
+given; `region_shapes` names each window after its key, `fixation` ->
+*Fixation window*. A label's text is 12 px on a picture shown at least 480 px
+wide (any desktop page) and shrinks with a narrower one to 10 px on a phone;
+what still does not fit goes onto two lines split evenly, then ends in an
+ellipsis with the whole text on hover, and a label near an edge is moved in so
+the picture's border never cuts it. The 5° scale bar sits at the bottom left
+unless a label is there; it then moves to the next corner clear of labels
+(bottom right, top left, top right), preferring one clear of the shapes too,
+so a label always keeps the place the task gave it. A shape checks itself when it is
+built — finite numbers, positive sizes, at least three polygon points, a known
+role, at most 5000 points per schematic — and raises `ValueError` naming the
+field, so a malformed picture fails at `build_trial` on trial one.
+
+**Where the picture comes from.** A task can hand over its own, exact picture
+as `TrialPlan.schematic`, and the page draws exactly those shapes. The plan's
+regions (the windows the phases judge gaze against) are added as dashed
+outlines, converted from centred px with the session's own `Screen`, unless
+the task's picture already carries a shape with role `region`: a task that
+draws its windows itself, with `region_shapes` or its own shapes, gets exactly
+what it drew and nothing is added. The windows are drawn over the stimuli, so
+a dashed outline is never hidden under a filled disc.
+
+```python
+from alhazen.display.schematic import Circle, Dots, Rect
+from alhazen.task.schematic import region_shapes
+
+
+def build_trial(self, setup):
+    ...
+    return TrialPlan(
+        phases=phases,
+        stimuli=stimuli,
+        regions=regions,
+        schematic=[
+            Dots(dot_positions_dva, radius=0.1, name="cylinder"),
+            Rect((0.0, 0.0), (26.0, 14.0), name="aperture", role="annotation"),
+            Circle((0.0, 0.0), 0.15, name="fixation"),
+            *region_shapes(regions, setup.screen),  # the windows, drawn by the task
+        ],
+    )
+```
+
+Without one, the page shows **only the regions**, nothing derived from the
+stimuli, and says once: *This task defines no picture of its stimuli, so only
+its gaze windows are shown.* A renderer's own attributes do not say where its
+ink is (a PsychoPy `ShapeStim`'s `size` is a scale factor, not a size), and a
+confident outline in the wrong place is worse than none, so no stimulus is
+guessed at, not even alhazen's own. A region the session cannot draw (a
+non-finite centre, a zero radius) is named under the picture, with why, and
+in the log, rather than ending the session over a picture; inside a task's
+own picture `region_shapes` raises instead, because there it is the task's
+bug. The picture is the trial as it starts: a stimulus that moves is drawn
+where it begins, unless its task says otherwise.
+
+It is computed between trials, from the plan, before the first frame
+(`SessionRunner._publish_trial_view`), and travels as one small JSON on its own
+channel, never in a state publish.
+
+### The gaze
+
+```mermaid
+flowchart LR
+  E["TrialEngine, after each flip<br/>on_frame_input(trial, frame, t, inputs)"] --> R["FrameInputBuffer.note<br/>(the record, first)"]
+  E --> G["GazeFeed.note<br/>px → dva, ≤ 60 Hz, gaps once"]
+  G -->|"≤ 30 batches/s, put_nowait"| Q["one-slot queue<br/>full → keep, drop oldest past 240"]
+  Q --> C["server child<br/>last 600 samples, numbered"]
+  C -->|"/api/gaze long poll"| P["page: gazeLoop()<br/>redraws the gaze layer only"]
+```
+
+The gaze is the one the phases use (`InputFrame.gaze`, drift correction
+applied), taken from the engine's per-frame input hook, after the flip and
+after the frame-input record. `GazeFeed` (`live_monitor/gaze.py`) converts it
+to dva, skips a repeated sample (same `gaze_t`), keeps at most 60 a second, and
+sends one gap marker per run of missing samples. About thirty times a second
+it offers what it holds to the live monitor's gaze channel with a
+non-blocking put. When the server child has not collected the last batch, the
+samples stay with the feed and go with the next one. Past 240 waiting samples
+(four seconds) the oldest are dropped, so a stalled page loses the start of a
+trail, never the newest point, and never holds up a frame. The feed is wired
+only when the session has both a live monitor and an eye tracker.
+
+**Cost.** Measured with `examples/saccade_to_target` on a simulated display
+paced at 120 Hz by real sleeps (8.33 ms frames), the automated participant
+giving a new sample every frame, the live monitor open in Chromium, and the
+feed wired on even trials only, so on and off share the same minutes of a
+shared machine's load. Two such sessions of 120 trials: `GazeFeed.note`
+takes 16 to 17 µs per frame at the median, 111 to 147 µs at the 99th
+percentile (1.3 to 1.8 % of a frame) and 1.1 to 1.6 ms at most, against 14
+and 40 to 51 µs for the frame-input record beside it. Leaving out the first
+four trials, whose drops fell on gaze-on and gaze-off trials alike while the
+page loaded, frame intervals were 0 and 1 dropped of 2,940 frames with the
+feed against 0 and 0 of 2,892 without, 99th percentile 8.44 to 8.54 ms
+against 8.41 to 8.47 ms. The live monitor starts the channel's feeder thread
+when it starts, outside any trial.
+
+### The camera
+
+No supported tracker gives the session a camera image while it records, so
+the camera box never shows a live picture during a trial:
+
+- **EyeLink.** The camera image travels over the link only in camera setup:
+  pylink hands it to the display PC through the `EyeLinkCustomDisplay` image
+  callbacks (`setup_image_display`, `draw_image_line`, `exit_image_display`,
+  "called to notify that all camera setup things are complete"), which run
+  inside `doTrackerSetup`. Recording is a different tracker mode
+  (`IN_RECORD_MODE` against `IN_SETUP_MODE`/`IN_IMAGE_MODE` in `eyelink.h`),
+  and SR Research support states that "the video which can be accessed during
+  camera setup is not available during recording"; during a trial the eye
+  images are only on the Host PC's own display (bottom left). What the
+  camera setup sends is routed here, never to the subject's screen (round 5):
+  the backend's `camera_frame` is the newest image from the setup screen,
+  stamped when it arrived, so the box shows it with its age; before the first
+  one the Camera panel says to press ENTER on the setup screen.
+  Sources: SR Research, *EyeLink Programmer's Guide*, "Calibration Camera
+  Image Presentation Example" and `eyelink.h`
+  (sr-research.com/download/dispdoc); SR Research support on the PsychoPy
+  forum, "EyeLink - Saving raw video" (discourse.psychopy.org/t/1588).
+- **TRACKPixx3.** `TPxGetImagePtr` returns the current eye image from the
+  DATAPixx3 at any time (VPixx `_libdpx`), and the backend reads it while
+  paused or calibrating. It is not read during trials on purpose: each read
+  is a `DPxUpdateRegCache` register round trip over USB on the device that is
+  recording the samples, under the same lock as the sample drain, and a
+  register-level read on this device has re-pointed its sample ring during a
+  recording before (`recording_armed` in `devices/eyetracker/viewpixx.py`),
+  which is lost samples. Doing it every frame would also cost the frame loop
+  a USB round trip.
+- **mouse_sim, scripted, the automated participant.** No camera.
+
+A kept image (the EyeLink's) is sent on the camera channel once, when it is
+new, not again on every refresh of a pause, so the page never counts a
+still picture as a live stream.
+
+What the box shows instead, honestly: on a tracker with a camera, the newest
+real frame from the last pause or calibration (the camera channel keeps it),
+with how long before the running trial it was taken, both times on the
+session clock; while paused, the live stream. On a tracker without one, the
+tracker's own sentence why (`camera_while_recording` on each backend, read by
+`EyeTrackerMonitor.trial_camera`). Never a picture that is not the camera's.
+
+The best alternatives, if a live eye image during trials is wanted:
+
+1. **DATAPixx3 console output (VPixx rigs).** The DATAPixx3 can draw the
+   tracker window beside the stimulus on its console video output
+   (`DP3SetVidConsoleDisplay`, e.g. `FULL_STIMULI_HALF_TRACK`), in hardware,
+   with no read by the session at all. A second monitor at the operator's
+   desk then shows the live eye during every trial.
+2. **EyeLink rigs:** the Host PC's display already shows it; a camera on, or a
+   video capture of, the Host PC screen is the only route that does not touch
+   the link.
+3. A between-trials snapshot on the TRACKPixx3 during the ITI is possible in
+   principle, but it is the same register read during the recording; it
+   should be tried on the rig with the ring check above before it is offered.
+
+### Wire format
+
+`GET /api/trial?token=…&after=<seq>&wait_ms=…` answers the newest picture
+after `seq` (header `X-Trial-Seq`), or 204 when none came within the wait:
+
+```json
+{"trial_index": 12, "attempt": 1, "t": 812.4,
+ "screen": {"width_dva": 30.0, "height_dva": 16.9},
+ "source": "regions",
+ "shapes": [{"kind": "circle", "role": "region", "name": "fixation",
+             "center": [0.0, 0.0], "radius": 2.0}],
+ "undrawn": [],
+ "condition": {"side": "left"},
+ "gaze": true,
+ "camera": {"live": false, "has_frames": false, "reason": "…"}}
+```
+
+`source` is `task` when the task supplied `TrialPlan.schematic` and `regions`
+when it did not; `undrawn` names a region the session could not draw, with
+why (empty otherwise).
+
+`GET /api/gaze?token=…&after=<seq>&wait_ms=…` answers the samples numbered
+after `seq`, `[trial_index, t, x_dva, y_dva]` with `null` x and y for a gap,
+`missed` counting those the server had already dropped, or 204:
+
+```json
+{"seq": 3827, "missed": 0, "samples": [[57, 812.43, -0.21, 0.08], [57, 812.45, null, null]]}
+```
+
+Both are guarded by the session token like every other endpoint, and both
+channels are optional capabilities of the live monitor
+(`LiveMonitorController.publish_trial`/`publish_gaze`, looked up with
+`getattr`): a stand-in monitor without them runs the session with no Trial
+view.
 
 ## Frame-timing panel
 

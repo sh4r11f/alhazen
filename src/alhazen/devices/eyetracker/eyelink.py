@@ -26,14 +26,14 @@ from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide, target_count
 from alhazen.devices.eyetracker.protocol import (
     CalibrationResult,
+    CameraFrame,
     GazeSample,
     HostShape,
     ProgressHook,
 )
 from alhazen.display.backend import DisplayBackend
-from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.display.screen import Screen
-from alhazen.errors import TrackerError
+from alhazen.errors import NoCameraImageYet, TrackerError
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +103,25 @@ class EyeLinkTracker:
     sequence and nothing more.
     """
 
+    # What the live monitor's Trial view says in place of a live camera image
+    # (session/eyetracker.py EyeTrackerMonitor.trial_camera). The EyeLink
+    # sends its camera image over the link only in camera setup (pylink's
+    # EyeLinkCustomDisplay image callbacks); while it records, the eye image is
+    # on the Host PC's display alone. docs/live_monitor.md, "Trial view".
+    camera_while_recording = (
+        "The EyeLink sends its camera image only during camera setup, never while it "
+        "records. During a trial the eye image is on the Host PC's own display."
+    )
+    # When the camera image is live, for the live monitor's camera panel
+    # (session/eyetracker.py): only while the setup screen shows it.
+    camera_live_when = "while the Host PC's camera setup screen shows it (ENTER there)"
+    # Why camera_frame() has nothing to give before the experimenter has
+    # opened the camera image on the setup screen.
+    NO_CAMERA_IMAGE_YET = (
+        "no EyeLink camera image yet: the Host PC sends it only on its camera setup "
+        "screen (press ENTER there during a calibration to see it here)"
+    )
+
     def __init__(
         self,
         cfg: EyeTrackerConfig,
@@ -153,6 +172,10 @@ class EyeLinkTracker:
         # Where calibrate() reports its stages (the live monitor, via the
         # session's monitor); None until someone asks to be told.
         self._progress: ProgressHook | None = None
+        # The newest camera image the Host PC sent on its setup screen, as the
+        # live monitor draws it (camera_frame), and its caption. Never drawn
+        # on the subject's screen (calibration.py).
+        self._camera: CameraFrame | None = None
 
     # ------------------------------------------------------------------
     # Setup
@@ -278,7 +301,12 @@ class EyeLinkTracker:
         from alhazen.devices.eyetracker.calibration import make_calibration_graphics
 
         graphics = make_calibration_graphics(
-            tracker, self._display.window, screen, targets=self._targets, now=clock.now
+            tracker,
+            self._display.window,
+            screen,
+            targets=self._targets,
+            now=clock.now,
+            camera_sink=self._camera_image_arrived,
         )
         self._pylink.openGraphicsEx(graphics)
         if not self._cfg.calibration_target.is_default:
@@ -290,19 +318,60 @@ class EyeLinkTracker:
         ``calibration_target`` stream, handed over by the session builder."""
         self._targets.use_rng(rng)
 
+    @property
+    def calibration_targets(self) -> CalibrationTargets:
+        """Optional capability (protocol.py): the target this tracker's
+        calibration draws, which the session's validation and drift
+        correction draw too (procedures.py)."""
+        return self._targets
+
     def set_progress_hook(self, hook: ProgressHook | None) -> None:
         """Where calibrate() reports its stages; None to stop reporting."""
         self._progress = hook
+
+    # ------------------------------------------------------------------
+    # The camera image (optional capability, protocol.py)
+    # ------------------------------------------------------------------
+
+    def camera_frame(self) -> CameraFrame:
+        """The newest camera image the Host PC sent on its setup screen.
+
+        The EyeLink sends its eye image over the link only while the
+        experimenter has it open on the camera setup screen (ENTER), during a
+        calibration. That image is never drawn on the subject's screen; it
+        reaches the experimenter here, on the live monitor's camera view
+        (session/eyetracker.py streams it during the procedure, and the
+        Trial view keeps the last one with its age). Between camera setups
+        this is the last image received, stamped when it arrived, so its age
+        says how old it is. Before the first one: NoCameraImageYet (a
+        TrackerError that is not a fault), with what to do to see one.
+        """
+        if self._camera is None:
+            raise NoCameraImageYet(self.NO_CAMERA_IMAGE_YET)
+        return self._camera
+
+    def _camera_image_arrived(self, pixels: np.ndarray, caption: str | None) -> None:
+        """A finished camera image from the calibration graphics (8-bit grey,
+        the Host PC's overlays drawn white) and the Host PC's caption for it
+        ("Left eye ..."). Kept as the newest frame, and the
+        session's progress hook told: the hook is how a blocking procedure
+        hands the session a moment to stream the frame to the live monitor
+        (session/eyetracker.py ``_on_progress`` -> ``stream_camera``), which
+        throttles both the stream and the status line itself."""
+        self._camera = CameraFrame(pixels=pixels, t=self._clock.now())
+        where = "shown on the live monitor"
+        self._report("camera image", f"{caption} · {where}" if caption else where)
 
     def _report(self, stage: str, detail: str) -> None:
         if self._progress is not None:
             self._progress(stage, detail)
 
     def calibrate(self) -> CalibrationResult:
-        """Show the guide, then run camera setup / calibration / validation on
+        """Wait for SPACE, then run camera setup / calibration / validation on
         the Host PC. Blocks until the experimenter finishes or aborts.
 
-        The guide is alhazen's; the procedure is the Host PC's, mirrored into
+        The wait is alhazen's (its guide in the log, nothing on the subject's
+        screen); the procedure is the Host PC's, mirrored into
         the subject window by calibration.py. Aborting with ESC makes pylink
         raise RuntimeError from inside ``doTrackerSetup()``. That is a
         deliberate experimenter action (the subject needs a break), not a
@@ -336,12 +405,16 @@ class EyeLinkTracker:
         return self._host_result()
 
     def _show_guide(self, event: Any) -> bool:
-        """Draw the calibration guide and wait; True when SPACE starts the setup.
+        """Wait before the Host PC's setup; True when SPACE starts it.
 
-        No live eye line here: the EyeLink's camera image is on the Host PC's
-        own screen, and the setup screen that follows shows it too.
+        The subject's screen stays empty — nothing but targets is ever drawn
+        there during a calibration (user decision, 2026-10-15). The guide's
+        facts go to the session log, and the keys that answer the wait to the
+        live monitor. No live eye line: the EyeLink's camera image is on the
+        Host PC's own screen.
         """
         cfg = self._cfg
+        start_line = "press SPACE to open the Host PC setup, ESC to skip"
         body = calibration_guide(
             tracker="EyeLink (the Host PC drives the procedure)",
             eye="set on the Host PC; the session reads the eye the tracker reports",
@@ -350,10 +423,13 @@ class EyeLinkTracker:
             area=cfg.calibration_area,
             advance=cfg.calibration_advance,
             keys=GUIDE_KEYS,
-            start_line="press SPACE to open the Host PC setup, ESC to skip",
+            start_line=start_line,
         )
-        self._display.show_menu(GUIDE_TITLE, body, color=TERMINAL_GREEN)  # type: ignore[union-attr]
-        self._report("calibration guide", "waiting for SPACE")
+        log.info("%s\n%s", GUIDE_TITLE, body)
+        # Whatever was on the screen (the pause menu, the last trial) is
+        # taken down: the subject sees the empty background.
+        self._display.flip()  # type: ignore[union-attr]
+        self._report("calibration guide", start_line)
         keys = event.waitKeys(keyList=["space", "escape"])
         return bool(keys) and keys[0] == "space"
 

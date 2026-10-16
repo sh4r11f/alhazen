@@ -217,7 +217,7 @@ button.control {
   text-align: left;
   cursor: pointer;
 }
-button.control:hover:not(:disabled) { background: var(--wash); }
+button.control:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--wash); }
 button.control:disabled { opacity: 0.42; cursor: not-allowed; }
 button.control.danger:not(:disabled) { color: var(--critical); }
 
@@ -594,3 +594,470 @@ details.table th { color: var(--muted); font-weight: 600; }
 }
 .stat-label i { text-transform: none; }
 .stat-value { font-family: var(--mono); font-size: 17px; font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ */
+/* Operator controls [workstream B]                                    */
+/* ------------------------------------------------------------------ */
+/* Drawn by renderControls into every [data-controls-host]: the sidebar's,
+ * and any a view puts under itself. One button per command with the key it
+ * stands for at the rig; off buttons stay focusable so a click can say why. */
+.controls[data-controls-host] { display: block; }
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+button.control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+button.control kbd {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  color: var(--muted);
+  font: 600 11px/1.5 var(--mono);
+}
+button.control[aria-disabled="true"] { opacity: 0.42; cursor: not-allowed; }
+button.control.danger[aria-disabled="true"] { color: var(--ink); }
+button.control[data-pending="true"] { opacity: 1; border-style: dashed; color: var(--ink-2); }
+button.control:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+
+.quit-confirm {
+  grid-column: 1 / -1;
+  padding: 10px;
+  border: 1px solid var(--critical);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.quit-confirm p { margin: 0 0 8px; font-size: 13px; }
+.quit-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
+.quit-actions button.control { justify-content: center; }
+
+.control-feedback { margin: 10px 0 0; color: var(--critical); font-size: 12.5px; }
+.control-empty { margin: 0; color: var(--muted); font-size: 12.5px; }
+
+.command-log {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.command-log li { display: grid; gap: 1px; padding-left: 9px; border-left: 2px solid var(--rule); }
+.command-log .command-name { color: var(--ink); font-weight: 600; }
+.command-log .command-note { color: var(--muted); overflow-wrap: anywhere; }
+.command-log li[data-result="applied"] { border-left-color: var(--good); }
+.command-log li[data-result="discarded"] { border-left-color: var(--series-2); }
+.command-log li[data-result="refused"],
+.command-log li[data-result="failed"] { border-left-color: var(--critical); }
+.command-log li[data-result="refused"] .command-note,
+.command-log li[data-result="failed"] .command-note { color: var(--critical); }
+
+/* ------------------------------------------------------------------ */
+/* Trial view: the running trial's screen, in degrees, with the gaze   */
+/* ------------------------------------------------------------------ */
+
+.trial-view {
+  margin-bottom: 22px;
+  padding: 18px 20px 16px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.trial-view[hidden] { display: none; }
+
+.trial-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.trial-head h2 { margin: 0; font-size: 16px; font-weight: 650; }
+#trial-meta { color: var(--ink-2); font-size: 13px; }
+.trial-trail { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
+.trial-trail select {
+  height: 28px;
+  padding: 0 6px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  font: inherit;
+}
+
+/* The screen is the larger figure; the camera sits beside it on a wide page
+ * and under it on a narrow one. */
+.trial-body {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
+  gap: 22px;
+  margin-top: 14px;
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .trial-body { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  /* Under the screen the camera is a small box with its note beside it, so
+   * the operator buttons below stay close to the trial they act on (the
+   * dashboard embeds this page in a narrow column). */
+  .trial-camera {
+    display: grid;
+    grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+  .trial-camera figcaption { margin-top: 0; }
+}
+.trial-body figure { margin: 0; min-width: 0; }
+.trial-body figcaption { margin-top: 8px; color: var(--ink-2); font-size: 13px; min-height: 20px; }
+#trial-legend { margin-top: 10px; min-height: 20px; }
+#trial-note:empty { display: none; }
+
+.trial-stage-box { position: relative; width: 100%; }
+.trial-stage-box svg { display: block; width: 100%; height: auto; }
+
+.trial-screen { fill: var(--page); stroke: var(--rule); stroke-width: 1; }
+.trial-grid   { stroke: var(--rule); stroke-width: 1; }
+.trial-axis   { stroke: var(--tick); stroke-width: 1; }
+.trial-scale  { stroke: var(--ink-2); stroke-width: 1.5; }
+.trial-scale-text { fill: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.trial-shape.role-stimulus   { fill: var(--ink); fill-opacity: 0.78; stroke: var(--ink); stroke-width: 1; }
+.trial-shape.role-region     { fill: none; stroke: var(--ink-2); stroke-width: 1.25; stroke-dasharray: 5 4; }
+.trial-shape.role-annotation { fill: none; stroke: var(--muted); stroke-width: 1; }
+.trial-shape.approximate     { fill: none; stroke: var(--ink); stroke-width: 1.25; stroke-dasharray: 2 3; }
+/* Words on the picture are filled text. The role rules above (fill: none,
+ * a 1 px stroke) outrank a plain `text.trial-shape`, and drew every label,
+ * an annotation by default, as hollow outlined letters; scoped to the stage
+ * so this rule wins. */
+.trial-stage-box text.trial-shape { stroke: none; fill: var(--ink-2); font-size: 12px; }
+line.trial-shape { fill: none; }
+
+.trial-trail-line { fill: none; stroke: var(--series-2); stroke-width: 2; stroke-opacity: 0.7; stroke-linejoin: round; stroke-linecap: round; }
+.trial-gaze { fill: var(--series-2); stroke: var(--surface); stroke-width: 2; }
+
+.trial-camera-box {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  background: var(--page);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.trial-camera-box canvas { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+.trial-camera-empty { max-width: 30ch; padding: 16px; color: var(--ink-2); font-size: 13px; text-align: center; }
+
+.trial-controls:empty { display: none; }
+.trial-controls { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--rule); }
+/* At most four buttons a row under the screen (two even rows of the usual
+ * eight) rather than as many as fit, which left Quit alone on a second row. */
+.trial-controls .control-grid {
+  grid-template-columns: repeat(auto-fill, minmax(max(150px, calc((100% - 18px) / 4)), 1fr));
+}
+
+.legend i.trail { width: 16px; height: 2.5px; border-radius: 2px; background: var(--series-2); opacity: 0.7; }
+.legend i.gaze  { width: 9px; height: 9px; border-radius: 50%; background: var(--series-2); }
+.legend i.window { width: 14px; height: 10px; border: 1.25px dashed var(--ink-2); border-radius: 50%; }
+.legend i.annotation { width: 14px; height: 10px; border: 1px solid var(--muted); border-radius: 2px; }
+.legend i.stimulus { width: 9px; height: 9px; border-radius: 50%; background: var(--ink); opacity: 0.78; }
+.legend i.approx { width: 12px; height: 10px; border: 1.25px dotted var(--ink); }
+
+
+/* ---- Split (2026-10-09): the dashboard's chrome language ----
+ * The monitor's chrome follows the workspace: plain sans labels (no mono,
+ * no capitals or tracking), mono kept only for the trial and event counts,
+ * the warm paper the workspace's instrument pane uses, and the brand
+ * written "Alhazen". Chart tokens, colours and axes are untouched. */
+:root { --font: "Manrope", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif; --page: #efe8dd; --wash: #ece5da; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --page: #100e0c; --wash: #23201c; }
+}
+:root[data-theme="dark"] { --page: #100e0c; --wash: #23201c; }
+.brand { font: 800 16px/1.3 var(--font); letter-spacing: -.01em; text-transform: none; }
+.brand::first-letter { text-transform: uppercase; }
+#status { font: 650 12.5px/1.2 var(--font); text-transform: lowercase; letter-spacing: normal; }
+.side-title, .stat-label {
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.stat-value { font-family: var(--font); font-weight: 700; }
+.panel { border-radius: 10px; }
+
+
+/* ---- Split, continued (2026-10-14): the operator controls and the Trial
+ * view in the dashboard's language. Manrope where installed (the page ships
+ * no font: it must open from a saved file with no server), 8 px controls on
+ * hairlines, keys as quiet chips in sentence case, the oxblood accent for
+ * selection, focus and a command waiting for the task. Chart and gaze
+ * colours (the series and ramp tokens) are untouched. */
+:root { --accent: #7f1d1d; --accent-soft: #f4e4e0; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --accent: #d8706a; --accent-soft: #3a1d1d; }
+}
+:root[data-theme="dark"] { --accent: #d8706a; --accent-soft: #3a1d1d; }
+
+body { font-family: var(--font); }
+header { padding: 14px 28px; }
+#identity { font-size: 13.5px; }
+#counts { font-family: var(--font); font-size: 13px; font-weight: 600; }
+
+.side-title { margin-bottom: 8px; color: var(--muted); }
+.side-title:not(:first-child) { margin-top: 24px; }
+.sections button { border-radius: 8px; font-size: 14px; font-weight: 600; padding: 7px 10px; }
+.sections button[aria-current="true"] {
+  background: var(--accent-soft);
+  border-left-color: transparent;
+  color: var(--accent);
+  font-weight: 700;
+}
+.sections button[aria-current="true"] .count { color: var(--accent); }
+.sections .count { font-size: 12.5px; font-weight: 600; }
+
+button.control {
+  min-height: 38px;
+  padding: 7px 8px 7px 12px;
+  border-radius: 8px;
+  font: 600 14px/1.25 var(--font);
+}
+button.control:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--ink-2); background: var(--surface); }
+button.control kbd {
+  min-width: 26px;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--ink-2);
+  font: 650 12px/1.3 var(--font);
+  letter-spacing: 0;
+  text-align: center;
+}
+button.control[aria-disabled="true"] { opacity: 1; color: var(--muted); background: var(--wash); border-color: transparent; }
+button.control[aria-disabled="true"] kbd { color: var(--muted); background: transparent; }
+/* An off button looks off under the pointer, while pressed, after a tap and
+ * once clicked (a click on it only says why it is off): no hover, press or
+ * focus look, and no tap flash on a phone. It stays focusable, and a key
+ * press still shows the focus ring (:focus-visible, below). A command waiting
+ * for the task keeps its own look. */
+button.control[aria-disabled="true"] { -webkit-tap-highlight-color: transparent; }
+button.control[aria-disabled="true"]:not([data-pending="true"]):is(:hover, :active, :focus) {
+  color: var(--muted);
+  background: var(--wash);
+  border-color: transparent;
+}
+button.control.danger:not([aria-disabled="true"]) { color: var(--critical); }
+button.control[data-pending="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px dashed var(--accent);
+}
+button.control[data-pending="true"] kbd { color: var(--accent); border-color: var(--accent); background: transparent; }
+button.control:focus-visible,
+.sections button:focus-visible,
+.trial-trail select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.quit-confirm { border-radius: 10px; padding: 12px; }
+.quit-confirm p { font-size: 14px; font-weight: 600; }
+.quit-actions button.control { justify-content: center; }
+.control-feedback { font-size: 13px; }
+.command-log { font-size: 13px; }
+.command-log .command-name { font-weight: 700; }
+
+.panel { padding: 18px 20px 14px; }
+.panel h2 { font-size: 15px; font-weight: 700; }
+
+.trial-view { border-radius: 10px; padding: 18px 20px 18px; }
+.trial-head h2 { font-size: 17px; font-weight: 750; letter-spacing: -.01em; }
+#trial-meta { font-size: 13.5px; }
+.trial-trail { font-size: 13.5px; font-weight: 600; }
+.trial-trail select { height: 32px; padding: 0 8px; border-radius: 8px; font-weight: 600; }
+.trial-body figcaption, .trial-camera-empty { font-size: 13.5px; }
+.trial-stage-box svg { border-radius: 6px; }
+.trial-camera-box { border-radius: 8px; }
+.trial-controls { margin-top: 18px; padding-top: 16px; }
+
+/* A phone, or the dashboard's column at its narrowest: the header's counts
+ * go under the name instead of squeezing into a column beside it. */
+@media (max-width: 640px) {
+  header { flex-wrap: wrap; gap: 6px 14px; padding: 12px 16px; }
+  .right { width: 100%; justify-content: space-between; }
+  main { padding: 16px 16px 40px; }
+  .trial-view { padding: 14px 14px 16px; }
+  .trial-trail { margin-left: 0; }
+}
+
+
+/* The dashboard's instrument column and a phone (860 px and under): the
+ * sidebar is a band above the page. The panel list wraps onto as many rows
+ * as it needs, every name whole (a row that scrolled sideways hid the last
+ * one behind the theme button); its titles go (the row and the button say
+ * what they are). While
+ * the Trial view is shown it carries the operator buttons under the screen,
+ * so the band leaves out its own copy and the trial comes up the page. */
+@media (max-width: 860px) {
+  .sidebar { padding: 10px 16px 12px; }
+  .sidebar > .side-title:first-child,
+  .sidebar .side-title:has(+ .controls:not([data-controls-host])) { display: none; }
+  .sections {
+    flex-wrap: wrap;
+    margin: 0 -4px;
+    padding: 2px 4px 4px;
+  }
+  .sections button { white-space: nowrap; }
+  .sidebar > .controls:not([data-controls-host]) { display: flex; margin-top: 8px; }
+  .sidebar > .side-title:not(:first-child) { margin-top: 14px; }
+  .shell:has(#trial-view:not([hidden])) .sidebar :is(#controls, .side-title:has(+ #controls)) {
+    display: none;
+  }
+}
+
+
+/* A tracker with no camera at all (the mouse stand-in, EyeLink during a
+ * session): on a narrow page the box is one quiet line with the tracker's
+ * reason beside it, not an empty picture pushing the buttons down. */
+@media (max-width: 1000px) {
+  .trial-camera[data-camera="none"] { grid-template-columns: auto minmax(0, 1fr); align-items: baseline; }
+  .trial-camera[data-camera="none"] .trial-camera-box {
+    aspect-ratio: auto;
+    padding: 6px 12px;
+    border-style: dashed;
+    background: transparent;
+  }
+  .trial-camera[data-camera="none"] .trial-camera-empty { padding: 0; max-width: none; white-space: nowrap; }
+}
+
+/* The band's panel rows and the theme button share one line: the panels
+ * wrap in the room left of the button, which keeps its own space at the top
+ * right, so nothing ever sits under it. */
+@media (max-width: 860px) {
+  .sidebar { display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 10px; }
+  .sidebar > * { flex: 1 1 100%; min-width: 0; }
+  .sidebar > .sections { flex: 1 1 0; }
+  .sidebar > .controls:not([data-controls-host]) { flex: 0 0 auto; margin-top: 2px; }
+  .sidebar > .side-title:has(+ .controls:not([data-controls-host])) { display: none; }
+  #theme { min-height: 34px; padding: 5px 12px; white-space: nowrap; }
+}
+
+
+/* The band, in order: the panel row and the theme button on one line, the
+ * rest (the controls when shown, the notice) under them. */
+@media (max-width: 860px) {
+  .sidebar > * { order: 2; }
+  .sidebar > .sections { order: 0; }
+  .sidebar > .controls:not([data-controls-host]) { order: 1; }
+  #notice:empty { display: none; }
+}
+
+/* A phone: the panels take the whole width (on a 320 px screen, three short
+ * names on one row rather than one a row beside the button) and the theme
+ * button sits under them at the right. */
+@media (max-width: 480px) {
+  .sidebar > .sections { flex: 1 1 100%; }
+  .sidebar > .controls:not([data-controls-host]) { margin: 6px 0 0 auto; }
+}
+
+/* A narrow page (the dashboard's column, a phone): the screen picture is
+ * held under half the window's height, so the trial, the gaze and the
+ * buttons under it are in view together; the drawing keeps its aspect and
+ * centres. */
+@media (max-width: 1000px) {
+  .trial-stage-box svg { width: auto; max-width: 100%; max-height: 46vh; margin: 0 auto; }
+}
+
+
+/* ---- Procedure guide (2026-10-15) ----
+ * The eye-tracker procedure the operator is in, first in the page: the
+ * subject's screen shows only targets, so this is the one place that says
+ * what to do. Read from across a booth: the instruction is the largest text
+ * on the page, keys are drawn as keys, and a row of marks says which target
+ * is up. A failure keeps the panel, in the critical colour, until the
+ * session resumes. Chart tokens untouched; colours from the theme's own. */
+.procedure {
+  margin: 0 0 22px;
+  padding: 22px 26px 24px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+}
+.procedure[hidden], .procedure [hidden] { display: none; }
+.procedure-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+.procedure-head h2 { margin: 0; font: 750 22px/1.2 var(--font); letter-spacing: -.01em; color: var(--ink); }
+.procedure-step {
+  margin-left: auto;
+  color: var(--ink-2);
+  font: 700 17px/1.2 var(--font);
+  font-variant-numeric: tabular-nums;
+}
+.procedure-track {
+  display: flex;
+  gap: 6px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.procedure-track li {
+  flex: 1 1 0;
+  max-width: 64px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--wash);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+.procedure-track li[data-state="done"] { background: var(--ink-2); box-shadow: none; }
+.procedure-track li[data-state="current"] { background: var(--accent); box-shadow: none; }
+.procedure-instruction {
+  margin: 18px 0 0;
+  max-width: 34ch;
+  color: var(--ink);
+  font: 700 30px/1.25 var(--font);
+  letter-spacing: -.015em;
+  text-wrap: balance;
+}
+.procedure-instruction kbd,
+.procedure-check kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  margin: 0 .08em;
+  padding: .02em .38em .06em;
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  background: var(--page);
+  color: var(--ink);
+  font: inherit;
+  font-size: .82em;
+  line-height: 1.2;
+  text-align: center;
+  vertical-align: .06em;
+}
+.procedure-status { margin: 12px 0 0; color: var(--ink-2); font: 600 17px/1.4 var(--font); }
+.procedure-status[data-alert="true"] { color: var(--critical); font-weight: 750; }
+.procedure-failure { margin-top: 16px; }
+.procedure-failure-text {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--ink);
+  font: 750 24px/1.3 var(--font);
+  letter-spacing: -.01em;
+  text-wrap: balance;
+}
+.procedure-check { margin: 10px 0 0; max-width: 60ch; color: var(--ink-2); font: 600 17px/1.45 var(--font); }
+.procedure[data-outcome="failed"] { border-color: var(--critical); }
+.procedure[data-outcome="failed"] .procedure-head h2 { color: var(--critical); }
+.procedure[data-outcome="aborted"] .procedure-head h2 { color: var(--ink-2); }
+
+/* The dashboard's instrument column and a phone. */
+@media (max-width: 640px) {
+  .procedure { margin-bottom: 16px; padding: 16px 16px 18px; border-radius: 10px; }
+  .procedure-head h2 { font-size: 19px; }
+  .procedure-step { font-size: 15px; }
+  .procedure-track { margin-top: 12px; gap: 4px; }
+  .procedure-instruction { margin-top: 14px; font-size: 23px; }
+  .procedure-status, .procedure-check { font-size: 15.5px; }
+  .procedure-failure-text { font-size: 20px; }
+}

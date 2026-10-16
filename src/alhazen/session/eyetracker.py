@@ -17,26 +17,32 @@ devices layer (which does the measuring)::
          │   │   │      drift_correct() ▶ procedures.drift_correct()
          │   │   └── correction (GazeCorrection) ──▶ the input provider
          │   └────── emit(CALIBRATION / VALIDATION / DRIFT_CORRECTION) ──▶ event bus
-         └────────── panels() ──▶ the "Eye tracker" live monitor section
-                       (camera image, calibration, validation, drift)
+         ├────────── panels() ──▶ the "Eye tracker" live monitor section
+         │             (camera image, calibration, validation, drift)
+         └────────── procedure ──▶ state["procedure"]: the live monitor's
+                       guide panel while a procedure runs, and after one
+                       that failed (session/procedure_guide.py)
 
 Every result is a plain record from the devices layer; this module never
 measures anything itself. The three capabilities a tracker may have beyond
 the protocol — ``set_progress_hook``, ``camera_frame``, ``eye_status`` — are
 looked up with ``hasattr`` here and nowhere else, so a tracker without them
-(the EyeLink has no camera the session can read; the mouse has no eye) gets
-the same session with those panels saying so.
+(the EyeLink has no eye line, and its camera image comes only from its setup
+screen; the mouse has no eye) gets the same session with those panels saying
+so.
 """
 
 from __future__ import annotations
 
 import base64
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
 from alhazen.core.clock import Clock
+from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
 from alhazen.devices.eyetracker.guide import TARGET_COUNTS
 from alhazen.devices.eyetracker.procedures import (
     Advance,
@@ -44,12 +50,23 @@ from alhazen.devices.eyetracker.procedures import (
     GazeCorrection,
     ValidationResult,
     drift_correct,
+    target_record,
     validate,
 )
 from alhazen.devices.eyetracker.protocol import CalibrationResult, CameraFrame, EyeTracker
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.screen import Screen
-from alhazen.errors import TrackerError
+from alhazen.errors import NoCameraImageYet, TrackerError
+from alhazen.session.procedure_guide import (
+    Kind,
+    ProcedureGuide,
+    ended_calibration,
+    ended_drift,
+    ended_validation,
+    failed_with_error,
+    progressed,
+    started,
+)
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +193,14 @@ class EyeTrackerMonitor:
         self._clock = clock
         self._cfg = cfg
         self._poll_keys = poll_keys
+        # The calibration's target, which validation and drift correction
+        # draw too (procedures.py): the tracker's own when it draws one (the
+        # EyeLink, the TRACKPixx3), so the picture deck carries on from the
+        # calibration; else one of this monitor's, kept for the session, from
+        # the rig's choice — the standard target, still, on a stand-in.
+        self.calibration_targets: CalibrationTargets = getattr(
+            tracker, "calibration_targets", None
+        ) or CalibrationTargets(cfg.calibration_target)
         # The drift corrections in force, consulted by the input provider on
         # every gaze position (session/builder.py make_input_provider).
         self.correction = GazeCorrection()
@@ -185,6 +210,12 @@ class EyeTrackerMonitor:
         self.publisher: Publisher | None = None
         self.emit: Emitter | None = None
         self._last_publish = float("-inf")
+        # The stage of the last publish: the first report of a new stage (the
+        # calibration guide's wait, the first target) is published at once,
+        # whatever the throttle says, because it is the experimenter's only
+        # word on what the subject's screen — which shows nothing but
+        # targets — is waiting for.
+        self._published_stage: str | None = None
         # The newest camera frame, and why the last read failed (warned once
         # per distinct reason, not once per publish).
         self._frame: CameraFrame | None = None
@@ -193,6 +224,8 @@ class EyeTrackerMonitor:
         # (stream_camera), and state publishes stop carrying the pixels.
         self.camera_sink: CameraSink | None = None
         self._last_stream = float("-inf")
+        # The frame last sent to the sink (stream_camera sends each one once).
+        self._sent_frame: CameraFrame | None = None
         # Set by the runner with the camera sink: the settings the page sent.
         self.settings_source: SettingsSource | None = None
         # The expected iris size the device holds, as last read or set; None
@@ -203,6 +236,19 @@ class EyeTrackerMonitor:
         # menu, the live monitor): the builder records it in the rig's
         # calibration ledger (session/startup_calibration.py).
         self.on_calibrated: Callable[[CalibrationResult], None] | None = None
+        # The live monitor's guide to the procedure running now, or to the
+        # last one if it failed or was stopped and nobody has resumed since
+        # (``procedure``, ``dismiss_procedure``); None otherwise.
+        self._guide: ProcedureGuide | None = None
+        # How the running walk advances ("manual"/"auto"), for the guide's
+        # instruction while a target is up.
+        self._guide_advance: str = cfg.calibration_advance
+        # How many procedures are running: a calibration runs its validation
+        # inside itself, and only the outermost one's end is published.
+        self._depth = 0
+        # The one-line verdicts of the procedures the outermost one ran, for
+        # the publish at its end.
+        self._verdicts: list[str] = []
 
     # ------------------------------------------------------------------
     # Procedures
@@ -216,7 +262,10 @@ class EyeTrackerMonitor:
         cleared here — a "passed" from an hour ago must not sit on the
         live monitor next to a model it never measured.
         """
-        self._stage("calibrating", "starting")
+        with self._procedure("calibration", "calibrating", self._cfg.calibration_advance):
+            return self._calibrate()
+
+    def _calibrate(self) -> CalibrationResult:
         # The viewpixx and EyeLink backends report their stages; a tracker
         # without the hook simply reports nothing between start and result.
         set_hook = getattr(self._tracker, "set_progress_hook", None)
@@ -229,6 +278,7 @@ class EyeTrackerMonitor:
                 set_hook(None)
         result = reported if reported is not None else self._no_result()
         self.calibration = result
+        self._end_guide(ended_calibration, result, result.summary())
         log.log(logging.INFO if result.ok else logging.WARNING, result.summary())
         if result.ok:
             self.correction.reset(result.t)
@@ -250,21 +300,8 @@ class EyeTrackerMonitor:
         # What the target looked like, and each one shown, in order: where,
         # which picture, when — with the session seed, enough to recover a
         # random picture order. Only from a tracker that draws a target; a
-        # stand-in's event is what it always was.
-        target_record: dict[str, Any] = {}
-        if result.target_style:
-            target_record = {
-                "target_style": result.target_style,
-                "targets_shown": [
-                    {
-                        "ordinal": shown.ordinal,
-                        "target_px": list(shown.target_px),
-                        "image": shown.image,
-                        "t": shown.t,
-                    }
-                    for shown in result.shown
-                ],
-            }
+        # stand-in's event is what it always was. Validation and drift
+        # correction record theirs in the same shape (procedures.py).
         self._emit(
             "CALIBRATION",
             {
@@ -291,7 +328,7 @@ class EyeTrackerMonitor:
                     }
                     for target in result.targets
                 ],
-                **target_record,
+                **target_record(result.target_style, result.shown),
             },
         )
         # No validation of a calibration that did not happen (aborted) or
@@ -323,7 +360,11 @@ class EyeTrackerMonitor:
         The validation a block break runs by itself passes "auto" when nobody
         may be at the keyboard to accept a target (session/pause_control.py).
         """
-        self._stage("validating", "starting")
+        walk = advance if advance is not None else self._advance()
+        with self._procedure("validation", "validating", walk or self._cfg.calibration_advance):
+            return self._validate(walk)
+
+    def _validate(self, advance: Advance | None) -> ValidationResult:
         result = validate(
             self._tracker,
             self._display,
@@ -332,10 +373,12 @@ class EyeTrackerMonitor:
             self._cfg,
             poll_keys=self._poll_keys,
             correction=self.correction,
-            advance=advance if advance is not None else self._advance(),
+            advance=advance,
+            calibration_targets=self.calibration_targets,
             progress=self._on_progress,
         )
         self.validation = result
+        self._end_guide(ended_validation, result, result.summary())
         # The procedure logged its verdict; the per-target errors follow it
         # here, in the log as well as the event payload. For an experiment
         # whose design names a validation limit, the log is where "which
@@ -355,7 +398,13 @@ class EyeTrackerMonitor:
 
     def drift_correct(self) -> DriftResult:
         """Measure the offset on a centre target and apply it if it is a drift."""
-        self._stage("drift correcting", "starting")
+        walk = self._advance()
+        with self._procedure(
+            "drift_correction", "drift correcting", walk or self._cfg.calibration_advance
+        ):
+            return self._drift_correct(walk)
+
+    def _drift_correct(self, advance: Advance | None) -> DriftResult:
         result = drift_correct(
             self._tracker,
             self._display,
@@ -364,10 +413,12 @@ class EyeTrackerMonitor:
             self._cfg,
             self.correction,
             poll_keys=self._poll_keys,
-            advance=self._advance(),
+            advance=advance,
+            calibration_targets=self.calibration_targets,
             progress=self._on_progress,
         )
         self.drift = result
+        self._end_guide(ended_drift, result, result.summary())
         self._emit("DRIFT_CORRECTION", result.payload())
         return result
 
@@ -381,10 +432,71 @@ class EyeTrackerMonitor:
     # Reporting
     # ------------------------------------------------------------------
 
+    @contextmanager
+    def _procedure(self, kind: Kind, stage: str, advance: str) -> Iterator[None]:
+        """One procedure, from its first publish to its last.
+
+        It opens the live monitor's guide (``procedure``) before the stage's
+        first publish, so that publish already carries it. A procedure that
+        raises leaves its guide failed with the error, never "running". The
+        end of the outermost one (a calibration runs its validation inside
+        itself) is published with the guide as it ended — gone after a
+        success, kept after a failure — because not every caller publishes
+        after a procedure: the calibration request before trial 1 does not,
+        and without this its panel would still be asking for SPACE.
+        """
+        if self._depth == 0:
+            self._verdicts = []
+        self._depth += 1
+        self._guide = started(kind, self._clock.now())
+        self._guide_advance = advance
+        try:
+            self._stage(stage, "starting")
+            yield
+        except BaseException as error:
+            if self._guide is not None and self._guide.outcome == "running":
+                self._guide = failed_with_error(self._guide, error, self._clock.now())
+            raise
+        finally:
+            self._depth -= 1
+            if self._depth == 0 and self.publisher is not None:
+                line = " · ".join(self._verdicts) or f"{stage}: stopped"
+                self.publisher(PROCEDURE_STATUS, line)
+
+    def _end_guide(
+        self,
+        ended: Callable[[ProcedureGuide, Any], ProcedureGuide | None],
+        result: CalibrationResult | ValidationResult | DriftResult,
+        verdict: str,
+    ) -> None:
+        """The guide once ``result`` is in: None after a success, the failure
+        kept otherwise (procedure_guide.ended_*)."""
+        self._verdicts.append(verdict)
+        if self._guide is not None:
+            self._guide = ended(self._guide, result)
+
+    @property
+    def procedure(self) -> dict[str, Any] | None:
+        """The live monitor's ``state["procedure"]``: the running procedure's
+        guide, or the last one's failure until ``dismiss_procedure``; None
+        when there is nothing to show (procedure_guide.ProcedureGuide)."""
+        return self._guide.as_state() if self._guide is not None else None
+
+    def dismiss_procedure(self) -> bool:
+        """Take down a failed or stopped procedure's guide, kept so the
+        operator has seen it: the session has resumed. A running procedure's
+        guide stays. True when there was one to take down, so the caller
+        knows to publish."""
+        if self._guide is None or self._guide.outcome == "running":
+            return False
+        self._guide = None
+        return True
+
     def _stage(self, stage: str, detail: str) -> None:
         """A stage boundary: always published, and it restarts the throttle."""
         log.info("eye tracker: %s — %s", stage, detail)
         self._last_publish = self._clock.now()
+        self._published_stage = stage
         if self.publisher is not None:
             self.publisher(PROCEDURE_STATUS, f"{stage}: {detail}")
 
@@ -397,11 +509,31 @@ class EyeTrackerMonitor:
         """
         messages = self.service_live_monitor()
         now = self._clock.now()
+        # The guide follows every report, published or not, so the publish
+        # that does go out carries the newest step and eye line.
+        before = self._guide
+        if before is not None:
+            self._guide = progressed(before, stage, detail, advance=self._guide_advance, t=now)
         # A setting the page sent is published at once, whatever the throttle
-        # says: the experimenter who pressed + is waiting to see it land.
-        if not messages and now - self._last_publish < PROGRESS_PUBLISH_S:
+        # says: the experimenter who pressed + is waiting to see it land. So
+        # is a new stage's first report (_published_stage), and a new target:
+        # the guide's "target 3 of 5" is what the operator watches.
+        new_stage = stage != self._published_stage
+        new_step = (
+            before is not None
+            and self._guide is not None
+            and self._guide.step is not None
+            and self._guide.step != before.step
+        )
+        if (
+            not messages
+            and not new_stage
+            and not new_step
+            and now - self._last_publish < PROGRESS_PUBLISH_S
+        ):
             return
         self._last_publish = now
+        self._published_stage = stage
         if self.publisher is not None:
             self.publisher(PROCEDURE_STATUS, " · ".join([f"{stage}: {detail}", *messages]))
 
@@ -417,6 +549,25 @@ class EyeTrackerMonitor:
     def has_camera(self) -> bool:
         """Whether this tracker can hand the session a camera image at all."""
         return hasattr(self._tracker, "camera_frame")
+
+    def trial_camera(self) -> dict[str, Any]:
+        """What the live monitor's Trial view may show of the camera during a
+        trial: never a live image, and the tracker's own reason why.
+
+        ``has_frames`` says whether a real frame from the last pause or
+        calibration exists to show instead (the camera channel keeps the
+        newest one). The reason is the tracker's ``camera_while_recording``,
+        another optional capability looked up here; a tracker that does not
+        say gets a sentence that is true of every tracker.
+        """
+        reason = getattr(self._tracker, "camera_while_recording", None)
+        if not isinstance(reason, str) or not reason:
+            reason = (
+                "This tracker's camera image is read only while paused or calibrating."
+                if self.has_camera
+                else "This eye tracker gives the session no camera image."
+            )
+        return {"live": False, "has_frames": self.has_camera, "reason": reason}
 
     def panels(self, *, camera: bool, image: bool = True) -> list[dict[str, Any]]:
         """The "Eye tracker" section: camera, calibration, validation, drift.
@@ -508,7 +659,13 @@ class EyeTrackerMonitor:
                     "step": IRIS_SIZE_STEP_PX,
                 }
             ]
-        note = "live while paused or calibrating" if live else "last frame; live again when paused"
+        # When the image is live, in the tracker's words if it has its own
+        # (the EyeLink's comes only from its camera setup screen).
+        own = getattr(self._tracker, "camera_live_when", None)
+        if live:
+            note = f"live {own}" if own else "live while paused or calibrating"
+        else:
+            note = f"last frame; live again {own}" if own else "last frame; live again when paused"
         if self._camera_fault is not None:
             # "Last frame" only when there is one: a stream whose very first
             # read failed has nothing on screen to call the last.
@@ -600,22 +757,33 @@ class EyeTrackerMonitor:
             return
         self._last_stream = now
         self._read_camera()
-        if self._camera_fault is None and self._frame is not None:
-            self.camera_sink(self._frame)
+        # Only a frame not sent before. A tracker that reads its device on
+        # every call (the TRACKPixx3) hands back a new frame each time; one
+        # that keeps the newest image it was sent (the EyeLink, whose image
+        # arrives only on its setup screen) hands back the same one until a
+        # newer arrives, and resending it would make the page count a still
+        # picture as a live stream.
+        frame = self._frame
+        if self._camera_fault is None and frame is not None and frame is not self._sent_frame:
+            self._sent_frame = frame
+            self.camera_sink(frame)
 
     def _read_camera(self) -> None:
         """One frame from the tracker, or the reason there is none.
 
         A failure is reported on the panel and warned about once per reason:
         the same fault on every publish of a long pause is noise, a new fault
-        is news.
+        is news. A tracker with no image *yet* (NoCameraImageYet: the
+        EyeLink, before its setup screen has shown one) is not a fault: the
+        panel says why, and the log notes it once at info.
         """
         try:
             self._frame = self._tracker.camera_frame()  # type: ignore[attr-defined]
         except TrackerError as e:
             reason = str(e)
             if reason != self._camera_fault:
-                log.warning("camera image not read: %s", reason)
+                level = logging.INFO if isinstance(e, NoCameraImageYet) else logging.WARNING
+                log.log(level, "camera image not read: %s", reason)
             self._camera_fault = reason
             return
         self._camera_fault = None

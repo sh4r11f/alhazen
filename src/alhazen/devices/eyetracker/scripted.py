@@ -32,6 +32,9 @@ class ScriptedTracker:
     its own ``t`` (usually its entry time).
     """
 
+    # The live monitor's Trial view says this in place of a camera image.
+    camera_while_recording = "The scripted test tracker has no camera."
+
     def __init__(self, samples: list[tuple[float, GazeSample | None]], clock: Clock) -> None:
         # Sorted defensively: an out-of-order script would otherwise produce
         # silently wrong lookups below instead of either working or failing.

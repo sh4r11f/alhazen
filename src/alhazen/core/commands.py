@@ -22,7 +22,10 @@ KeyGetter = Callable[[list[str] | None], list[tuple[str, dict[str, bool]]]]
 class Command(Enum):
     SKIP_TRIAL = auto()  # abort this trial, keep the session going
     PAUSE = auto()  # end the trial as PAUSED; runner opens the pause menu
-    CALIBRATE = auto()  # PAUSE + ask the runner to recalibrate before resuming
+    # Recalibrate the eye tracker. Only while paused (the pause menu's C row):
+    # in a trial the engine refuses it with ``paused_only_refusal`` and the
+    # trial goes on, the same rule the live monitor's Calibrate button has.
+    CALIBRATE = auto()
     QUIT = auto()  # end the whole session (data collected so far is saved)
     MANUAL_REWARD = auto()  # deliver a reward now; does not end the trial
     # Training controls. None of these ends the trial: the runner applies
@@ -49,6 +52,13 @@ DEFAULT_KEYMAP: dict[str, Command] = {
     "[": Command.DEMOTE_STAGE,
     "h": Command.HOLD_STAGE,
 }
+
+
+def paused_only_refusal(label: str) -> str:
+    """Why an eye-tracker procedure (calibrate, validate, drift correct) is
+    refused while a trial runs: the one sentence the live monitor's page and
+    the session's log both show, for a button or the rig's key."""
+    return f"{label} works only while the task is paused; pause it first"
 
 
 class CommandSource(Protocol):
@@ -127,3 +137,38 @@ class KeyboardCommands:
 
     def poll_raw_keys(self) -> list[str]:
         return [key for key, _ in self._get_keys(None)]
+
+
+class MergedCommands:
+    """The keyboard and a second, remote source of commands, as one source.
+
+    The live monitor's buttons reach a running trial through here: the engine
+    polls this exactly as it polls the keyboard, so a Pause clicked in the
+    browser and P pressed at the rig end the trial through the same branch of
+    ``TrialEngine._handle_commands`` and are recorded the same way.
+
+    ``remote`` hands over at most one command per call, or None. It is asked
+    only on a frame on which ``local`` produced nothing. The engine acts on
+    the first trial-ending command of a poll and drops the rest, so a remote
+    command that shared a poll with a key could be dropped after the remote
+    side had already said it was taken; asked alone, it never shares one, and
+    a command left waiting is taken on the next frame. The keyboard comes
+    first because it is the control surface at the rig.
+
+    ``poll_raw_keys`` is the keyboard's alone: the pause menu reads the
+    browser's choices through its own path (session/pause_control.py).
+    """
+
+    def __init__(self, local: CommandSource, remote: Callable[[], Command | None]) -> None:
+        self._local = local
+        self._remote = remote
+
+    def poll(self) -> list[Command]:
+        commands = self._local.poll()
+        if commands:
+            return commands
+        remote = self._remote()
+        return [remote] if remote is not None else []
+
+    def poll_raw_keys(self) -> list[str]:
+        return self._local.poll_raw_keys()

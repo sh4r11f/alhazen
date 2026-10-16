@@ -2191,10 +2191,10 @@ describe('the colour theme', () => {
     (name) => app.byId(`theme-${name}`).getAttribute('aria-pressed'),
   );
 
-  it('follows the system until the reader chooses, and remembers the choice', async () => {
+  it('starts light until the reader chooses, and remembers the choice', async () => {
     const app = await pageWith();
-    assert.equal(theme(app), null);
-    assert.deepEqual(pressed(app), ['true', 'false', 'false']);
+    assert.equal(theme(app), 'light');
+    assert.deepEqual(pressed(app), ['false', 'true', 'false']);
     app.byId('theme-dark').fire('click');
     assert.equal(theme(app), 'dark');
     assert.deepEqual(pressed(app), ['false', 'false', 'true']);
@@ -2214,8 +2214,8 @@ describe('the colour theme', () => {
 
   it('ignores a remembered theme it does not know', async () => {
     const app = await pageWith({ storage: { 'alhazen-workspace-theme': 'sepia' } });
-    assert.equal(theme(app), null);
-    assert.deepEqual(pressed(app), ['true', 'false', 'false']);
+    assert.equal(theme(app), 'light');
+    assert.deepEqual(pressed(app), ['false', 'true', 'false']);
   });
 
   it('keeps the two copies of the dark palette in the stylesheet identical', () => {
@@ -2240,11 +2240,12 @@ describe('the colour theme', () => {
 
   it('keeps every text and control colour readable in both palettes', () => {
     /* WCAG AA: text needs a contrast ratio of 4.5:1 against what it is drawn
-     * on; a control's edge (a field's border, the focus ring) and the logo's
-     * bricks 3:1. The dark palette is the owner's VS Code theme, and where
-     * the theme itself falls short (white on its blue button is 2.8:1) the
-     * stylesheet departs from it; this pins that it did. Each pair below is
-     * one the stylesheet really draws (text token on background token). */
+     * on; a control's edge (a field's border, the focus ring) 3:1. Both
+     * palettes are the Hub's warm family (Split, 2026-10-09, replacing the
+     * owner's old VS Code dark theme); the dark accent is light enough that
+     * links read on the dark paper, so its button text is dark. Each pair
+     * below is one the stylesheet really draws (text token on background
+     * token). */
     const css = readFileSync(
       new URL('../../src/alhazen/cli/assets/workspace.css', import.meta.url), 'utf8',
     );
@@ -2287,18 +2288,29 @@ describe('the colour theme', () => {
       ['rail-muted', ['rail', 'rail-2']],
       ['node-ink', ['node']],
       ['on-accent', ['accent']],
+      /* The Run page's instrument pane (Split): its text on its grounds,
+       * and the accent, status and selection inks drawn on it. */
+      ['instrument-ink', ['instrument', 'instrument-2']],
+      ['instrument-muted', ['instrument', 'instrument-2']],
+      ['ink', ['instrument', 'instrument-2']],
+      ['muted', ['instrument', 'instrument-2']],
+      ['accent', ['instrument', 'instrument-2', 'selected-bg', 'rail', 'rail-2']],
+      ['selected-ink', ['rail']],
+      ['run-ink', ['instrument']],
+      ['ok-ink', ['instrument']],
+      ['bad-ink', ['instrument']],
     ];
     const EDGES = [
       ['field-border', ['field', 'surface']],
-      ['focus', ['paper', 'surface']],
-      ['logo-brick', ['logo-ground']],
-      ['logo-brick', ['rail']],
+      ['focus', ['paper', 'surface', 'instrument']],
+      ['field-border', ['instrument']],
     ];
     const light = palette(':root {');
     const dark = palette(':root[data-theme=dark]');
-    // Light mode keeps its own colours; the dark one is the VS Code theme's.
-    assert.equal(dark.paper.toLowerCase(), '#080808');
-    assert.equal(dark['selected-ink'].toLowerCase(), '#f3c900');
+    // Both palettes are the Hub's (hub/assets/hub.css): warm paper, oxblood.
+    assert.equal(light.paper.toLowerCase(), '#fbf9f5');
+    assert.equal(light.accent.toLowerCase(), '#7f1d1d');
+    assert.equal(dark.paper.toLowerCase(), '#151311');
     const low = [];
     for (const [name, colours] of [['light', light], ['dark', dark]]) {
       for (const [pairs, need] of [[TEXT, 4.5], [EDGES, 3]]) {
@@ -2318,9 +2330,10 @@ describe('the colour theme', () => {
 
 describe('the logo', () => {
   it('is the same drawing in the sidebar and in the favicon', () => {
-    /* The sidebar draws it inline (so it follows the page's theme) and the
-     * browser tab loads favicon.svg (an image, which cannot read the page's
-     * CSS): two copies of one drawing, which must not drift apart. */
+    /* The sidebar draws the Penrose mark inline (so it follows the page's
+     * theme) and the browser tab loads favicon.svg (an image, which cannot
+     * read the page's CSS): two copies of one drawing, which must not drift
+     * apart. */
     const read = (name) => readFileSync(
       new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
     );
@@ -2330,56 +2343,27 @@ describe('the logo', () => {
       assert.ok(start !== -1 && end > start);
       return text.slice(start, end).replace(/\s+/g, ' ');
     };
-    // The frame, the letter and the layering are one drawing. The bricks
-    // (the <pattern>s before LOGO-START) are sized per file: see the next test.
     const inline = drawing(read('workspace.html'));
     assert.equal(drawing(read('favicon.svg')), inline);
-    assert.match(inline, /url\(#logo-bricks-turned\)/);
     assert.match(read('workspace.html'), /<link rel="icon" href="\/favicon.svg" type="image\/svg\+xml">/);
   });
 
-  it('uses 4:1 bricks, finer in the sidebar than in the favicon', () => {
-    /* The sidebar draws the logo at 56 px with bricks 4 units wide (one
-     * pixel each); a browser tab draws the favicon at 16-32 px, where those
-     * would blur into grey, so it uses bricks 7 wide. In both the ground is
-     * horizontal L×w bricks, the figure the same turned upright and shifted
-     * by half a brick width both ways. */
-    const read = (name) => readFileSync(
-      new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
-    );
-    const bricks = (text) => {
-      const ground = text.match(/<pattern id="logo-bricks" width="([\d.]+)" height="([\d.]+)"/);
-      const turned = text.match(
-        /<pattern id="logo-bricks-turned" width="([\d.]+)" height="([\d.]+)"\s+patternUnits="userSpaceOnUse" patternTransform="translate\(([\d.]+) ([\d.]+)\)"/,
-      );
-      assert.ok(ground && turned, 'both brick patterns are present');
-      const [gw, gh] = ground.slice(1, 3).map(Number);
-      const [tw, th, dx, dy] = turned.slice(1, 5).map(Number);
-      // A tile is two bricks: ground 2L × 2w, figure 2w × 2L.
-      const w = gh / 2;
-      assert.equal(gw / 2, 4 * w, 'ground bricks are 4:1');
-      assert.deepEqual([tw, th], [gh, gw], 'the figure is the ground turned 90 degrees');
-      assert.deepEqual([dx, dy], [w / 2, w / 2], 'shifted by half a brick width');
-      return w;
-    };
-    assert.equal(bricks(read('workspace.html')), 4);
-    assert.equal(bricks(read('favicon.svg')), 7);
-  });
-
-  it('paints the upright bricks inside a drawn A, with nothing on top of it', () => {
-    /* The owner: the vertical bricks are painted IN the A, not an A on top
-     * of the figure. So the letter is a path (the favicon cannot load the
-     * page's font, and a path looks the same everywhere) that clips the
-     * turned bricks, and there is no disc, <text> or solid letter left. */
-    const html = readFileSync(
-      new URL('../../src/alhazen/cli/assets/workspace.html', import.meta.url), 'utf8',
-    );
+  it('is the Penrose mark: its ink faces and its accent face', () => {
+    /* The chosen mark, the Penrose "impossible A" (the same two paths the
+     * Experiment Hub draws): ink faces in the text colour, then the face in
+     * the accent. Pinned here so a redraw is a deliberate change. */
+    const PENROSE = [
+      'M7.83 56.61L11.81 49.72L11.98 49.52L12.21 49.35L12.38 49.28L12.64 49.24L20.6 49.24L16.62 42.35L16.55 42.2L16.51 42.01L16.5 41.82L16.53 41.64L16.62 41.39L26.31 24.61L26.49 24.39L26.73 24.23L26.92 24.16L27.12 24.13L27.41 24.16L27.6 24.23L27.77 24.33L27.92 24.47L28.02 24.61L37.41 40.87L44.77 40.87L27.17 10.39L4.15 50.24ZM55.59 57.61L59.27 51.24L13.24 51.24L9.57 57.61ZM26.59 40.87L30.85 33.5L27.17 27.13L19.23 40.87Z',
+      'M22.91 49.24L59.27 49.24L36.26 9.39L28.9 9.39L47.38 41.39L47.45 41.55L47.49 41.75L47.5 41.95L47.46 42.14L47.34 42.41L47.14 42.64L46.89 42.79L46.7 42.85L46.52 42.87L19.23 42.87Z',
+    ];
+    const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
+    const html = read('../../src/alhazen/cli/assets/workspace.html');
     const logo = html.slice(html.indexOf('<!-- LOGO-START'), html.indexOf('<!-- LOGO-END -->'));
     const markup = logo.replace(/<!--[\s\S]*?-->/g, '');
-    assert.match(markup, /<clipPath id="logo-letter">\s*<path d="M[^"]+Z"\/>/);
-    // The turned bricks are drawn only inside the letter's clip.
-    assert.match(markup, /<g clip-path="url\(#logo-letter\)">[^]*?fill="url\(#logo-bricks-turned\)"[^]*?<\/g>/);
-    assert.doesNotMatch(markup, /<text|<circle|stroke/);
+    const ours = [...markup.matchAll(/<path class="(mark-ink|mark-face)" d="([^"]+)"\/>/g)];
+    assert.deepEqual(ours.map((m) => m[1]), ['mark-ink', 'mark-face']);
+    assert.deepEqual(ours.map((m) => m[2]), PENROSE);
+    assert.doesNotMatch(markup, /<text/);
   });
 });
 
@@ -2793,5 +2777,80 @@ describe('DATAPixx pump calibration identity', () => {
       'DATAPIXX3/dout0, active_low gate, pump 3000 µL/min, 14.5 mm syringe',
       '2.5 µL per 50 ms pulse',
     ]);
+  });
+});
+
+describe('why the last launch failed, beside Start', () => {
+  const REFUSED = {
+    kind: 'refused',
+    heading: 'Run refused',
+    reason: 'a session cannot show this background: configs/task-dark-background.yaml '
+      + '(Task parameters "Dark background (candidate)") sets background_value 0.2',
+  };
+  const failed = (overrides = {}) => runDetail({
+    status: 'failed', returncode: 1, finished: '2026-09-25T10:00:05',
+    log: 'INVALID: ' + REFUSED.reason + '\n', failure: REFUSED, ...overrides,
+  });
+
+  it('shows the refusal the server read from the console, with the Console a click away', async () => {
+    const app = await pageWith({ run: failed() });
+    const box = app.byId('launch-failure');
+    assert.equal(box.hidden, false);
+    assert.equal(box.dataset.kind, 'refused');
+    assert.equal(app.byId('launch-failure-heading').textContent, 'Run refused');
+    assert.equal(app.byId('launch-failure-reason').textContent, REFUSED.reason);
+    /* The output card's empty state says it in the same words, and points
+     * at the Console as before. */
+    assert.match(app.byId('gallery-empty').textContent, /Run refused/);
+    assert.match(app.byId('gallery-empty').textContent, /console has the error/);
+    assert.equal(app.byId('console-panel').hidden, true);
+
+    app.byId('launch-failure-console').fire('click');
+    assert.equal(app.byId('console-panel').hidden, false);
+    assert.equal(app.byId('media-panel').hidden, true);
+    assert.equal(app.byId('console-tab').classList.contains('selected'), true);
+    /* Below the form on a narrow screen, so it is brought into view. */
+    const scrolled = app.document.scrolledIntoView.map((s) => s.element.id);
+    assert.deepEqual(scrolled.slice(-1), ['output-card']);
+  });
+
+  it('says an error the same way, in its own words', async () => {
+    const failure = { kind: 'error', heading: 'Run stopped with an error', reason: 'OSError: x' };
+    const app = await pageWith({ run: failed({ failure }) });
+    assert.equal(app.byId('launch-failure').dataset.kind, 'error');
+    assert.equal(app.byId('launch-failure-heading').textContent, 'Run stopped with an error');
+    assert.equal(app.byId('launch-failure-reason').textContent, 'OSError: x');
+  });
+
+  it('is hidden for a run that did not fail, and once the next launch runs', async () => {
+    const app = await pageWith({ run: runDetail({ status: 'completed', returncode: 0 }) });
+    assert.equal(app.byId('launch-failure').hidden, true);
+    await redraw(app, failed());
+    assert.equal(app.byId('launch-failure').hidden, false);
+    await redraw(app, runDetail({ failure: null }));
+    assert.equal(app.byId('launch-failure').hidden, true);
+  });
+
+  it('is not shown for an older failure chosen from the history', async () => {
+    const app = loadWorkspace();
+    const old = failed({ id: 'r1', started: '2026-09-25T09:00:00' });
+    const newer = runDetail({ id: 'r2', status: 'completed', returncode: 0, failure: null });
+    app.server.state = { projects: [PROJECT], runs: [summary(newer), summary(old)], active: null };
+    app.server.details = { r1: old, r2: newer };
+    app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+    app.server.rigs = { 'configs/rig-mac.yaml': rig(true) };
+    await app.run('refresh()');
+    await settle();
+    assert.equal(app.byId('launch-failure').hidden, true);
+    app.byId('history').children[1].fire('click');
+    await settle();
+    assert.equal(app.run('runId'), 'r1');
+    assert.equal(app.byId('launch-failure').hidden, true);
+  });
+
+  it('stays hidden for a server too old to send a reason', async () => {
+    const { failure, ...old } = failed();
+    const app = await pageWith({ run: old });
+    assert.equal(app.byId('launch-failure').hidden, true);
   });
 });

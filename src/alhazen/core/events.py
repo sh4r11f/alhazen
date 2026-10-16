@@ -80,6 +80,14 @@ RESERVED_EVENTS = frozenset(
         # the TRACKPixx3's expected iris size changes what the tracker measures
         # from that moment on, and an analysis has to be able to see where.
         "TRACKER_SETTING",
+        # A command from the live monitor's buttons, as the session took it
+        # off the queue (session/operator_commands.py): ``name``,
+        # ``request_id``, ``source`` ("live_monitor"), ``result`` (applied,
+        # refused, failed or discarded) and a ``note``. On the record because
+        # a pause, a skipped trial or a reward that came from the browser must
+        # be told apart afterwards from one nobody asked for, and a click the
+        # session discarded from one it acted on.
+        "OPERATOR_COMMAND",
     }
 )
 

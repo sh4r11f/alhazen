@@ -64,6 +64,9 @@ async function livePage({ states, camera = [], tracker }) {
       }
       if (url.startsWith('/api/camera')) return cameraQueue.length ? cameraQueue.shift() : pending();
       if (url.startsWith('/api/tracker')) return tracker(url, init);
+      // The Trial view's two long polls (trial picture, gaze): left waiting,
+      // as an idle session leaves them; trial_view.test.mjs drives them.
+      if (url.startsWith('/api/trial') || url.startsWith('/api/gaze')) return pending();
       throw new Error('unexpected fetch ' + url);
     },
   });
@@ -258,11 +261,10 @@ describe('the eye-tracker panels', () => {
     assert.deepEqual(live_monitor.window.history.replaced, []);
   });
 
-  it('turn the session controls on only while paused', () => {
-    const live_monitor = loadLiveMonitor({ staticState: stateWith([], { status: 'paused' }) });
-    const buttons = live_monitor.document.querySelectorAll('[data-command]');
-    assert.ok(buttons.length > 0);
-    buttons.forEach((button) => assert.equal(button.disabled, false, button.dataset.command));
+  it('draws no session controls in a saved copy, and says they work only live', () => {
+    const live_monitor = loadLiveMonitor({ staticState: stateWith([], { status: 'complete' }) });
+    assert.equal(live_monitor.document.querySelectorAll('[data-command]').length, 0);
+    assert.match(live_monitor.byId('controls').textContent, /only during a session/);
   });
 });
 

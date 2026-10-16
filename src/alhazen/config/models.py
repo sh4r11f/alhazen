@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from alhazen.config.sections import section
 from alhazen.errors import ConfigError
 
 
@@ -77,7 +78,11 @@ class Duration(Model):
     whole frame, half a frame up (``whole_frames``), when frame counts are
     needed. Both resolutions require the display's *measured* refresh rate,
     so they happen at session build time, not at config load time.
+
+    Every duration is shown under Timing on the Run page (``section``).
     """
+
+    model_config = ConfigDict(json_schema_extra=section("timing"))
 
     ms: float | None = None
     frames: int | None = None
@@ -355,6 +360,9 @@ EYELINK_CALIBRATION_TYPES = ("H3", "HV3", "HV5", "HV9", "HV13")
 STREAMING_ONLY_FIELDS = ("max_sample_gap_ms", "max_consecutive_dropouts")
 # The calibration target: only a backend that draws one reads it.
 TARGET_DRAWING_ONLY_FIELDS = ("calibration_target",)
+# The layouts the mouse stand-in walks: it lays its grid out itself, as the
+# viewpixx backend does, with the same positions (viewpixx.calibration_targets).
+MOUSE_SIM_CALIBRATION_TYPES = SELF_DRIVEN_CALIBRATION_TYPES
 
 # How long, in ms, a real tracker may go without delivering a new sample
 # mid-trial before its recording is called dead (the tracker health check's
@@ -399,9 +407,12 @@ DEFAULT_MAX_CONSECUTIVE_DROPOUTS = 3
 # which they never change. docs/eye-tracker.md, "The calibration target".
 CALIBRATION_APPEARANCES = ("standard", "images", "random_images")
 CALIBRATION_MOTIONS = ("still", "pulse")
-# The backends that draw a calibration target at all. The stand-ins have no
-# calibration to show one in, so a target configured on one would do nothing.
-TARGET_DRAWING_BACKENDS = ("eyelink", "viewpixx")
+# The backends that draw a calibration target at all: the two real trackers,
+# and the mouse stand-in, whose calibration walks the same targets with
+# nothing to fit (user decision, 2026-10-15) so a rehearsal shows the
+# subject's screen the rig would. The scripted replay has no window to draw
+# in, so a target configured on it would do nothing.
+TARGET_DRAWING_BACKENDS = ("eyelink", "viewpixx", "mouse_sim")
 # Bounds on the pulse. The rate stays at or below 2 Hz: a pulse is a slow
 # swell that draws the eye, and anything faster starts to read as flicker
 # (and nears the 3 Hz floor of the photosensitive range). The scale is a
@@ -640,8 +651,8 @@ class EyeTrackerConfig(Model):
     max_consecutive_dropouts: int = DEFAULT_MAX_CONSECUTIVE_DROPOUTS
     # What the calibration target looks like and whether it pulsates
     # (CalibrationTargetConfig). Left out, it is the standard target, still:
-    # exactly what calibration drew before the setting existed. eyelink and
-    # viewpixx only, the backends that draw a target.
+    # exactly what calibration drew before the setting existed. eyelink,
+    # viewpixx and mouse_sim, the backends that draw a target.
     calibration_target: CalibrationTargetConfig = CalibrationTargetConfig()
 
     @model_validator(mode="before")
@@ -675,6 +686,14 @@ class EyeTrackerConfig(Model):
             self._valid_eyelink_layout()
         if self.backend == "viewpixx":
             self._valid_viewpixx()
+        if self.backend == "mouse_sim" and self.calibration_type not in MOUSE_SIM_CALIBRATION_TYPES:
+            # The mouse walks its own grid (mouse_sim.py), laid out as the
+            # viewpixx backend lays out its: checked here, not at the key.
+            raise ValueError(
+                f"calibration_type {self.calibration_type!r} is not one alhazen can lay out "
+                f"for the mouse_sim backend — use one of "
+                f"{', '.join(MOUSE_SIM_CALIBRATION_TYPES)}"
+            )
         if self.backend in DEFAULT_MAX_SAMPLE_GAP_MS:
             self._valid_dropout_detection()
         return self
@@ -749,11 +768,15 @@ class EyeTrackerConfig(Model):
         wrong_for: dict[str, tuple[str, ...]] = {
             "eyelink": VIEWPIXX_ONLY_FIELDS,
             "viewpixx": EYELINK_ONLY_FIELDS,
+            # The mouse stand-in has no hardware fields and streams nothing
+            # that could drop out, but it draws the calibration target.
+            "mouse_sim": EYELINK_ONLY_FIELDS + VIEWPIXX_ONLY_FIELDS + STREAMING_ONLY_FIELDS,
         }
         # The simulated backends have no hardware fields at all, so every
         # backend-specific key is wrong on them — and they stream nothing that
-        # could drop out, so the dropout-detection fields are wrong too.
-        # They draw no calibration target either (TARGET_DRAWING_BACKENDS).
+        # could drop out, so the dropout-detection fields are wrong too. The
+        # scripted replay draws no calibration target either
+        # (TARGET_DRAWING_BACKENDS); the mouse does (its own entry above).
         wrong = wrong_for.get(
             self.backend,
             EYELINK_ONLY_FIELDS
@@ -1450,7 +1473,7 @@ def with_calibration_target(
         raise ConfigError(
             f"--calibration-target/--calibration-images/--calibration-motion choose what an "
             f"eye-tracker calibration draws, and this rig has {what}, which draws no "
-            f"calibration target; use a rig with an eyelink or viewpixx tracker"
+            f"calibration target; use a rig with an eyelink, viewpixx or mouse_sim tracker"
         )
     current = tracker.calibration_target
     values: dict[str, Any] = current.model_dump(mode="json", include=current.model_fields_set)

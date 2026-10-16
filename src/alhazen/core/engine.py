@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from alhazen.core.clock import Clock
-from alhazen.core.commands import Command, CommandSource
+from alhazen.core.commands import Command, CommandSource, paused_only_refusal
 from alhazen.core.events import Event, EventBus, EventSchema
 from alhazen.core.trial import (
     ABORTED,
@@ -671,11 +671,19 @@ class TrialEngine:
                 self._emit(ctx, "PAUSED", {})
                 return PAUSED
             if cmd is Command.CALIBRATE:
-                # A calibration request is a pause the runner resolves by
-                # actually recalibrating before reopening the menu.
-                ctx.record["pause_action"] = "calibrate"
-                self._emit(ctx, "PAUSED", {"action": "calibrate"})
-                return PAUSED
+                # Not during a trial: an eye-tracker procedure runs only while
+                # the task is paused, on every rig and from every source (the
+                # live monitor's button refuses it too, live_monitor/
+                # controls.py). The trial goes on untouched. The refusal is
+                # the runner's to log and record (on_session_command), so the
+                # key never looks like one that did not register.
+                if self._on_session_command is not None:
+                    self._on_session_command(cmd)
+                else:
+                    log.warning(
+                        "%s (the calibrate key, during a trial)", paused_only_refusal("Calibrate")
+                    )
+                continue
             if cmd is Command.QUIT:
                 raise QuitRequested()
             if cmd is Command.MANUAL_REWARD:

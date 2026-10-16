@@ -1,27 +1,27 @@
-"""The calibration guide: the screen shown before a calibration starts.
+"""The calibration guide: what the experimenter should know before a calibration.
 
 Before the first target appears, the experimenter should know what is about
 to happen and what they are expected to do — which eye the session reads,
 how many targets there are and where, whether they press a key for each one
-or the tracker moves on by itself, and which keys do what. Without it, the
-first target of a session is a black dot on a grey screen and a person
-guessing whether to press something.
+or the tracker moves on by itself, and which keys do what.
 
-This module is only the *text*: a body for ``DisplayBackend.show_menu`` in
-the terminal-green panel every instruction screen uses. Each backend
-composes it with its own facts (the eye it calibrates, whether it drives the
-walk or the Host PC does) and draws it, redrawing while the live eye status
-line changes. Keeping the text here keeps it testable on a machine with no
-display, and identical in shape across the two real backends — an
-experimenter moving between rigs reads the same screen.
+This module is only the *text*. It is never drawn on the subject's screen:
+during a calibration that screen shows nothing but targets (user decision,
+2026-10-15). Each backend composes the guide with its own facts (the eye it
+calibrates, whether it drives the walk or the Host PC does) and writes it to
+the session log, headed ``GUIDE_TITLE``, once per calibration; the live eye
+line and the keys that start or stop the walk go to the live monitor through
+the progress hook. Keeping the text here keeps it testable on a machine with
+no display, and identical in shape across the two real backends — an
+experimenter moving between rigs reads the same guide.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-# Every backend's guide has the same heading, so the panel is recognisable
-# before it is read.
+# Every backend's guide has the same heading, so it is recognisable in the
+# log before it is read.
 GUIDE_TITLE = "CALIBRATION"
 
 # What the two advance modes ask of the experimenter, in their words.

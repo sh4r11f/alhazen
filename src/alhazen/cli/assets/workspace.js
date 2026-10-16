@@ -1889,8 +1889,12 @@ function setValue(path, value) {
  * Draw the parameter editor: the two tab buttons' pressed state, which of
  * the fields list and the text area is visible, and — for the fields
  * editor — one row per leaf value in `values`, with nested mappings
- * flattened into "group / key" labels. Every row writes straight into
- * `values` on change, so a launch sends exactly what is on screen.
+ * flattened into "group / key" labels, grouped under the Stimulus, Timing,
+ * Session and Other headings (ParameterSections says which; a heading with
+ * no rows is left out). Within a heading, rows keep the file's order, and
+ * controls are numbered in the file's order whatever heading they land
+ * under. Every row writes straight into `values` on change, so a launch
+ * sends exactly what is on screen.
  */
 function renderEditor() {
   $('fields-tab').setAttribute('aria-pressed', String(editor === 'fields'));
@@ -1913,9 +1917,15 @@ function renderEditor() {
     host.append(node('p', 'help', noValuesHint(project())));
     return;
   }
-  // Controls are numbered param-0, param-1, … in document order, and each
+  // Controls are numbered param-0, param-1, … in the file's order, and each
   // label points at its control by that id.
   let number = 0;
+  const buckets = new Map(ParameterSections.ORDER.map((name) => [name, []]));
+  function place(row, path) {
+    const where = ParameterSections.of(parameterSchema, path);
+    row.dataset.section = where.section;
+    buckets.get(where.section).push(row);
+  }
   function addFields(object, prefix = []) {
     for (const [key, value] of Object.entries(object)) {
       const path = [...prefix, key];
@@ -1928,9 +1938,15 @@ function renderEditor() {
       const row = node('div', 'parameter-row');
       // The search box filters rows on this lower-cased dotted path.
       row.dataset.key = path.join('.').toLowerCase();
-      const lab = node('label', '', key.replaceAll('_', ' '));
+      // A Duration's one value ({ms} or {frames}) is labelled by the
+      // duration it is, its unit beside: "fixation hold (ms)", not "ms"
+      // under "fixation_hold".
+      const unit = prefix.length && (key === 'ms' || key === 'frames');
+      const named = unit ? prefix.at(-1) : key;
+      const group = unit ? prefix.slice(0, -1) : prefix;
+      const lab = node('label', '', named.replaceAll('_', ' ') + (unit ? ` (${key})` : ''));
       lab.htmlFor = `param-${number++}`;
-      if (prefix.length) lab.append(node('small', '', prefix.join(' / ')));
+      if (group.length) lab.append(node('small', '', group.join(' / ')));
       const selection = ParameterChoices.describe(parameterSchema, path, value);
       if (selection) {
         if (selection.multiple) {
@@ -1968,7 +1984,7 @@ function renderEditor() {
           select.addEventListener('change', () => setValue(path, select.value));
           row.append(lab, select);
         }
-        host.append(row);
+        place(row, path);
         continue;
       }
       // Everything else: a checkbox for a boolean, a number input for a
@@ -2011,19 +2027,43 @@ function renderEditor() {
         }
       });
       row.append(lab, input);
-      host.append(row);
+      place(row, path);
     }
   }
   addFields(values);
+  for (const [name, rows] of buckets) {
+    if (!rows.length) continue;
+    const section = node('section', 'parameter-section');
+    section.dataset.section = name;
+    const heading = node('h4', 'parameter-section-title');
+    heading.id = `parameter-section-${name}`;
+    section.setAttribute('aria-labelledby', heading.id);
+    heading.append(
+      node('span', 'parameter-section-name', ParameterSections.LABELS[name]),
+      node('span', 'parameter-section-count', String(rows.length)),
+    );
+    section.append(heading, ...rows);
+    host.append(section);
+  }
   filterParameters();
 }
 
-/** Hide the rows whose dotted path does not contain the search text. A
+/** Hide the rows whose dotted path does not contain the search text, and
+ *  each heading left with no row; a heading's count is its rows shown. A
  *  space in the query stands for an underscore, as the labels show them. */
 function filterParameters() {
   const query = $('parameter-search').value.toLowerCase().replaceAll(' ', '_');
-  for (const row of $('parameter-fields').children) {
-    if (row.dataset.key) row.hidden = !row.dataset.key.includes(query);
+  for (const section of $('parameter-fields').children) {
+    if (!section.dataset.section) continue;
+    let shown = 0;
+    for (const row of section.children) {
+      if (!row.dataset.key) continue;
+      row.hidden = !row.dataset.key.includes(query);
+      if (!row.hidden) shown += 1;
+    }
+    section.hidden = shown === 0;
+    const count = section.querySelector('.parameter-section-count');
+    if (count) count.textContent = String(shown);
   }
 }
 
@@ -2599,6 +2639,31 @@ function renderUpload(run, active) {
 }
 
 /**
+ * Beside Start: why the experiment's last launch failed — the refusal or the
+ * error its console ends on, as the server reads it (`run.failure`,
+ * alhazen.cli.launch_failure) — with a button to the Console for the full
+ * output. Shown only while the run on screen is the newest of the selected
+ * experiment, so an old failure chosen from the history never reads as the
+ * verdict on the next Start; hidden for every run that did not fail, and for
+ * a server too old to send `failure`.
+ */
+function renderFailure(run) {
+  const box = $('launch-failure');
+  const failure = run?.failure;
+  const newest = (state?.runs || []).find((r) => r.project === run?.project);
+  const shown = Boolean(failure && run.project === selected && newest?.id === run.id);
+  box.hidden = !shown;
+  if (!shown) return;
+  box.dataset.kind = failure.kind;
+  if ($('launch-failure-heading').textContent !== failure.heading) {
+    $('launch-failure-heading').textContent = failure.heading;
+  }
+  if ($('launch-failure-reason').textContent !== failure.reason) {
+    $('launch-failure-reason').textContent = failure.reason;
+  }
+}
+
+/**
  * Fetch the selected run and draw it: status badge, summary line, stop
  * button, live-monitor link, console tail, the command that started it and
  * the media gallery. Called on every poll, so the parts the reader interacts
@@ -2635,6 +2700,8 @@ async function refreshRun() {
   renderMonitor(run, active);
   // Upload to the archive, once the session this launch saved is finished.
   renderUpload(run, active);
+  // Why it failed, beside Start, when it is the experiment's last launch.
+  renderFailure(run);
   // Console: follow the tail only if the reader was already at the bottom,
   // so scrolling up to read an earlier line is not undone by the next poll.
   const consoleEl = $('console');
@@ -2668,20 +2735,18 @@ async function refreshRun() {
   let heading;
   let detail;
   if (!run) {
-    heading = 'A closer look at your experiment.';
-    detail = 'Preview images and recorded movies appear here. '
-      + 'Choose a mode and start a run to see the results.';
+    heading = 'No run yet';
+    detail = '';
   } else if (active) {
-    heading = 'Your experiment is working.';
-    detail = 'Images appear as they are written. Movies are available when recording '
-      + 'finishes. Follow progress in the console.';
+    heading = 'Your experiment is working';
+    detail = 'Images appear as they are written; movies when recording finishes.';
   } else if (run.status === 'failed') {
-    heading = 'This run needs attention.';
-    detail = 'Open the console for the error and the command that produced it.';
+    // In the words beside Start ("Run refused", ...) when the server read why.
+    heading = run.failure?.heading || 'Run failed';
+    detail = 'The console has the error and the command.';
   } else {
-    heading = 'No images or movies in this run.';
-    detail = 'Session modes write their data to the rig’s data directory. '
-      + 'Use a preview script or movie mode to generate media.';
+    heading = 'No media in this run';
+    detail = '';
   }
   empty.querySelector('h3').textContent = heading;
   empty.querySelector('p').textContent = detail;
@@ -2824,15 +2889,15 @@ function setTheme(choice, remember = true) {
   if (remember) localStorage.setItem(THEME_KEY, choice);
 }
 
-/** The theme remembered from the last visit, 'system' when none was; a
+/** The theme remembered from the last visit, 'light' when none was; a
  *  stored value this page does not know is reported in the console and
  *  replaced by the default rather than applied half-way. */
 function rememberedTheme() {
   const stored = localStorage.getItem(THEME_KEY);
-  if (stored === null) return 'system';
+  if (stored === null) return 'light';
   if (THEMES.includes(stored)) return stored;
   console.warn(`Ignoring the unknown colour theme ${JSON.stringify(stored)}`);
-  return 'system';
+  return 'light';
 }
 
 /* ------------------------------------------------------------------ */
@@ -2870,6 +2935,12 @@ $('fields-tab').addEventListener('click', guard(() => switchEditor('fields')));
 $('yaml-tab').addEventListener('click', guard(() => switchEditor('yaml')));
 $('media-tab').addEventListener('click', () => outputTab('media'));
 $('console-tab').addEventListener('click', () => outputTab('console'));
+// The failure beside Start: its full output is the Console, which on a narrow
+// screen is below the form, so the output card is brought into view.
+$('launch-failure-console').addEventListener('click', () => {
+  outputTab('console');
+  $('output-card').scrollIntoView({block: 'start'});
+});
 $('monitor-tab').addEventListener('click', () => outputTab('monitor'));
 $('stop').addEventListener('click', guard(async () => {
   await api('/api/stop', {id: runId});

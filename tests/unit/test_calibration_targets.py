@@ -154,10 +154,13 @@ class TestRefusedWhenTheRigLoads:
         with pytest.raises(ValueError, match=words.replace("(", r"\(").replace("`", "`")):
             EyeTrackerConfig(backend="eyelink", calibration_target=settings)
 
-    @pytest.mark.parametrize("backend", ["mouse_sim", "scripted"])
-    def test_a_stand_in_that_draws_no_target_refuses_one(self, backend):
+    def test_a_stand_in_that_draws_no_target_refuses_one(self):
+        # The scripted replay has no window. The mouse stand-in draws the
+        # target since round 5 (test_mouse_sim_calibration.py).
         with pytest.raises(ValueError, match="ignores calibration_target"):
-            EyeTrackerConfig(backend=backend, calibration_target={"motion": "pulse"})
+            EyeTrackerConfig(backend="scripted", calibration_target={"motion": "pulse"})
+        mouse = EyeTrackerConfig(backend="mouse_sim", calibration_target={"motion": "pulse"})
+        assert mouse.calibration_target.motion == "pulse"
 
     def test_one_picture_and_any_shipped_picture_are_valid(self):
         one = CalibrationTargetConfig(appearance="images", images=("tree_1",))
@@ -225,15 +228,15 @@ class TestChosenForOneRun:
         )
         with pytest.raises(ConfigError, match="this rig has no eye tracker"):
             with_calibration_target(no_tracker, motion="pulse")
-        mouse = no_tracker.model_copy(
+        scripted = no_tracker.model_copy(
             update={
                 "devices": no_tracker.devices.model_copy(
-                    update={"eyetracker": EyeTrackerConfig(backend="mouse_sim")}
+                    update={"eyetracker": EyeTrackerConfig(backend="scripted")}
                 )
             }
         )
-        with pytest.raises(ConfigError, match="the mouse_sim stand-in"):
-            with_calibration_target(mouse, appearance="random_images")
+        with pytest.raises(ConfigError, match="the scripted stand-in"):
+            with_calibration_target(scripted, appearance="random_images")
 
     def test_an_unknown_picture_is_a_config_error(self):
         with pytest.raises(ConfigError, match="not among alhazen"):

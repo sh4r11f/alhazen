@@ -20,6 +20,9 @@ class AutomatedGazeTracker:
     demo participant independent of any one task's pixel geometry.
     """
 
+    # The live monitor's Trial view says this in place of a camera image.
+    camera_while_recording = "The automated participant has no camera."
+
     def __init__(self) -> None:
         self._screen: Screen | None = None
         self._clock: Clock | None = None

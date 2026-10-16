@@ -57,14 +57,44 @@ flowchart LR
 
 ## The calibration guide
 
-Before the first target appears, the subject display shows a guide — the
-same terminal-green panel every instruction screen uses (see
-[Instruction screens](#instruction-screens)) — so nobody is guessing whether
-to press something:
+During a calibration the subject display shows **nothing but the targets**:
+no guide panel, no status line, no heading, no key hints, no result message
+(user decision, 2026-10-15). The same holds for validation and drift
+correction, and on every tracker path: the TRACKPixx3 walk, the EyeLink's
+Host PC procedure as alhazen mirrors it, and the mouse stand-in's walk.
+When C is pressed the screen is cleared to the background, and the first
+thing the subject sees is the first target.
+
+**The EyeLink camera image is never on the subject's screen** either (user
+decision, 2026-10-15, round 5), including when the experimenter opens it on
+the Host PC's setup screen (ENTER). alhazen's calibration graphics assemble
+the image the Host PC sends (`draw_image_line`), draw the Host PC's
+overlays into it, and hand it to the live monitor instead of the subject's
+window, which stays empty (the image opening and closing each clear it to
+the background). The experimenter sees it on the live monitor:
+
+- the **Eye tracker → Camera** panel streams it while the setup screen
+  shows it (8-bit grey, the channel the TRACKPixx3's image uses; the Host
+  PC's crosshairs, pupil box and search limits are drawn white, since the
+  channel carries grey only), with the note *live while the Host PC's camera
+  setup screen shows it (ENTER there)*; before the first image of the
+  session the panel says how to get one;
+- the **Trial view**'s camera box keeps the last image with its age, as it
+  does for the TRACKPixx3's last frame;
+- the procedure line says `camera image: <the Host PC's caption> · shown on
+  the live monitor` while it arrives.
+
+The Host PC's own display is unchanged and still shows the image. The mouse
+over the subject's window can no longer drag the Host PC's search limits
+(the image is not there); the Host PC's own mouse and keys still can.
+
+What the experimenter needs goes where the experimenter looks instead:
+
+- **The session log** (and the console the session runs in) gets the guide
+  once per calibration, headed `CALIBRATION`:
 
 ```
 CALIBRATION
-
 tracker   TRACKPixx3
 eye       LEFT eye read by the session; both eyes are calibrated
 targets   HV5 — 5 targets over 60% of the screen, centre first
@@ -80,8 +110,26 @@ eyes: both tracked
 press SPACE to start, P or ESC to go back to the pause menu
 ```
 
-The lines are facts from the rig config and the device, composed by each
-backend from `devices/eyetracker/guide.py`:
+- **The live monitor**'s procedure guide, a panel at the top of its page,
+  says what the wait is for in large type, with the live eye line on the
+  TRACKPixx3 — *Calibration* · *Press Space to start, P or Esc to go back to
+  the pause menu* · `eyes: both tracked` — then *Target 3 of 5* and the eye
+  line at every target, and what failed and what to check if the calibration
+  did not take ([live_monitor.md](live_monitor.md), *The procedure guide*).
+  The status line it was built from (`calibration guide: eyes: both tracked ·
+  press SPACE to start, …`, `calibrating: target 3 of 5 · eyes: left only`)
+  is still the state's message. A new stage's first line and each new target
+  are published at once, whatever the progress throttle.
+  On the TRACKPixx3 the eye line is also logged once per target and whenever
+  it changes, and the Camera panel streams the eye image as before.
+- **The pause menu** that follows a calibration the tracker did not take is
+  headed with the result's note (*CALIBRATION FAILED — the device reports NO
+  calibration after the walk — check the camera sees the eyes (position,
+  focus, LED), then calibrate again*); it is no longer shown on the subject's
+  screen first.
+
+The guide's lines are facts from the rig config and the device, composed by
+each backend from `devices/eyetracker/guide.py`:
 
 - **eye** — the TRACKPixx3 fits both eyes and the session reads
   `eyetracker.eye`; the EyeLink's eye is set on its Host PC and the session
@@ -95,14 +143,14 @@ backend from `devices/eyetracker/guide.py`:
   calibration, alhazen's walk for the TRACKPixx3). Manual is the default
   because a target accepted while the subject looked elsewhere fits the
   model to the wrong point and every sample in the session inherits it.
-- **eyes: …** — the live line, redrawn ten times a second on the TRACKPixx3:
+- **eyes: …** — the live line, reread ten times a second on the TRACKPixx3:
   *both tracked*, *left only*, *right only*, or *NO EYE IN THE CAMERA
   IMAGE — check position, focus and LED (accept is refused)*. The EyeLink's
   camera is on its Host PC's own screen, so its guide has no live line.
 
-During the TRACKPixx3 walk the same eye line stays under the target, and
-SPACE is refused while no eye is in the image — a target accepted blind is
-the one mistake a calibration cannot recover from.
+During the TRACKPixx3 walk SPACE is refused while no eye is in the image — a
+target accepted blind is the one mistake a calibration cannot recover from —
+and each refusal is logged with the target it was on.
 
 One press of SPACE is enough. A key pressed while the walk is busy between
 two refreshes (reading the eye status, drawing, updating the live monitor) is
@@ -130,6 +178,24 @@ SPACE accepts in either mode, BACKSPACE steps back a target, ESC abandons the
 procedure: the same three keys as the calibration walk, so the experimenter
 learns one set. On a simulated display (`--mode simulate`, tests) the walk
 advances automatically.
+
+**The target is the calibration's** (user decision, 2026-10-15):
+`eyetracker.calibration_target` — the standard disc with a hole or a
+picture, still or pulsating, at the same size and pulse — drawn by the same
+presenter the calibration uses, on every tracker. On an EyeLink and a
+TRACKPixx3 it is the tracker's own target, so its picture deck carries on
+from the calibration (a chosen set goes on in its order; a random one goes
+on dealing from the session seed's `calibration_target` stream, never the
+same picture twice in a row). The mouse stand-in (`mouse_sim`) has the
+setting too and hands over its own target in the same way, so its
+validation carries on its calibration's deck; the scripted replay has none,
+and its validation draws the standard target, still. A point shown again
+(BACKSPACE in a validation) is a new target with the next picture; a drift
+correction measured again keeps its picture and pulse. Nothing else is
+drawn. The VALIDATION and DRIFT_CORRECTION events record `target_style` and
+`targets_shown` (ordinal, position, picture, time), in the CALIBRATION
+event's shape; a simulated display draws nothing, and its events carry
+neither. Up to alhazen 2.16 these procedures drew a 0.5° white disc.
 
 **Validation** shows the calibration's own targets (centre first). It
 *passes* when the **worst** target error is at most `accuracy_max_deg`
@@ -179,11 +245,12 @@ drift correction applied: offset 0.48° (limit 3°)
 
 With the live monitor on, the same three are buttons, live only while the
 session is paused. While a procedure runs the live monitor's status turns to
-**calibrating**, the buttons go inert, and the notice follows the walk —
-`calibrating: target 2 of 5 · eyes: both tracked`, `validating: target 4 of
-5` — published at most twice a second so the walk never waits on the
-browser. When it ends, the notice shows the result line and the panels
-update.
+**calibrating**, the buttons go inert, and the procedure guide at the top of
+the page follows the walk — the instruction, *Target 2 of 5*, the eye line —
+published at most twice a second (a new target at once) so the walk never
+waits on the browser. When it ends, the guide goes (or, after a failure,
+stays with what to check until the session resumes), the notice shows the
+result line and the panels update.
 
 The **Eye tracker** section of the panels holds:
 
@@ -436,8 +503,9 @@ a subject, a card to hold in front of one eye, and a rig config with
 
 - [ ] Start a session in `--mode test` and calibrate with both eyes in the
       camera image (**C** on the pause screen).
-- [ ] **Camera line.** Press **C** again. The guide's `eyes:` line (VPixx's
-      pupil-size call) should say `both tracked`. Hold the card in front of
+- [ ] **Camera line.** Press **C** again. The live monitor's procedure guide
+      shows the eye line under its instruction (VPixx's pupil-size call; the subject
+      display stays empty) should say `both tracked`. Hold the card in front of
       the subject's **left** eye. Expect `right only`, and write down what it
       says. Take the card away; ESC leaves the guide and keeps the
       calibration.
@@ -826,18 +894,37 @@ is moved by the trial order, and the CALIBRATION event records every target
 shown: `targets_shown` (ordinal, position, picture, time) beside
 `target_style`.
 
-**What it applies to.** Every calibration of both backends, recalibrations
-included; on an EyeLink, also the Host PC's own validation and drift check on
-its setup screen, which draw through the same graphics. alhazen's own
-validation and drift correction (V and D) keep their small white fixation
-disc. Where targets go, how a target is accepted (keys, `calibration_advance`),
+**What it applies to.** Every calibration of the EyeLink, the TRACKPixx3
+and the mouse stand-in, recalibrations included; on an EyeLink, also the Host PC's own validation and drift check on
+its setup screen, which draw through the same graphics; and alhazen's own
+validation and drift correction (V and D) on every tracker, which draw it
+through the same presenter (see [Validation and drift
+correction](#validation-and-drift-correction)). Where targets go, how a target is accepted (keys, `calibration_advance`),
 how gaze is sampled and fitted, the beeps and the validation limits do not
 change.
+
+**The mouse stand-in** (`mouse_sim`, user decision 2026-10-15, round 5) has
+no model to fit — the cursor is the gaze — but its calibration is walked as
+the TRACKPixx3's is: the guide's wait (SPACE starts, P or ESC goes back to
+the pause menu), then the rig's target at each point of `calibration_type`
+(HV5, HV9 or HV13, the TRACKPixx3's positions over `calibration_area`),
+accepted with SPACE or by itself in `auto`, BACKSPACE back one target. It
+uses the same presenter and picture deck (the same session seed stream), so
+with the same settings, keys and seed it draws frame for frame what the
+TRACKPixx3's walk draws; the live monitor gets the same stages
+(`calibration guide`, `calibrating: target i of n`), and the CALIBRATION
+event records `target_style` and `targets_shown`. Its result is *result
+unknown* with the note that nothing was fitted, and the validation that
+follows carries on the same deck. A rehearsal rig can therefore set the
+lab rig's `calibration_target` and show the subject's screen the lab would.
+The stand-in that `--mouse` (or *Mouse as gaze*) puts in place of a real
+tracker is built with the defaults, as before, so it draws the standard
+target, and the calibration-target flags are still refused with it.
 
 **Checked before anyone is in the chair.** A name that is not a shipped
 picture, `images` with no names, a `pulse` block on a still target, a picture
 size or pulse out of bounds, or the setting on a tracker that draws no target
-(`mouse_sim`) is refused when the rig loads. A target whose largest size
+(`scripted`) is refused when the rig loads. A target whose largest size
 would be cut off by the screen edge at the outermost point, or a picture
 whose file is missing or changed, refuses the session when the tracker is
 configured, and `alhazen check-rig` reports it.
@@ -846,21 +933,23 @@ configured, and `alhazen check-rig` reports it.
 {standard,images,random_images}`, `--calibration-images monkey_1,food_3` and
 `--calibration-motion {still,pulse}` over the rig's setting; the snapshot
 records the result. The workspace's Rig section offers the same choice, with
-a picture grid and a preview, for a rig with an EyeLink or a TRACKPixx3. The
+a picture grid and a preview, for a rig with an EyeLink, a TRACKPixx3 or the
+mouse stand-in. The
 preview shows the look and motion only; it says nothing about how well a
 calibration will fit.
 
 ## Instruction screens
 
 Every message the session puts on the subject display — the instructions
-before the first trial, `stage: 2` on a curriculum change, the calibration
-guide — is drawn the same way: monospace text in pale green on a near-black
+before the first trial, `stage: 2` on a curriculum change — is drawn the
+same way (a calibration, validation or drift correction puts up none: it
+shows nothing but its targets, see [The calibration guide](#the-calibration-guide)): monospace text in pale green on a near-black
 panel with a green outline, sized to what it says. It looks like a terminal
 on purpose, and the three panel colours alone say what kind of screen is up:
 
 | Colour | Screen |
 |---|---|
-| green (`display.palette.TERMINAL_GREEN`) | a message: instructions, the calibration guide, stage changes — and the one-line notices too, `REWARD FAILURE — check the pump` or `Calibration FAILED` included, since a message box is a message box whatever it says |
+| green (`display.palette.TERMINAL_GREEN`) | a message: instructions, stage changes — and the one-line notices too, `REWARD FAILURE — check the pump` included, since a message box is a message box whatever it says |
 | orange (`session.pause.PAUSE_COLOR`) | the pause menu |
 | red (`session.pause.FAULT_COLOR`) | the pause menu when nobody asked for the pause — the one a reward failure opens |
 
@@ -869,8 +958,7 @@ are joined and re-wrapped at the box's own width, a blank line starts a new
 paragraph, and an indented line or a list item (`- `, `* `, `1. `) keeps its
 line break. So an `instructions.md` wrapped at 80 columns reads as paragraphs
 rather than as lines broken twice; to keep a table or a key list laid out,
-indent its rows, or separate lines with a blank line, as the
-`Calibration FAILED` notice does. A caller whose every line break matters
+indent its rows, or separate lines with a blank line. A caller whose every line break matters
 can pass `show_message(text, reflow=False)`.
 `alhazen.display.reflow` is the same rule as a function, for checking what a
 text will look like without a display.

@@ -80,6 +80,7 @@ from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
 from alhazen.errors import ConfigError
+from alhazen.live_monitor.controls import status_refusal
 from alhazen.live_monitor.juice import juice_payload, juice_totals, ul_by_width
 from alhazen.live_monitor.panels import frame_intervals_panel
 from alhazen.live_monitor.runtime import LiveMonitorController, live_monitor_state
@@ -88,6 +89,11 @@ from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor, eye_markers
 from alhazen.session.identity import RunIdentity, record_reward_delivered, write_run_identity
+from alhazen.session.operator_commands import (
+    KEYBOARD_COMMAND_NAMES,
+    Capabilities,
+    OperatorCommands,
+)
 from alhazen.session.pause import PauseMenu
 from alhazen.session.pause_control import PauseController
 from alhazen.session.recorder import DataRecorder
@@ -98,8 +104,9 @@ from alhazen.task.live import LiveAnalysis
 
 # Re-exported through this module as well as its own: experiment code and
 # tests written before the task layer existed import them from here.
-from alhazen.task.plan import BuildTrial, TrialSetup
+from alhazen.task.plan import BuildTrial, TrialPlan, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
+from alhazen.task.schematic import trial_view
 from alhazen.task.subject_kind import subject_kind_of
 from alhazen.training.history import stage_tally
 from alhazen.training.supervisor import TrainingSupervisor
@@ -215,6 +222,7 @@ class SessionRunner:
         identity: RunIdentity | None = None,
         recording: RecordingSystem | None = None,
         startup_calibration: StartupCalibration | None = None,
+        operator_commands: OperatorCommands | None = None,
     ) -> None:
         # What the run records about how it was set up: the experiment and
         # version its data is filed under, the mode, the files it started
@@ -363,6 +371,28 @@ class SessionRunner:
         self._frame_inputs = frame_inputs or FrameInputBuffer()
         self._live_monitor = live_monitor
         self._live_monitor_spec = live_monitor_spec or LiveMonitorSpec()
+        # [workstream B] The live monitor's buttons as the session reads them
+        # (session/operator_commands.py): the builder makes one and hands the
+        # same object to the engine's command source, so a click taken during
+        # a trial and one taken while paused are acknowledged in one record.
+        # A runner given a live monitor and none (a test's) makes its own,
+        # which then serves the pauses only.
+        if live_monitor is not None and operator_commands is None:
+            operator_commands = OperatorCommands(live_monitor)
+        self._operator = operator_commands
+        # How many rig keys this session refused (their request ids).
+        self._keyboard_refusals = 0
+        if operator_commands is not None:
+            operator_commands.bind(
+                emit=self._emit_session_event,
+                capabilities=Capabilities(
+                    tracker=eyetracker is not None,
+                    reward=manual_reward is not None,
+                    training=training is not None,
+                    attended=on_pause is not None,
+                ),
+                clock=clock,
+            )
         # The live spike stream and the analysis consuming it. The runner
         # owns their *lifecycle* only — the analysis is driven between
         # trials, and both are released in teardown — exactly as it owns the
@@ -399,13 +429,18 @@ class SessionRunner:
             has_training=training is not None,
             manual_reward=manual_reward,
             manual_reward_payload=self._manual_reward_payload,
-            publish=self._publish_live_monitor,
+            publish=self._publish_from_pause,
             last_message=lambda: self._live_monitor_message,
             emit_session_event=self._emit_session_event,
             on_session_command=self.on_session_command,
+            operator=self._operator,
         )
         self._live_monitor_revision = 0
         self._live_monitor_message: str | None = None
+        # The status of the last publish: a trial that starts right after a
+        # procedure (the calibration request before trial 1 publishes nothing
+        # once it is answered) says "running" itself (_start_tracker_trial).
+        self._live_monitor_status: str | None = None
         # A session cancelled at the instructions screen flows through the
         # same teardown a finished one does, so without this the mirror
         # recorded status="complete" for a run with zero trials —
@@ -822,6 +857,7 @@ class SessionRunner:
             condition=condition,
         )
         plan = self._build_trial(setup)
+        self._publish_trial_view(plan, condition, attempt)
         record = {
             "trial_index": self._trial_index,
             "attempt": attempt,
@@ -855,6 +891,43 @@ class SessionRunner:
         )
         return ctx, plan.phases
 
+    def _publish_trial_view(self, plan: TrialPlan, condition: Condition, attempt: int) -> None:
+        """Send the live monitor's Trial view the picture of the trial about to
+        run (task/schematic.py), before its first frame.
+
+        One small JSON on its own channel, never a state publish:
+        between trials, where the session already spends its bookkeeping
+        time. Its gaze follows frame by frame (live_monitor/gaze.py, wired in
+        session/builder.py).
+        """
+        # An optional capability of the live monitor, looked up here and
+        # nowhere else: a monitor written before the Trial view (a harness's
+        # stand-in, an experiment's own) simply gets no trial pictures.
+        publish_trial = getattr(self._live_monitor, "publish_trial", None)
+        if publish_trial is None:
+            return
+        view = trial_view(
+            schematic=tuple(plan.schematic) if plan.schematic is not None else None,
+            regions=plan.regions,
+            screen=self._screen,
+            trial_index=self._trial_index,
+            attempt=attempt,
+            condition=condition.params,
+            t=self._clock.now(),
+        )
+        view["gaze"] = self._tracker is not None
+        if self._eyetracker is not None:
+            view["camera"] = self._eyetracker.trial_camera()
+        else:
+            view["camera"] = {
+                "live": False,
+                "has_frames": False,
+                "reason": "This rig has no eye tracker."
+                if self._tracker is None
+                else "This eye tracker gives the session no camera image.",
+            }
+        publish_trial(view)
+
     def _apply_stage_transition(self) -> bool:
         """Move the subject if the curriculum says so. Returns False when the
         session should stop (a finished curriculum that asked to stop)."""
@@ -880,11 +953,38 @@ class SessionRunner:
         return True
 
     def on_session_command(self, command: Any) -> None:
-        """Commands the engine handed on. Today: the training stage keys.
+        """Commands the engine handed on: the training stage keys, and the
+        calibrate key pressed during a trial, which is refused.
 
-        Queued rather than applied: this arrives mid-trial, and the
-        transition happens between trials like every other one.
+        Stage keys are queued rather than applied: this arrives mid-trial, and
+        the transition happens between trials like every other one.
         """
+        name = KEYBOARD_COMMAND_NAMES.get(command)
+        if name is not None and (refusal := status_refusal(name, "running")) is not None:
+            # A rig key the controls table does not allow during a trial
+            # (today: C, calibrate, which runs only while the task is
+            # paused). The same table and wording as the live monitor's
+            # buttons, on every rig. The trial goes on; the refusal is
+            # logged, written to events.csv as OPERATOR_COMMAND from the
+            # keyboard, and listed under the page's buttons. Never drawn on
+            # the rig's screen: during a trial that is the subject's screen.
+            self._keyboard_refusals += 1
+            request_id = f"keyboard-{self._keyboard_refusals}"
+            log.warning("%s key during a trial refused: %s", name, refusal)
+            if self._operator is not None:
+                self._operator.record_keyboard(name, request_id, "refused", refusal)
+            else:
+                self._emit_session_event(
+                    "OPERATOR_COMMAND",
+                    {
+                        "name": name,
+                        "request_id": request_id,
+                        "source": "keyboard",
+                        "result": "refused",
+                        "note": refusal,
+                    },
+                )
+            return
         if self._training is None:
             log.info("ignoring %s: this session has no curriculum", command)
             return
@@ -1082,7 +1182,17 @@ class SessionRunner:
 
     def _start_tracker_trial(self, ctx: TrialContext, attempt: int) -> None:
         """Open the tracker's recording segment and refresh its operator
-        overlay, before the trial's first frame."""
+        overlay, before the trial's first frame.
+
+        A trial starting is the session running again, however it got here
+        (a resume, the calibration request before trial 1 answered): a failed
+        procedure's guide comes off the live monitor, and a live monitor
+        still saying "calibrating" is told "running".
+        """
+        if self._eyetracker is not None:
+            dismissed = self._eyetracker.dismiss_procedure()
+            if dismissed or self._live_monitor_status == PROCEDURE_STATUS:
+                self._publish_live_monitor("running")
         if self._tracker is None:
             return
         self._tracker.start_trial(ctx.trial_index, f"attempt {attempt}")
@@ -1150,10 +1260,28 @@ class SessionRunner:
             # teardown, and a broken view of the data must not end the
             # recording of it.
             on_invalid_panel=self._report_invalid_panel,
+            controls=self._operator.controls(status) if self._operator is not None else None,
+            commands=self._operator.recent() if self._operator is not None else (),
+            # The guide panel to an eye-tracker procedure (running, or failed
+            # and not yet resumed past); never in the saved copy, which is a
+            # record of the session, not of a moment at the rig.
+            procedure=(
+                self._eyetracker.procedure if self._eyetracker is not None and not full else None
+            ),
         )
+        self._live_monitor_status = status
         self._live_monitor_message = message
         self._live_monitor.publish(state)
         return state
+
+    def _publish_from_pause(self, status: str, message: str | None = None) -> dict[str, Any]:
+        """The pause controller's live monitor publisher. It says "running"
+        exactly when the pause ends in a resume, and a resume is what takes a
+        failed procedure's guide down (EyeTrackerMonitor.dismiss_procedure):
+        until then the guide stays, so the operator has seen the failure."""
+        if status == "running" and self._eyetracker is not None:
+            self._eyetracker.dismiss_procedure()
+        return self._publish_live_monitor(status, message)
 
     def _live_training_stage(self) -> dict[str, Any] | None:
         """The training-ladder stage, for the live monitor's header; None

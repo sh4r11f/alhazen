@@ -292,11 +292,26 @@ class TestCommands:
         assert result.outcome.name == "PAUSED"
         assert len(events_named(harness, "PAUSED")) == 1
 
-    def test_calibrate_is_pause_plus_action(self):
+    def test_calibrate_during_a_trial_is_refused_and_the_trial_goes_on(self):
+        """Calibration runs only while paused (core/commands.py
+        paused_only_refusal): the in-trial key no longer pauses. The engine
+        hands it to the runner, which records the refusal."""
+        handed: list[Command] = []
+        harness = EngineHarness(
+            commands=ScriptedCommands([[Command.CALIBRATE]]),
+            on_session_command=handed.append,
+        )
+        result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
+        assert result.outcome.name == "COMPLETED"
+        assert "pause_action" not in result.record
+        assert events_named(harness, "PAUSED") == []
+        assert handed == [Command.CALIBRATE]
+
+    def test_calibrate_with_nobody_to_hand_it_to_is_logged(self, caplog):
         harness = EngineHarness(commands=ScriptedCommands([[Command.CALIBRATE]]))
         result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
-        assert result.outcome.name == "PAUSED"
-        assert result.record["pause_action"] == "calibrate"
+        assert result.outcome.name == "COMPLETED"
+        assert "Calibrate works only while the task is paused" in caplog.text
 
     def test_quit_raises(self):
         harness = EngineHarness(commands=ScriptedCommands([[Command.QUIT]]))

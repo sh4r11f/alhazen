@@ -21,12 +21,19 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from pydantic import ConfigDict
+
 from alhazen.config.models import Model, RewardPulses
+from alhazen.config.sections import section
 
 
 class RewardPolicy(Model):
     """What each outcome pays, and what a trial cut short by a device fault
-    pays, scaled by a single dial."""
+    pays, scaled by a single dial. Shown under Session on the Run page
+    (``section``): its pulse widths are a reward's size, not a trial's
+    timing."""
+
+    model_config = ConfigDict(json_schema_extra=section("session"))
 
     by_outcome: dict[str, RewardPulses] = {}
     # What a trial pays when a device stopped mid-trial and ended it before

@@ -15,6 +15,7 @@ import socketserver
 import threading
 import time
 import webbrowser
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -27,12 +28,18 @@ from urllib.parse import parse_qs
 
 from alhazen.config.models import IRIS_SIZE_RANGE_PX
 from alhazen.errors import SessionError
+from alhazen.live_monitor.controls import KNOWN_COMMANDS, status_refusal
 from alhazen.live_monitor.heatmap import check_heatmap
 from alhazen.live_monitor.panels import panel_payload
 from alhazen.live_monitor.presentation import present
 from alhazen.live_monitor.spec import LiveMonitorSpec
 
 log = logging.getLogger(__name__)
+
+# How long a publish waits for the snapshot it replaces to reach the queue's
+# pipe (LiveMonitorController.publish). Only a publish that lands on top of
+# one made a moment before ever waits, and then for about a millisecond.
+REPLACE_WAIT_S = 0.05
 
 # The two files the live monitor leaves in a run's `figures/` at teardown:
 # its final state, and the page with that state baked in. Run-directory file
@@ -43,22 +50,13 @@ log = logging.getLogger(__name__)
 SAVED_STATE = "live_monitor_state.json"
 SAVED_PAGE = "live_monitor.html"
 
-# The button names the server forwards to the session. Anything else in a
-# POST is rejected before it reaches the queue, so a stray request cannot
-# trigger a session action the pause menu does not offer. "calibrate",
-# "validate" and "drift_correct" are the three eye-tracker procedures
-# (session/eyetracker.py) — the same rows the pause menu shows as C, V and D.
-_ALLOWED_COMMANDS = {
-    "resume",
-    "calibrate",
-    "validate",
-    "drift_correct",
-    "manual_reward",
-    "quit",
-    "promote_stage",
-    "demote_stage",
-    "hold_stage",
-}
+# ---- operator commands [workstream B] ----------------------------------
+# Which command names the server forwards to the session, and in which status,
+# is controls.py's table (KNOWN_COMMANDS, status_refusal): a name outside it is
+# a bad request, and a known name the status does not allow is a conflict with
+# the reason. On top of the status, the session publishes which commands it
+# will act on right now (state["controls"]["available"], with a reason for
+# every other one), and the server holds a POST to that too.
 
 # The tracker settings the page may change, with the range a value must lie in.
 # Checked here so a malformed request never reaches the session; the session
@@ -87,8 +85,50 @@ _REQUEST_ID_RULE = f"request_id must be a string of 1 to {_MAX_REQUEST_ID_CHARS}
 
 @dataclass(frozen=True)
 class LiveMonitorCommand:
+    """One command from the page, as the server accepted it.
+
+    ``status`` and ``revision`` are the session state the server held when it
+    accepted the command: the session acts on a command only in the status it
+    was accepted in (session/operator_commands.py), so a Resume clicked just
+    before the keyboard resumed can never fire in the next trial. Defaulted to
+    "paused" — the only status that accepted commands before 2.17 — for a
+    command built in code."""
+
     request_id: str
     name: str
+    status: str = "paused"
+    revision: int = 0
+
+
+@dataclass(frozen=True)
+class _Controls:
+    """What the session said it will act on, beside the status it said it in:
+    the names it accepts, and why it refuses each other one. ``available``
+    None means the snapshot said nothing (a state built without the session),
+    and the status's allow-set alone decides."""
+
+    available: frozenset[str] | None = None
+    refusals: Mapping[str, str] | None = None
+
+
+def _published_controls(state: Mapping[str, Any]) -> _Controls:
+    """The session's ``controls`` block from a state, as the server keeps it.
+
+    A block that is present but malformed is a bug in the publisher, and is
+    raised: a server that took it for "nothing said" would pass on commands
+    the session just said it refuses."""
+    block = state.get("controls")
+    if block is None:
+        return _Controls()
+    if not isinstance(block, Mapping) or not isinstance(block.get("available"), list):
+        raise ValueError(f"a state's controls must carry an 'available' list; got {block!r}")
+    refusals = block.get("refused") or {}
+    if not isinstance(refusals, Mapping):
+        raise ValueError(f"a state's controls 'refused' must be a mapping; got {refusals!r}")
+    return _Controls(
+        available=frozenset(str(name) for name in block["available"]),
+        refusals={str(k): str(v) for k, v in refusals.items()},
+    )
 
 
 class LiveMonitorController:
@@ -102,11 +142,25 @@ class LiveMonitorController:
         # child has not collected yet (publish_camera).
         self._camera: Any = ctx.Queue(maxsize=1)
         self._commands: Any = ctx.Queue(maxsize=64)
+        # The session's acknowledgements of those commands, on a one-slot
+        # queue of their own like the camera's: the newest record replaces an
+        # unread one, so an acknowledgement reaches the page mid-trial without
+        # a state publish (publish_commands).
+        self._acks: Any = ctx.Queue(maxsize=1)
         # Tracker settings from the page, kept apart from the commands: a
         # setting is applied where it lands, even mid-procedure, and never
         # taken for a pause-menu choice.
         self._settings: Any = ctx.Queue(maxsize=64)
         self._ready: Any = ctx.Queue(maxsize=1)
+        # --- Trial view (live_monitor/gaze.py, task/schematic.py) ----------
+        # Two more channels: the picture of the trial that is about to run,
+        # published once at its start, and batches of gaze samples while it
+        # runs. Neither waits for the child (publish_trial, publish_gaze).
+        self._trial: Any = ctx.Queue(maxsize=_TRIAL_VIEWS_QUEUED)
+        self._gaze: Any = ctx.Queue(maxsize=1)
+        self._gaze_down_reported = False
+        self._trial_full_reported = False
+        # --- end Trial view -------------------------------------------------
         self._stop: Any = ctx.Event()
         self._port = port
         self._auto_open = auto_open
@@ -135,11 +189,14 @@ class LiveMonitorController:
                 self._updates,
                 self._camera,
                 self._commands,
+                self._acks,
                 self._settings,
                 self._ready,
                 self._stop,
                 self._token,
                 self._port,
+                self._trial,
+                self._gaze,
             ),
             name="alhazen-live-monitor",
             daemon=True,
@@ -165,6 +222,11 @@ class LiveMonitorController:
             self.stop()
             raise SessionError(f"live monitor server failed to start: {result['error']}")
         self.url = f"http://127.0.0.1:{result['port']}/?token={self._token}"
+        # Start the gaze channel's feeder thread now, outside any trial: a
+        # multiprocessing queue starts that thread on its first put, and a
+        # thread start is not work for the middle of a trial's frames. An
+        # empty batch adds no sample.
+        self._gaze.put_nowait([])
         if self._auto_open and not webbrowser.open(self.url, new=1):
             log.warning("could not open live monitor browser; open %s", self.url)
         return self.url
@@ -180,6 +242,7 @@ class LiveMonitorController:
         snapshot = (
             int(state.get("revision", 0)),
             str(state.get("status", "")),
+            _published_controls(state),
             json.dumps(state, default=str),
         )
         try:
@@ -187,8 +250,14 @@ class LiveMonitorController:
             return
         except queue.Full:
             pass
+        # Replace the unread one. A snapshot put a moment ago can still be in
+        # the queue's feeder thread, not yet in the pipe, where get_nowait
+        # cannot see it — and then the NEWER snapshot was the one dropped,
+        # every time two publishes came back to back (a procedure's last
+        # report and its end; the end and the pause that follows). The wait
+        # is for that thread, a millisecond or so, bounded by REPLACE_WAIT_S.
         with suppress(queue.Empty):
-            self._updates.get_nowait()
+            self._updates.get(timeout=REPLACE_WAIT_S)
         try:
             self._updates.put_nowait(snapshot)
         except queue.Full:
@@ -257,6 +326,61 @@ class LiveMonitorController:
             # replaces it.
             log.debug("camera frame dropped: the queue refilled while it was being replaced")
 
+    # --- Trial view ------------------------------------------------------
+
+    def publish_trial(self, view: dict[str, Any]) -> None:
+        """Hand the server the picture of the trial about to run.
+
+        Called once per trial, before its first frame (session/runner.py).
+        Like publish(), it never blocks. Not a replace-in-one-slot like the
+        camera's: a multiprocessing queue cannot take back an item its feeder
+        thread has not yet written, so a replace could lose the NEWEST
+        picture. The channel holds a few instead, the child keeps the last
+        one it takes off, and a full channel (a child that stopped taking
+        them) drops the picture being offered.
+        """
+        if self._process is not None and not self._process.is_alive():
+            return
+        try:
+            self._trial.put_nowait(json.dumps(view, allow_nan=False))
+        except queue.Full:
+            # The child has not taken the last several pictures, so the page
+            # is showing an old trial. Said once in the session log (the page
+            # cannot be told: it is the child that stopped), and the next
+            # trial's picture tries again.
+            if not self._trial_full_reported:
+                log.warning(
+                    "live monitor: trial %s's picture not sent, the server has not collected "
+                    "the last %d; the Trial view shows an older trial until it does",
+                    view.get("trial_index"),
+                    _TRIAL_VIEWS_QUEUED,
+                )
+                self._trial_full_reported = True
+            return
+        self._trial_full_reported = False
+
+    def publish_gaze(self, samples: list[tuple[int, float, float | None, float | None]]) -> bool:
+        """Offer a batch of gaze samples (live_monitor/gaze.py ``GazeSample``).
+
+        True when the batch was taken, False when the child has not collected
+        the previous one: the caller keeps the samples and offers them again
+        with the next batch. Never blocks, and never raises for a full slot.
+        A dead child takes nothing, so True — there is nobody to keep them
+        for — and says so once.
+        """
+        if self._process is not None and not self._process.is_alive():
+            if not self._gaze_down_reported:
+                log.error("live monitor process exited; gaze is no longer sent")
+                self._gaze_down_reported = True
+            return True
+        try:
+            self._gaze.put_nowait(samples)
+        except queue.Full:
+            return False
+        return True
+
+    # --- end Trial view --------------------------------------------------
+
     def poll_commands(self) -> list[LiveMonitorCommand]:
         commands: list[LiveMonitorCommand] = []
         while True:
@@ -264,7 +388,39 @@ class LiveMonitorController:
                 item = self._commands.get_nowait()
             except queue.Empty:
                 return commands
-            commands.append(LiveMonitorCommand(request_id=item["request_id"], name=item["name"]))
+            commands.append(
+                LiveMonitorCommand(
+                    request_id=item["request_id"],
+                    name=item["name"],
+                    status=item["status"],
+                    revision=item["revision"],
+                )
+            )
+
+    def publish_commands(self, records: Sequence[Mapping[str, Any]]) -> None:
+        """Replace any unread acknowledgement record with this one.
+
+        ``records`` is the session's newest acknowledgements, oldest first
+        (session/operator_commands.py), the same list a state publish carries
+        as ``commands``. Sent on its own one-slot channel so the page learns
+        that a Reward clicked mid-trial was taken without waiting for the
+        trial to end; never blocks, like publish()."""
+        if self._process is not None and not self._process.is_alive():
+            return
+        payload = json.dumps(list(records), default=str)
+        try:
+            self._acks.put_nowait(payload)
+            return
+        except queue.Full:
+            pass
+        with suppress(queue.Empty):
+            self._acks.get_nowait()
+        try:
+            self._acks.put_nowait(payload)
+        except queue.Full:
+            # Refilled in between with an older record; the next
+            # acknowledgement, or the next state publish, carries this one.
+            log.debug("acknowledgement record dropped: the queue refilled while being replaced")
 
     def poll_settings(self) -> list[tuple[str, object]]:
         """The tracker settings the page sent since the last call, oldest first."""
@@ -314,18 +470,34 @@ class _State:
     def __init__(self) -> None:
         self.revision = 0
         # Kept beside the payload rather than parsed back out of it: this is
-        # the server's authorization boundary (controls are refused unless the
-        # session is paused), and it should not depend on re-reading JSON.
+        # the server's authorization boundary (a command passes only in a
+        # status that allows it, and only if the session said it will act on
+        # it), and it should not depend on re-reading JSON.
         self.status = "starting"
+        self.controls = _Controls()
         self.payload = json.dumps({"revision": 0, "status": "starting"})
         self.condition = threading.Condition()
 
-    def set(self, revision: int, status: str, payload: str) -> None:
+    def set(self, revision: int, status: str, controls: _Controls, payload: str) -> None:
         with self.condition:
             self.revision = revision
             self.status = status
+            self.controls = controls
             self.payload = payload
             self.condition.notify_all()
+
+    def admit(self, name: str) -> tuple[str | None, str, int]:
+        """Whether a command may pass now: (refusal or None, status, revision),
+        read together under the lock so the stamp a command carries is the
+        state it was judged against."""
+        with self.condition:
+            refusal = status_refusal(name, self.status)
+            available = self.controls.available
+            if refusal is None and available is not None and name not in available:
+                refusal = (self.controls.refusals or {}).get(
+                    name, "the session does not accept this command now"
+                )
+            return refusal, self.status, self.revision
 
     def wait_after(self, revision: int, timeout: float = 15.0) -> str:
         with self.condition:
@@ -339,6 +511,30 @@ class _State:
 # per pixel (row-major, top row first), and the eye markers as JSON text, or
 # None when the tracker cannot say where the eyes are.
 _CameraFrame = tuple[int, int, float, bytes, "str | None"]
+
+
+class _AckState:
+    """The child's newest acknowledgement record (JSON text), numbered so a
+    page can ask for the record after the one it already has."""
+
+    def __init__(self) -> None:
+        self.seq = 0
+        self.payload = "[]"
+        self.condition = threading.Condition()
+
+    def set(self, payload: str) -> None:
+        with self.condition:
+            self.seq += 1
+            self.payload = payload
+            self.condition.notify_all()
+
+    def wait_after(self, seq: int, timeout: float) -> tuple[int, str] | None:
+        with self.condition:
+            if self.seq <= seq:
+                self.condition.wait(timeout)
+            if self.seq <= seq:
+                return None
+            return self.seq, self.payload
 
 
 class _CameraState:
@@ -365,6 +561,77 @@ class _CameraState:
             if self.frame is None or self.seq <= seq:
                 return None
             return self.seq, self.frame
+
+
+# --- Trial view (child side) --------------------------------------------
+
+# How many trial pictures wait for the child: far more than trials can start
+# between two of its reads (it takes them as they come, on its own thread).
+_TRIAL_VIEWS_QUEUED = 8
+
+
+class _TrialViewState:
+    """The child's newest trial picture, as JSON text, numbered."""
+
+    def __init__(self) -> None:
+        self.seq = 0
+        self.payload: str | None = None
+        self.condition = threading.Condition()
+
+    def set(self, payload: str) -> None:
+        with self.condition:
+            self.seq += 1
+            self.payload = payload
+            self.condition.notify_all()
+
+    def wait_after(self, seq: int, timeout: float) -> tuple[int, str] | None:
+        with self.condition:
+            if self.seq <= seq:
+                self.condition.wait(timeout)
+            if self.payload is None or self.seq <= seq:
+                return None
+            return self.seq, self.payload
+
+
+# How many gaze samples the child keeps: ten seconds at the feed's 60 Hz,
+# more than any trail the page draws, so a page that reloads mid-trial gets
+# the trial's trail back.
+_GAZE_KEPT = 600
+
+
+class _GazeState:
+    """The child's recent gaze samples, each numbered, oldest dropped first."""
+
+    def __init__(self, kept: int = _GAZE_KEPT) -> None:
+        self.seq = 0
+        self.samples: deque[tuple[int, Any]] = deque(maxlen=kept)
+        self.condition = threading.Condition()
+
+    def add(self, batch: Sequence[Any]) -> None:
+        with self.condition:
+            for sample in batch:
+                self.seq += 1
+                self.samples.append((self.seq, sample))
+            self.condition.notify_all()
+
+    def wait_after(self, seq: int, timeout: float) -> dict[str, Any] | None:
+        """The samples numbered after ``seq``, waiting up to ``timeout`` for
+        one; None when none came. ``missed`` counts those already dropped."""
+        with self.condition:
+            if self.seq <= seq:
+                self.condition.wait(timeout)
+            if self.seq <= seq:
+                return None
+            newer = [sample for number, sample in self.samples if number > seq]
+            oldest = self.samples[0][0] if self.samples else self.seq + 1
+            return {
+                "seq": self.seq,
+                "missed": max(0, oldest - seq - 1),
+                "samples": [list(sample) for sample in newer],
+            }
+
+
+# --- end Trial view (child side) ----------------------------------------
 
 
 def _query_params(query: str) -> dict[str, list[str]]:
@@ -460,14 +727,21 @@ def _serve(
     updates: Any,
     camera_updates: Any,
     commands: Any,
+    acks_in: Any,
     settings: Any,
     ready: Any,
     stop: Any,
     token: str,
     port: int,
+    trial_updates: Any = None,
+    gaze_updates: Any = None,
 ) -> None:
     state = _State()
     camera = _CameraState()
+    acks = _AckState()
+    # Trial view: the picture of the running trial, and its gaze.
+    trial_view = _TrialViewState()
+    gaze = _GazeState()
     # One memory of accepted request ids per queue (see _RecentRequestIds).
     seen_commands = _RecentRequestIds()
     seen_settings = _RecentRequestIds()
@@ -544,6 +818,50 @@ def _serve(
                     frame_headers["X-Frame-Eyes"] = eyes
                 self._send_bytes(HTTPStatus.OK, pixels, "application/octet-stream", frame_headers)
                 return
+            # Long-polled channels, each answered like the camera: 204 when
+            # nothing newer came in time. [workstream B] /api/commands carries
+            # the session's acknowledgements; [trial view] /api/trial the
+            # picture of the running trial and /api/gaze its gaze samples.
+            if path in ("/api/commands", "/api/trial", "/api/gaze"):
+                if not self._authorized(params):
+                    return
+                try:
+                    after = _query_int(params, "after", 0)
+                    wait_ms = _query_int(params, "wait_ms", 2000)
+                except ValueError:
+                    self._send(
+                        HTTPStatus.BAD_REQUEST, "after and wait_ms must be integers", "text/plain"
+                    )
+                    return
+                wait_s = min(max(wait_ms, 0), _CAMERA_WAIT_MAX_MS) / 1000.0
+                if path == "/api/commands":
+                    record = acks.wait_after(after, wait_s)
+                    if record is None:
+                        self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/json")
+                        return
+                    seq, payload = record
+                    body = f'{{"seq": {seq}, "commands": {payload}}}'
+                    self._send(HTTPStatus.OK, body, "application/json")
+                    return
+                if path == "/api/trial":
+                    newest_view = trial_view.wait_after(after, wait_s)
+                    if newest_view is None:
+                        self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/json")
+                        return
+                    seq, payload = newest_view
+                    self._send_bytes(
+                        HTTPStatus.OK,
+                        payload.encode(),
+                        "application/json",
+                        {"X-Trial-Seq": str(seq)},
+                    )
+                    return
+                newer = gaze.wait_after(after, wait_s)
+                if newer is None:
+                    self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/json")
+                    return
+                self._send(HTTPStatus.OK, json.dumps(newer, allow_nan=False), "application/json")
+                return
             self._send(HTTPStatus.NOT_FOUND, "not found", "text/plain")
 
         def do_POST(self) -> None:  # noqa: N802
@@ -571,21 +889,16 @@ def _serve(
                 return
             # The type first: a JSON list or object is unhashable, and the
             # set lookup would raise instead of refusing it.
-            if not isinstance(name, str) or name not in _ALLOWED_COMMANDS:
+            if not isinstance(name, str) or name not in KNOWN_COMMANDS:
                 self._send(HTTPStatus.BAD_REQUEST, "unknown command", "text/plain")
                 return
-            if state.status != "paused":
-                self._send(
-                    HTTPStatus.CONFLICT,
-                    "controls are available only while paused",
-                    "text/plain",
-                )
+            refusal, status, revision = state.admit(name)
+            if refusal is not None:
+                self._send(HTTPStatus.CONFLICT, refusal, "text/plain")
                 return
+            item = {"name": name, "request_id": request_id, "status": status, "revision": revision}
             try:
-                seen_commands.forward_once(
-                    request_id,
-                    lambda: commands.put_nowait({"name": name, "request_id": request_id}),
-                )
+                seen_commands.forward_once(request_id, lambda: commands.put_nowait(item))
             except queue.Full:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, "command queue full", "text/plain")
                 return
@@ -742,10 +1055,10 @@ def _serve(
     def pump() -> None:
         while not stop.is_set():
             try:
-                revision, status, payload = updates.get(timeout=0.2)
+                revision, status, controls, payload = updates.get(timeout=0.2)
             except queue.Empty:
                 continue
-            state.set(revision, status, payload)
+            state.set(revision, status, controls, payload)
 
     thread = threading.Thread(target=pump, daemon=True)
     thread.start()
@@ -762,6 +1075,27 @@ def _serve(
     # handed over, or the image would move at the state's pace again.
     camera_thread = threading.Thread(target=pump_camera, daemon=True)
     camera_thread.start()
+
+    # The channels added after the camera's ([workstream B] acknowledgements,
+    # the Trial view's picture and gaze) are pumped the camera's way, each on a
+    # thread of its own so nothing waits behind a state snapshot being handed
+    # over; one loop serves them all.
+    def pump_slot(slot: Any, take: Callable[[Any], None]) -> None:
+        while not stop.is_set():
+            try:
+                item = slot.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            take(item)
+
+    for slot, take in (
+        (acks_in, acks.set),
+        (trial_updates, trial_view.set),
+        (gaze_updates, gaze.add),
+    ):
+        if slot is not None:
+            threading.Thread(target=pump_slot, args=(slot, take), daemon=True).start()
+    # --- end Trial view ---------------------------------------------------
     while not stop.is_set():
         server.handle_request()
     server.server_close()
@@ -781,6 +1115,9 @@ def live_monitor_state(
     max_rows: int | None = None,
     extra_panels: Sequence[dict[str, Any]] = (),
     on_invalid_panel: Callable[[str, str], None] | None = None,
+    controls: Mapping[str, Any] | None = None,
+    commands: Sequence[Mapping[str, Any]] = (),
+    procedure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct the stable wire shape consumed by the bundled frontend.
 
@@ -824,6 +1161,18 @@ def live_monitor_state(
       data (a flat surface's limits, a NaN) in the middle of a recording,
       and the live monitor is a view of the data, not the data: a broken
       panel must be loud, but must not end the session.
+
+    ``controls`` is what the session will act on in this status (the
+    operator buttons the page enables, and what the server lets through:
+    session/operator_commands.py); ``commands`` its newest acknowledgements
+    of the page's commands, oldest first. A state without ``controls``
+    (built by a test or a tool) leaves the page's buttons off.
+
+    ``procedure`` is the guide to the eye-tracker procedure the operator is
+    in (session/procedure_guide.py: heading, instruction, eye line, step,
+    outcome, failure, check), published as ``state["procedure"]``; None —
+    the default, and the saved copy's — when there is none, and the page
+    then shows no guide panel.
     """
     for panel in extra_panels:
         missing = [key for key in ("title", "data") if key not in panel]
@@ -864,6 +1213,11 @@ def live_monitor_state(
         ],
         "training": training,
         "message": message,
+        # [workstream B] operator commands
+        **({"controls": dict(controls)} if controls is not None else {}),
+        "commands": [dict(record) for record in commands],
+        # The eye-tracker procedure guide (session/procedure_guide.py), or None.
+        "procedure": dict(procedure) if procedure is not None else None,
         "updated_at": time.time(),
     }
 

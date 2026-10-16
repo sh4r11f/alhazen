@@ -500,6 +500,14 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--rig", default=None, help=RIG_HELP)
     parser.add_argument("--params", default=None, help="path to the task's params YAML")
+    # How the operator chose the params, for the session's messages: the
+    # experiment workspace runs a copy of the chosen file (its run folder's
+    # params.yaml) and names the original here (alhazen.task.params_source).
+    parser.add_argument(
+        "--params-source",
+        default=None,
+        help="the params file as it was chosen, for messages (default: --params as given)",
+    )
     parser.add_argument("--sub", default=None, help="subject id (prompted if omitted)")
     parser.add_argument("--ses", type=int, default=None, help="session number (prompted)")
     parser.add_argument(
@@ -1266,6 +1274,11 @@ def _params_line(args: argparse.Namespace, task: Any, params: Any) -> str:
     file — or no file at all — can still be stopped.
     """
     if args.params:
+        # The file as chosen, when that is not the file loaded: a session the
+        # experiment workspace started runs a copy (alhazen.task.params_source).
+        source = getattr(args, "params_source", None)
+        if source and source != args.params:
+            return f"params: {args.params} (chosen as {source})"
         return f"params: {args.params}"
     return (
         f"params: the defaults of {type(params).__name__} — no --params given, and "

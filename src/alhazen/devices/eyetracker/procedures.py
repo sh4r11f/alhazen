@@ -57,11 +57,11 @@ from typing import Any, Literal
 
 from alhazen.config.models import SELF_DRIVEN_CALIBRATION_TYPES, EyeTrackerConfig
 from alhazen.core.clock import Clock
-from alhazen.devices.eyetracker.protocol import EyeTracker, ProgressHook
+from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets, TargetPresenter
+from alhazen.devices.eyetracker.protocol import EyeTracker, ProgressHook, TargetShown
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.screen import Screen
-from alhazen.stimuli.base import Stimulus
-from alhazen.stimuli.fixation import make_fixation
+from alhazen.stimuli.base import NullStimulus, Stimulus
 
 log = logging.getLogger(__name__)
 
@@ -80,10 +80,13 @@ Advance = Literal["manual", "auto"]
 # can never mistake a validation's samples for a trial's.
 PROCEDURE_TRIAL_INDEX = 0
 
-# The target: a small bright disc, drawn through the same factory a task's
-# fixation point uses, so it looks like the thing the subject fixates all day.
-TARGET_SIZE_DVA = 0.5
-TARGET_COLOR = (1.0, 1.0, 1.0)
+# The target is the calibration's own (eyetracker.calibration_target: the
+# standard disc with a hole or a picture, still or pulsating), drawn by the
+# same presenter the calibration draws it with (calibration_targets.py), so a
+# subject sees one kind of target from the first calibration point to the
+# last validation point. Nothing else is drawn: no text, no heading, no key
+# hints — what the experimenter needs goes to the progress hook (the live
+# monitor) and the log.
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,10 @@ class ValidationResult:
     t: float  # session clock, when the procedure finished
     advance: str = "manual"
     aborted: bool = False  # ESC before the last target: what was measured is kept, no verdict
+    # What the target looked like ("" when nothing was drawn: a simulated
+    # display, or a caller's own make_target) and each one shown, in order.
+    target_style: str = ""
+    shown: tuple[TargetShown, ...] = ()
 
     @property
     def measured(self) -> list[TargetError]:
@@ -195,6 +202,7 @@ class ValidationResult:
                 }
                 for target in self.targets
             ],
+            **target_record(self.target_style, self.shown),
         }
 
 
@@ -210,6 +218,9 @@ class DriftResult:
     applied: bool
     t: float
     note: str = ""
+    # As ValidationResult's: the target drawn, and each one shown.
+    target_style: str = ""
+    shown: tuple[TargetShown, ...] = ()
 
     def summary(self) -> str:
         if self.offset_deg is None:
@@ -227,7 +238,24 @@ class DriftResult:
             "offset_deg": self.offset_deg,
             "max_deg": self.max_deg,
             "note": self.note,
+            **target_record(self.target_style, self.shown),
         }
+
+
+def target_record(style: str, shown: Sequence[TargetShown]) -> dict[str, Any]:
+    """What a procedure's event says about its target: the style and every
+    target shown (where, which picture, when), in the shape the CALIBRATION
+    event uses (session/eyetracker.py). Empty when no target was drawn, so a
+    simulated session's events are what they always were."""
+    if not style:
+        return {}
+    return {
+        "target_style": style,
+        "targets_shown": [
+            {"ordinal": s.ordinal, "target_px": list(s.target_px), "image": s.image, "t": s.t}
+            for s in shown
+        ],
+    }
 
 
 class GazeCorrection:
@@ -486,10 +514,87 @@ def _recording_segment(tracker: EyeTracker, status: str) -> Callable[[], None]:
     return tracker.stop_trial
 
 
-def _default_make_target(
-    display: DisplayBackend, screen: Screen
+class _ShownTarget:
+    """One procedure target as the walk's Stimulus: the presenter, already
+    showing it at its position, drawn at its moment's size (a pulsating one
+    is redrawn every frame, because the walk draws and flips every frame)."""
+
+    def __init__(self, presenter: TargetPresenter) -> None:
+        self._presenter = presenter
+
+    def update(self, dt: float) -> None:
+        return  # the pulse reads the session clock, not a frame count
+
+    def draw(self) -> None:
+        self._presenter.draw()
+
+
+def target_maker(
+    targets: CalibrationTargets, display: DisplayBackend, screen: Screen, clock: Clock
 ) -> Callable[[tuple[float, float]], Stimulus]:
-    return lambda pos: make_fixation(display, screen, TARGET_SIZE_DVA, TARGET_COLOR, pos)
+    """The calibration's target for one procedure: ``make(pos)`` puts the
+    target up at ``pos`` (centered px) and returns what the walk draws.
+
+    One presenter per procedure, made here before the first target, as the
+    calibration makes one per calibration: every picture's texture uploaded
+    once, a frame only moves and resizes. The picture rules are the
+    calibration's (TargetPresenter.show): a new position is a new target and
+    the next picture; the same position again while it is up (a drift
+    correction measured again) keeps its picture and pulse. The deck is the
+    tracker's, so the pictures go on in the calibration's order.
+
+    A simulated display draws nothing, as every stimulus there.
+    """
+    if display.kind == "simulated":
+        return lambda pos: NullStimulus("calibration target")
+    # Local, as everywhere a renderer is touched: importing the procedures
+    # stays safe on a machine with no display stack.
+    from psychopy import visual
+
+    presenter = targets.presenter(visual, display.window, screen, clock.now)
+
+    def make(pos: tuple[float, float]) -> Stimulus:
+        presenter.show(pos)
+        return _ShownTarget(presenter)
+
+    return make
+
+
+class _ProcedureTarget:
+    """How one procedure gets its target and what it records about it: the
+    caller's own ``make_target`` (a test's), recording nothing, or the
+    calibration's target (``target_maker``), recording its style and every
+    target shown."""
+
+    def __init__(
+        self,
+        display: DisplayBackend,
+        screen: Screen,
+        clock: Clock,
+        cfg: EyeTrackerConfig,
+        make_target: Callable[[tuple[float, float]], Stimulus] | None,
+        targets: CalibrationTargets | None,
+    ) -> None:
+        self._targets: CalibrationTargets | None = None
+        if make_target is not None:
+            self.make = make_target
+            return
+        chosen = targets if targets is not None else CalibrationTargets(cfg.calibration_target)
+        if display.kind != "simulated":
+            # Checked and decoded before the first target, as a calibration's
+            # are at configure(); idempotent for a tracker that already did.
+            # A simulated display draws nothing, so it needs no pictures.
+            chosen.prepare(screen, cfg.calibration_area)
+            chosen.begin_procedure()
+            self._targets = chosen
+        self.make = target_maker(chosen, display, screen, clock)
+
+    def record(self) -> tuple[str, tuple[TargetShown, ...]]:
+        """(style, every target shown) for the result; ("", ()) when nothing
+        of the calibration's was drawn."""
+        if self._targets is None:
+            return "", ()
+        return self._targets.style, self._targets.shown_since_begin()
 
 
 def validate(
@@ -504,17 +609,22 @@ def validate(
     advance: Advance | None = None,
     targets: Sequence[tuple[float, float]] | None = None,
     make_target: Callable[[tuple[float, float]], Stimulus] | None = None,
+    calibration_targets: CalibrationTargets | None = None,
     progress: ProgressHook | None = None,
     timing: ProcedureTiming = DEFAULT_TIMING,
 ) -> ValidationResult:
     """Measure gaze error on every calibration target; see the module doc.
 
     ``advance`` defaults to the rig's ``calibration_advance``; ``targets``
-    to the calibration's own grid (centered px). The result is returned, not
-    acted on: the caller decides what a failed validation means.
+    to the calibration's own grid (centered px). The target drawn is the
+    calibration's: ``calibration_targets`` is the tracker's own (its picture
+    deck carries on), else one made from ``cfg.calibration_target``;
+    ``make_target`` replaces it altogether (a test's). The result is
+    returned, not acted on: the caller decides what a failed validation means.
     """
     advance = cfg.calibration_advance if advance is None else advance
     positions = list(targets) if targets is not None else validation_targets(cfg, screen)
+    target = _ProcedureTarget(display, screen, clock, cfg, make_target, calibration_targets)
     walk = _Walk(
         tracker=tracker,
         display=display,
@@ -522,7 +632,7 @@ def validate(
         clock=clock,
         poll_keys=poll_keys,
         correction=correction,
-        make_target=make_target or _default_make_target(display, screen),
+        make_target=target.make,
         advance=advance,
         timing=timing,
         progress=progress,
@@ -534,12 +644,15 @@ def validate(
     finally:
         close()
         display.flip()  # the last target off the screen, whatever happened
+    style, shown = target.record()
     result = ValidationResult(
         targets=tuple(measured),
         threshold_deg=cfg.accuracy_max_deg,
         t=clock.now(),
         advance=advance,
         aborted=aborted,
+        target_style=style,
+        shown=shown,
     )
     log.log(logging.INFO if result.accepted or aborted else logging.WARNING, result.summary())
     return result
@@ -557,6 +670,7 @@ def drift_correct(
     advance: Advance | None = None,
     target: tuple[float, float] = (0.0, 0.0),
     make_target: Callable[[tuple[float, float]], Stimulus] | None = None,
+    calibration_targets: CalibrationTargets | None = None,
     progress: ProgressHook | None = None,
     timing: ProcedureTiming = DEFAULT_TIMING,
 ) -> DriftResult:
@@ -565,9 +679,10 @@ def drift_correct(
     The offset is measured with the corrections already in force, so what is
     added to ``correction`` is the residual. An offset over the rig's
     ``drift_max_deg`` is refused and reported: that is a calibration to redo,
-    not a drift to absorb.
+    not a drift to absorb. The target is the calibration's, as validate()'s.
     """
     advance = cfg.calibration_advance if advance is None else advance
+    drawn = _ProcedureTarget(display, screen, clock, cfg, make_target, calibration_targets)
     walk = _Walk(
         tracker=tracker,
         display=display,
@@ -575,7 +690,7 @@ def drift_correct(
         clock=clock,
         poll_keys=poll_keys,
         correction=correction,
-        make_target=make_target or _default_make_target(display, screen),
+        make_target=drawn.make,
         advance=advance,
         timing=timing,
         progress=progress,
@@ -592,14 +707,35 @@ def drift_correct(
         close()
         display.flip()
     now = clock.now()
+    style, shown = drawn.record()
     if outcome == ABORT_KEY:
-        result = DriftResult(target, None, None, None, cfg.drift_max_deg, False, now, "aborted")
+        result = DriftResult(
+            target,
+            None,
+            None,
+            None,
+            cfg.drift_max_deg,
+            False,
+            now,
+            "aborted",
+            target_style=style,
+            shown=shown,
+        )
         log.warning(result.summary())
         return result
     assert isinstance(outcome, TargetError)
     if outcome.gaze_px is None:
         result = DriftResult(
-            target, None, None, None, cfg.drift_max_deg, False, now, "no gaze measured"
+            target,
+            None,
+            None,
+            None,
+            cfg.drift_max_deg,
+            False,
+            now,
+            "no gaze measured",
+            target_style=style,
+            shown=shown,
         )
         log.warning(result.summary())
         return result
@@ -615,11 +751,23 @@ def drift_correct(
             False,
             now,
             "too large for a drift — recalibrate",
+            target_style=style,
+            shown=shown,
         )
         log.warning(result.summary())
         return result
     correction.shift_by(offset[0], offset[1], now)
-    result = DriftResult(target, outcome.gaze_px, offset, offset_deg, cfg.drift_max_deg, True, now)
+    result = DriftResult(
+        target,
+        outcome.gaze_px,
+        offset,
+        offset_deg,
+        cfg.drift_max_deg,
+        True,
+        now,
+        target_style=style,
+        shown=shown,
+    )
     log.info("%s; total correction now (%.1f, %.1f) px", result.summary(), *correction.offset)
     return result
 
@@ -636,6 +784,8 @@ __all__ = [
     "TargetError",
     "ValidationResult",
     "drift_correct",
+    "target_maker",
+    "target_record",
     "validate",
     "validation_targets",
 ]

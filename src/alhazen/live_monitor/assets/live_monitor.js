@@ -2196,7 +2196,10 @@ async function cameraLoop() {
           throw new Error('eye markers that are not a list: ' + eyesHeader);
         }
         cameraSeq = seq;
-        cameraFrame = { width: width, height: height, bytes: bytes, eyes: eyes };
+        /* The session time the frame was read at; the Trial view says how
+         * long before the running trial that was. */
+        const t = Number(response.headers.get('X-Frame-Time'));
+        cameraFrame = { width: width, height: height, bytes: bytes, eyes: eyes, t: t };
         cameraArrivals.push(performance.now());
         cameraProblem = '';
       } else if (response.status !== 204) {
@@ -2210,6 +2213,7 @@ async function cameraLoop() {
       retryMs = 1000;
     }
     queueCameraPaint();
+    paintTrialCamera();
     if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
   }
 }
@@ -2858,11 +2862,15 @@ function renderSections(entries) {
   });
   /* A remembered group that this session has no panels for would leave the
    * grid empty with no way back except the sidebar the reader is looking at. */
-  if (section !== 'all' && !counts.has(section)) section = 'all';
+  if (section !== 'all' && !counts.has(section) && !(section === 'trial' && STATIC_STATE === null)) {
+    section = 'all';
+  }
 
   const list = byId('sections');
   list.replaceChildren();
   const rows = [['all', 'All panels', entries.length], ...[...counts].map((c) => [c[0], c[0], c[1]])];
+  /* The Trial view, on the live page: the running trial's screen and gaze. */
+  if (STATIC_STATE === null) rows.splice(1, 0, ['trial', 'Trial', '']);
   rows.forEach(([key, label, count]) => {
     const item = htmlEl('li', null, null, list);
     const button = htmlEl('button', null, null, item);
@@ -2912,19 +2920,13 @@ function render() {
   byId('counts').textContent = (state.n_trials || 0).toLocaleString() + ' trials · ' +
     (state.n_events || 0).toLocaleString() + ' events';
 
-  const paused = state.status === 'paused';
-  document.querySelectorAll('[data-command]').forEach((button) => { button.disabled = !paused; });
-  /* While an eye-tracker procedure runs ("calibrating") the session publishes
-   * its progress as the message — which target it is on, whether it is
-   * waiting for SPACE — and the buttons stay inert, because the server only
-   * takes a command while paused and a second procedure mid-procedure would
-   * be wrong anyway. */
-  const calibrating = state.status === 'calibrating';
-  byId('notice').textContent = paused
-    ? (state.message || 'Paused — controls are enabled.')
-    : calibrating
-      ? (state.message || 'Eye-tracker procedure running — controls return when it ends.')
-      : 'Press P on the experimenter keyboard to pause.';
+  /* The session's line for what it is doing: the pause's notice. While an
+   * eye-tracker procedure has the guide panel up (renderProcedure) the panel
+   * says it, large, and the line under the buttons stays empty rather than
+   * repeat it small. The buttons follow the session's own list of what it
+   * accepts (renderControls, below). */
+  const guided = renderProcedure(state.procedure);
+  byId('notice').textContent = guided ? '' : state.message || '';
 
   /* Which table views the reader had open, so a new trial does not close
    * one they were reading. */
@@ -2953,6 +2955,15 @@ function render() {
   renderSections(panels);
   const shown = panels.filter((entry) => section === 'all' || entry.section === section);
   byId('grid').replaceChildren(...shown.map((entry) => entry.card));
+  /* The Trial view is not rebuilt here; it is only shown or hidden, and only
+   * on the live page (the saved copy has no trial running). */
+  const wasHidden = byId('trial-view').hasAttribute('hidden');
+  setShown(byId('trial-view'), trialViewShown());
+  if (STATIC_STATE === null) {
+    if (wasHidden && trialViewShown()) drawTrialStage();
+    paintTrialCamera();
+    paintGaze();
+  }
   /* Attached now, so every panel can be measured before it is drawn. Only the
    * shown ones: an element that is not in the document has no width, and a
    * chart drawn against that width would be drawn wrong. */
@@ -2965,6 +2976,11 @@ function render() {
       input.focus();
     }
   }
+
+  /* The operator controls, after the panels: a host may live inside a panel
+   * (the trial view's), and has to exist before it can be filled. */
+  takeAcknowledgements(state.commands || []);
+  renderControls();
 
   /* After painting, not before: the panels have their real heights only once
    * they are drawn, and restoring against a half-laid-out document would
@@ -2980,6 +2996,734 @@ new ResizeObserver(() => {
   cancelAnimationFrame(resizeHandle);
   resizeHandle = requestAnimationFrame(() => panels.forEach(paintPanel));
 }).observe(document.body);
+
+/* ------------------------------------------------------------------ */
+/* Procedure guide                                                     */
+/* ------------------------------------------------------------------ */
+
+/* The eye-tracker procedure the operator is in, from the session's
+ * state.procedure (session/procedure_guide.py): its heading, the one thing
+ * to do now in large type, the tracker's eye line, which target of how many
+ * is up, and, after a failure or a stop, what went wrong and what to check.
+ * The session decides when it shows: from the procedure's start to its end,
+ * and after a failure until the session resumes or the next procedure
+ * starts. Nothing here reads the status line. */
+
+/** The rig keys an instruction names, drawn as keys. Whole words only, so a
+ *  capitalised word that is not a key ("NO calibration") stays text. */
+const PROCEDURE_KEYS = /\b(SPACE|ESC|ENTER|BACKSPACE|[CVDPRQ])\b/;
+
+/** `text` into `element`, each key it names as a <kbd> (keyLabel's case)
+ *  and the words between as spans. */
+function fillWithKeys(element, text) {
+  element.replaceChildren();
+  String(text || '').split(PROCEDURE_KEYS).forEach((part, index) => {
+    if (part) htmlEl(index % 2 ? 'kbd' : 'span', null, index % 2 ? keyLabel(part) : part, element);
+  });
+}
+
+/** The panel's heading: the procedure's own name, said to have failed or
+ *  been stopped once it has. */
+function procedureHeading(procedure) {
+  const heading = procedure.heading || 'Eye tracker';
+  if (procedure.outcome === 'failed') return heading + ' failed';
+  if (procedure.outcome === 'aborted') return heading + ' stopped';
+  return heading;
+}
+
+/** Draw state.procedure into the guide panel, or hide it. True when shown.
+ *  The saved copy in figures/ never shows it: it has no procedure running. */
+function renderProcedure(procedure) {
+  const panel = byId('procedure');
+  const shown = STATIC_STATE === null && !!procedure;
+  setShown(panel, shown);
+  if (!shown) return false;
+  panel.dataset.outcome = procedure.outcome || 'running';
+  panel.dataset.kind = procedure.kind || '';
+  byId('procedure-heading').textContent = procedureHeading(procedure);
+  const step = Number(procedure.step);
+  const n = Number(procedure.n);
+  const walking = Number.isInteger(step) && Number.isInteger(n) && n > 0 && step > 0;
+  byId('procedure-step').textContent = walking ? 'Target ' + step + ' of ' + n : '';
+  /* One mark per target: those already taken, the one up now, the rest.
+   * Drawn only while a walk of targets runs, and only up to a size a row can
+   * hold; once it has failed or stopped, the step says where. */
+  const track = byId('procedure-track');
+  track.replaceChildren();
+  if (walking && n <= 40 && (procedure.outcome || 'running') === 'running') {
+    for (let index = 1; index <= n; index += 1) {
+      const mark = htmlEl('li', null, null, track);
+      mark.dataset.state = index < step ? 'done' : index === step ? 'current' : 'todo';
+    }
+  }
+  setShown(track, track.children.length > 0);
+  const instruction = byId('procedure-instruction');
+  fillWithKeys(instruction, procedure.instruction);
+  setShown(instruction, !!procedure.instruction);
+  const status = byId('procedure-status');
+  status.textContent = procedure.status_line || '';
+  status.dataset.alert = String(!!procedure.status_alert);
+  setShown(status, !!procedure.status_line);
+  const failure = byId('procedure-failure');
+  setShown(failure, !!procedure.failure);
+  byId('procedure-failure-text').textContent = procedure.failure || '';
+  fillWithKeys(byId('procedure-check'), procedure.check);
+  setShown(byId('procedure-check'), !!procedure.check);
+  return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* end Procedure guide                                                 */
+/* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/* Trial view                                                          */
+/* ------------------------------------------------------------------ */
+
+/* The running trial's screen, in degrees of visual angle, with the eye's
+ * position over it. Two long polls feed it, each on its own channel, so a
+ * trial publish never waits behind a state snapshot and the gaze never waits
+ * behind either:
+ *
+ *   /api/trial ──▶ trialView.view  (once per trial: screen size, shapes)
+ *   /api/gaze  ──▶ trialView.samples (batches of [trial, t, x, y], ~60 Hz)
+ *
+ * The picture is rebuilt only when a new trial arrives or the box resizes;
+ * the gaze layer alone is redrawn, at most once per display frame. Nothing
+ * here touches the panel grid, and render() never rebuilds this block. */
+
+const trialView = {
+  view: null,      /* the running trial's picture (task/schematic.py) */
+  seq: 0,          /* its number on the server */
+  gazeSeq: 0,      /* the newest gaze sample's number */
+  gazeTrial: null, /* the trial the samples below belong to */
+  samples: [],     /* [t, x, y] of that trial, x and y null for a gap */
+  missed: 0,       /* samples the server had already dropped */
+  problem: '',     /* why a stream is failing, said in the status line */
+  fit: null,       /* the px mapping the picture was drawn with */
+  paintQueued: false,
+};
+/* The most samples kept for one trial: 2 minutes at 60 Hz. A trail is a few
+ * seconds; "whole trial" of a very long trial keeps its most recent part. */
+const TRIAL_SAMPLES_KEPT = 7200;
+/* A gaze this old (by the page's clock) is no longer "now". */
+const GAZE_STALE_MS = 500;
+let trailSeconds = 1;
+try {
+  const saved = localStorage.getItem('alhazen-trail');
+  if (saved !== null && Number.isFinite(Number(saved))) trailSeconds = Number(saved);
+} catch (e) { /* private mode */ }
+/* The page clock when the last gaze batch arrived. */
+let gazeArrivedAt = 0;
+
+/** Scale a screen of `widthDva` × `heightDva` into a box `boxWidth` px wide
+ *  and at most `maxHeight` px high, keeping its aspect: px per degree, and
+ *  the drawing's size. */
+function trialFit(widthDva, heightDva, boxWidth, maxHeight) {
+  const scale = Math.max(1e-6, Math.min(boxWidth / widthDva, maxHeight / heightDva));
+  return { scale: scale, width: widthDva * scale, height: heightDva * scale,
+    widthDva: widthDva, heightDva: heightDva };
+}
+
+/** A point in dva (centred, y up) to the drawing's px (top left, y down). */
+function trialMap(fit, x, y) {
+  return [(x + fit.widthDva / 2) * fit.scale, (fit.heightDva / 2 - y) * fit.scale];
+}
+
+/** The trail to draw: the samples within `seconds` of the newest one (all of
+ *  them when `seconds` is 0), as runs of points broken at every gap, and the
+ *  current point — null when the newest sample is a gap (a blink, a lost
+ *  eye), because there is then no position to show. Each sample is
+ *  [t, x, y] in dva; x and y are null for a gap. */
+function trailSegments(samples, seconds) {
+  if (!samples.length) return { segments: [], current: null };
+  const newest = samples[samples.length - 1];
+  const from = seconds > 0 ? newest[0] - seconds : -Infinity;
+  const segments = [];
+  let run = [];
+  for (const [t, x, y] of samples) {
+    if (t < from) continue;
+    if (x === null || y === null) {
+      if (run.length) segments.push(run);
+      run = [];
+    } else {
+      run.push([x, y]);
+    }
+  }
+  if (run.length) segments.push(run);
+  const current = newest[1] === null || newest[2] === null ? null : [newest[1], newest[2]];
+  return { segments: segments, current: current };
+}
+
+/** Take a batch from /api/gaze: start a new trail at a new trial, drop a
+ *  sample from an older trial (a late batch), and keep the rest. */
+function takeGaze(batch) {
+  trialView.gazeSeq = batch.seq;
+  trialView.missed += batch.missed || 0;
+  for (const [trial, t, x, y] of batch.samples || []) {
+    if (trialView.gazeTrial === null || trial > trialView.gazeTrial) {
+      trialView.gazeTrial = trial;
+      trialView.samples = [];
+    } else if (trial < trialView.gazeTrial) {
+      continue;
+    }
+    trialView.samples.push([t, x, y]);
+  }
+  if (trialView.samples.length > TRIAL_SAMPLES_KEPT) {
+    trialView.samples.splice(0, trialView.samples.length - TRIAL_SAMPLES_KEPT);
+  }
+}
+
+/** Show or hide an element through its `hidden` attribute. */
+function setShown(element, shown) {
+  if (!element) return;
+  if (shown) element.removeAttribute('hidden');
+  else element.setAttribute('hidden', '');
+}
+
+/** The trial's title and its condition, in the head. */
+function drawTrialHead(view) {
+  byId('trial-title').textContent = view ? 'Trial ' + view.trial_index : 'Trial';
+  if (!view) {
+    byId('trial-meta').textContent = 'Waiting for the first trial…';
+    return;
+  }
+  const parts = [];
+  if (view.attempt > 1) parts.push('attempt ' + view.attempt);
+  Object.entries(view.condition || {}).forEach(([key, value]) => {
+    parts.push(key.replace(/_/g, ' ') + ' ' + fmtCondition(value));
+  });
+  byId('trial-meta').textContent = parts.join(' · ');
+}
+
+/** A condition's value as the head prints it: a whole number as one (a
+ *  factor level such as hemifield −1 or 1, not 1.00), anything else as the
+ *  panels print numbers. */
+function fmtCondition(value) {
+  if (typeof value === 'number') return minus(Number.isInteger(value) ? String(value) : fmt(value));
+  return String(value);
+}
+
+/** Draw one schematic shape (task/schematic.py's payload) into `parent`. */
+function drawTrialShape(parent, fit, shape) {
+  const cls = 'trial-shape role-' + (shape.role || 'stimulus') + (shape.approximate ? ' approximate' : '');
+  const s = fit.scale;
+  let element = null;
+  let label = null;
+  if (shape.kind === 'circle') {
+    const [cx, cy] = trialMap(fit, shape.center[0], shape.center[1]);
+    element = svgEl('circle', { class: cls, cx: cx, cy: cy, r: Math.max(1, shape.radius * s) }, parent);
+  } else if (shape.kind === 'rect') {
+    const [w, h] = shape.size;
+    const a = ((shape.angle_deg || 0) * Math.PI) / 180;
+    const corners = [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([dx, dy]) =>
+      trialMap(fit, shape.center[0] + dx * Math.cos(a) - dy * Math.sin(a),
+        shape.center[1] + dx * Math.sin(a) + dy * Math.cos(a)));
+    element = svgEl('polygon', { class: cls, points: corners.map((p) => p.join(',')).join(' ') }, parent);
+  } else if (shape.kind === 'polygon') {
+    const points = shape.points.map(([x, y]) => trialMap(fit, x, y).join(','));
+    element = svgEl('polygon', { class: cls, points: points.join(' ') }, parent);
+  } else if (shape.kind === 'line') {
+    const [x1, y1] = trialMap(fit, shape.start[0], shape.start[1]);
+    const [x2, y2] = trialMap(fit, shape.end[0], shape.end[1]);
+    element = svgEl('line', { class: cls, x1: x1, y1: y1, x2: x2, y2: y2 }, parent);
+  } else if (shape.kind === 'dots') {
+    element = svgEl('g', { class: cls }, parent);
+    const r = Math.max(1, shape.radius * s);
+    shape.points.forEach(([x, y]) => {
+      const [cx, cy] = trialMap(fit, x, y);
+      svgEl('circle', { cx: cx, cy: cy, r: r }, element);
+    });
+  } else if (shape.kind === 'label') {
+    const [x, y] = trialMap(fit, shape.at[0], shape.at[1]);
+    label = fitTrialLabel(shape.text, x, y, fit);
+    element = svgEl('text', {
+      class: cls, x: label.x, y: label.y, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+      style: 'font-size: ' + label.fontSize + 'px',
+    }, parent);
+    if (label.lines.length === 1) {
+      element.textContent = label.lines[0];
+    } else {
+      label.lines.forEach((line, i) => {
+        svgEl('tspan', { x: label.x, y: label.y + i * label.lineHeight }, element).textContent = line;
+      });
+    }
+  }
+  /* The name on hover: a label on every shape would crowd the picture. The
+   * name is as the task gave it (alhazen names its own windows "… window");
+   * a label cut short to fit gives its whole text there. */
+  let hover = shape.name ? shape.name + (shape.approximate ? ' (approximate)' : '') : '';
+  if (label && label.shortened) hover = (shape.name ? shape.name + ': ' : '') + shape.text;
+  if (element && hover) svgEl('title', {}, element).textContent = hover;
+}
+
+/* Words on the trial picture (a schematic Label). Their size follows the
+ * picture as it is shown: TRIAL_LABEL_PX.max on a picture at least
+ * TRIAL_LABEL_FULL px wide (any desktop page), down to TRIAL_LABEL_PX.min on
+ * a phone. What still does not fit is wrapped onto at most TRIAL_LABEL_LINES
+ * lines, the last ending in an ellipsis if need be, and moved in from an
+ * edge, so a label is never cut off by the picture's border. */
+const TRIAL_LABEL_PX = { min: 10, max: 12 };
+const TRIAL_LABEL_FULL = 480;
+const TRIAL_LABEL_LINES = 2;
+const TRIAL_LABEL_MARGIN = 6;
+
+/** A label's text size in CSS px for a picture `shown` px wide on screen. */
+function trialLabelSize(shown) {
+  const { min, max } = TRIAL_LABEL_PX;
+  const size = min + ((max - min) * (shown - 320)) / (TRIAL_LABEL_FULL - 320);
+  return Math.round(Math.max(min, Math.min(max, size)) * 2) / 2;
+}
+
+/** The page's own typeface, for measuring words the way they are drawn. */
+function trialLabelFamily() {
+  const family = getComputedStyle(document.documentElement).getPropertyValue('--font');
+  return (family && family.trim()) || SANS;
+}
+
+/** Lay out a label centred at (x, y) on the drawing `fit` (task/schematic.py's
+ *  Label; x, y in drawing units). `fit.unit` is drawing units per CSS px (1
+ *  when the picture is shown at the size it was drawn). Returns the lines,
+ *  the centre of the first line, the line height and font size in drawing
+ *  units, and whether any text was cut (an ellipsis). */
+function fitTrialLabel(text, x, y, fit) {
+  const unit = fit.unit || 1;
+  const px = trialLabelSize(fit.width / unit);
+  const font = px + 'px ' + trialLabelFamily();
+  const room = Math.max(1, (fit.width - 2 * TRIAL_LABEL_MARGIN * unit) / unit);
+  const width = (line) => textWidth(line, font);
+  const words0 = String(text).trim().split(/\s+/);
+  let lines = [];
+  let shortened = false;
+  let words = words0;
+  /* Two lines that fit: split where the longer of the two is shortest, so
+   * the label reads as one block rather than a long line and a stray word. */
+  if (TRIAL_LABEL_LINES === 2 && width(words0.join(' ')) > room) {
+    let best = null;
+    for (let k = 1; k < words0.length; k += 1) {
+      const pair = [words0.slice(0, k).join(' '), words0.slice(k).join(' ')];
+      const widest = Math.max(width(pair[0]), width(pair[1]));
+      if (widest <= room && (best === null || widest < best.widest)) best = { pair: pair, widest: widest };
+    }
+    if (best) {
+      lines = best.pair;
+      words = [];
+    }
+  }
+  while (words.length) {
+    if (lines.length === TRIAL_LABEL_LINES - 1) {
+      const rest = words.join(' ');
+      const cut = ellipsize(rest, room, font);
+      if (cut !== rest) shortened = true;
+      lines.push(cut);
+      break;
+    }
+    let n = 1;
+    while (n < words.length && width(words.slice(0, n + 1).join(' ')) <= room) n += 1;
+    let line = words.slice(0, n).join(' ');
+    if (width(line) > room) {
+      line = ellipsize(line, room, font);
+      shortened = true;
+    }
+    lines.push(line);
+    words = words.slice(n);
+  }
+  const widest = Math.max(...lines.map(width)) * unit;
+  const lineHeight = px * 1.25 * unit;
+  const block = lines.length * lineHeight;
+  const margin = TRIAL_LABEL_MARGIN * unit;
+  const within = (value, lo, hi) => (lo > hi ? (lo + hi) / 2 : Math.max(lo, Math.min(hi, value)));
+  const cx = within(x, margin + widest / 2, fit.width - margin - widest / 2);
+  const cy = within(y, margin + block / 2, fit.height - margin - block / 2);
+  return {
+    lines: lines,
+    x: cx,
+    y: cy - ((lines.length - 1) * lineHeight) / 2,
+    lineHeight: lineHeight,
+    fontSize: px * unit,
+    width: widest,
+    shortened: shortened,
+  };
+}
+
+/** The box a laid-out label covers, in drawing units: [x0, y0, x1, y1]. */
+function trialLabelBox(label) {
+  const top = label.y - label.lineHeight / 2;
+  return [label.x - label.width / 2, top,
+    label.x + label.width / 2, top + label.lines.length * label.lineHeight];
+}
+
+/** The box a drawn shape covers, in drawing units, or boxes for its parts
+ *  (dots): only used to keep the scale bar off the picture's content. */
+function trialShapeBoxes(fit, shape) {
+  const s = fit.scale;
+  const around = (points, pad) => {
+    const xs = points.map((p) => p[0]);
+    const ys = points.map((p) => p[1]);
+    return [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad];
+  };
+  if (shape.kind === 'circle') return [around([trialMap(fit, shape.center[0], shape.center[1])], shape.radius * s)];
+  if (shape.kind === 'rect') {
+    const r = Math.hypot(shape.size[0], shape.size[1]) / 2;
+    return [around([trialMap(fit, shape.center[0], shape.center[1])], r * s)];
+  }
+  if (shape.kind === 'polygon') return [around(shape.points.map(([x, y]) => trialMap(fit, x, y)), 0)];
+  if (shape.kind === 'line') return [around([trialMap(fit, ...shape.start), trialMap(fit, ...shape.end)], 0)];
+  if (shape.kind === 'dots') return shape.points.map(([x, y]) => around([trialMap(fit, x, y)], shape.radius * s));
+  return [];
+}
+
+/* The 5° scale bar sits in a corner of the picture, bottom left unless a
+ * label is there: words a task placed on the picture are never drawn over
+ * (labels keep the position the task gave them). Another corner is tried
+ * next, one clear of the picture's content if there is one. */
+const TRIAL_SCALE_STEP = 5;
+const TRIAL_SCALE_INSET = 12;
+const TRIAL_SCALE_TEXT = 11;
+
+/** Where the scale bar goes: the bar's left end (x0, y0) and the corner's
+ *  name, given the label boxes and shape boxes to keep clear of. */
+function trialScalePlace(fit, labels, shapes) {
+  const bar = TRIAL_SCALE_STEP * fit.scale;
+  const text = textWidth(TRIAL_SCALE_STEP + '°', TRIAL_SCALE_TEXT + 'px ' + SANS);
+  const wide = Math.max(bar, text);
+  const inset = TRIAL_SCALE_INSET;
+  const top = inset + 6 + TRIAL_SCALE_TEXT;
+  const corners = [
+    ['bottom-left', inset, fit.height - inset],
+    ['bottom-right', fit.width - inset - wide, fit.height - inset],
+    ['top-left', inset, top],
+    ['top-right', fit.width - inset - wide, top],
+  ];
+  const gap = 4 * (fit.unit || 1);
+  const boxOf = ([, x0, y0]) => [x0 - gap, y0 - 6 - TRIAL_SCALE_TEXT - gap, x0 + wide + gap, y0 + 2 + gap];
+  const hits = (a, b) => a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+  const clearOf = (boxes) => (corner) => !boxes.some((box) => hits(boxOf(corner), box));
+  const pick = (corner) => ({ corner: corner[0], x0: corner[1], y0: corner[2] });
+  if (clearOf(labels)(corners[0])) return pick(corners[0]);
+  const free = corners.slice(1).filter(clearOf(labels));
+  if (!free.length) return pick(corners[0]);
+  return pick(free.find(clearOf(shapes)) || free[0]);
+}
+
+/** A degree grid every 5°, the screen's centre lines and a scale bar: the
+ *  measure the picture is read against. */
+function drawTrialGrid(svg, fit, place) {
+  const step = TRIAL_SCALE_STEP;
+  const half = [fit.widthDva / 2, fit.heightDva / 2];
+  for (let x = step; x < half[0]; x += step) {
+    [x, -x].forEach((v) => {
+      const [px] = trialMap(fit, v, 0);
+      svgEl('line', { class: 'trial-grid', x1: px, y1: 0, x2: px, y2: fit.height }, svg);
+    });
+  }
+  for (let y = step; y < half[1]; y += step) {
+    [y, -y].forEach((v) => {
+      const [, py] = trialMap(fit, 0, v);
+      svgEl('line', { class: 'trial-grid', x1: 0, y1: py, x2: fit.width, y2: py }, svg);
+    });
+  }
+  const [cx, cy] = trialMap(fit, 0, 0);
+  svgEl('line', { class: 'trial-axis', x1: cx, y1: 0, x2: cx, y2: fit.height }, svg);
+  svgEl('line', { class: 'trial-axis', x1: 0, y1: cy, x2: fit.width, y2: cy }, svg);
+  const { x0, y0 } = place || { x0: TRIAL_SCALE_INSET, y0: fit.height - TRIAL_SCALE_INSET };
+  svgEl('line', { class: 'trial-scale', x1: x0, y1: y0, x2: x0 + step * fit.scale, y2: y0 }, svg);
+  const label = svgEl('text', { class: 'trial-scale-text', x: x0, y: y0 - 6 }, svg);
+  label.textContent = step + '°';
+}
+
+/** Build the picture for the current trial: the screen, its grid, the
+ *  shapes, and an empty gaze layer that paintGaze fills. */
+function drawTrialStage() {
+  const host = byId('trial-stage');
+  if (!host) return;
+  host.replaceChildren();
+  const view = trialView.view;
+  drawTrialHead(view);
+  if (!view) {
+    trialView.fit = null;
+    htmlEl('div', 'empty', 'The picture of each trial appears here when it starts.', host);
+    drawTrialLegend(null);
+    return;
+  }
+  const width = host.clientWidth || 640;
+  const fit = trialFit(view.screen.width_dva, view.screen.height_dva, width,
+    Math.max(240, Math.round(window.innerHeight * 0.62) || 480));
+  trialView.fit = fit;
+  const svg = svgEl('svg', {
+    viewBox: '0 0 ' + fit.width + ' ' + fit.height,
+    width: fit.width,
+    height: fit.height,
+    role: 'img',
+    'aria-label': 'Trial ' + view.trial_index + ': the screen in degrees, with the gaze',
+  }, host);
+  /* The page may show the drawing smaller than drawn (a narrow page holds it
+   * under half the window's height): words on it are sized for what is seen. */
+  const shown = svg.getBoundingClientRect ? svg.getBoundingClientRect().width : 0;
+  fit.unit = shown > 0 ? fit.width / shown : 1;
+  svgEl('rect', { class: 'trial-screen', x: 0.5, y: 0.5, width: fit.width - 1, height: fit.height - 1 }, svg);
+  const all = view.shapes || [];
+  const labelBoxes = all.filter((shape) => shape.kind === 'label').map((shape) => {
+    const [x, y] = trialMap(fit, shape.at[0], shape.at[1]);
+    return trialLabelBox(fitTrialLabel(shape.text, x, y, fit));
+  });
+  const shapeBoxes = all.filter((shape) => shape.kind !== 'label').flatMap((shape) => trialShapeBoxes(fit, shape));
+  fit.scaleBar = trialScalePlace(fit, labelBoxes, shapeBoxes);
+  drawTrialGrid(svg, fit, fit.scaleBar);
+  const shapes = svgEl('g', { class: 'trial-shapes' }, svg);
+  /* Regions over stimuli, so a window is never hidden under a filled disc. */
+  const order = { stimulus: 0, annotation: 1, region: 2 };
+  [...all]
+    .sort((a, b) => (order[a.role] || 0) - (order[b.role] || 0))
+    .forEach((shape) => drawTrialShape(shapes, fit, shape));
+  svgEl('g', { class: 'trial-gaze-layer' }, svg);
+  drawTrialLegend(view);
+  paintGaze();
+}
+
+/** The one sentence under the picture, or ''. A task that defines no picture
+ *  of its stimuli is shown as its gaze windows alone (nothing is guessed from
+ *  the stimuli), and that is said once, so an empty screen is never read as
+ *  one with nothing on it. A window that could not be drawn is named. */
+function trialNote(view) {
+  if (!view) return '';
+  const parts = [];
+  if (view.source === 'regions') {
+    const windows = (view.shapes || []).some((s) => s.role === 'region');
+    parts.push(windows
+      ? 'This task defines no picture of its stimuli, so only its gaze windows are shown.'
+      : 'This task defines no picture of its stimuli, and this trial has no gaze windows to show.');
+  }
+  const undrawn = view.undrawn || [];
+  if (undrawn.length) parts.push('Gaze window not drawn: ' + undrawn.join(', ') + '.');
+  return parts.join(' ');
+}
+
+function drawTrialLegend(view) {
+  const legend = byId('trial-legend');
+  legend.replaceChildren();
+  byId('trial-note').textContent = trialNote(view);
+  if (!view) return;
+  /* A label is words on the picture, not a mark: it needs no legend entry. */
+  const marks = (view.shapes || []).filter((s) => s.kind !== 'label');
+  const roles = new Set(marks.map((s) => (s.approximate ? 'approx' : s.role)));
+  const items = [];
+  if (view.gaze) items.push(['gaze', 'Gaze'], ['trail', 'Trail']);
+  if (roles.has('stimulus')) items.push(['stimulus', 'Stimulus']);
+  if (roles.has('annotation')) items.push(['annotation', 'Outline or path']);
+  if (roles.has('region')) items.push(['window', 'Gaze window']);
+  if (roles.has('approx')) items.push(['approx', 'Approximate outline']);
+  items.forEach(([cls, text]) => {
+    const item = htmlEl('span', null, null, legend);
+    htmlEl('i', cls, null, item);
+    htmlEl('span', null, text, item);
+  });
+}
+
+/** Redraw the gaze layer and the status line from the samples. */
+function paintGaze() {
+  trialView.paintQueued = false;
+  const view = trialView.view;
+  const fit = trialView.fit;
+  const stage = byId('trial-stage');
+  const layer = stage ? stage.querySelector('g.trial-gaze-layer') : null;
+  if (layer) layer.replaceChildren();
+  const status = byId('trial-status');
+  if (!view) {
+    if (status) status.textContent = trialView.problem;
+    return;
+  }
+  const own = trialView.gazeTrial === view.trial_index ? trialView.samples : [];
+  const { segments, current } = trailSegments(own, trailSeconds);
+  if (layer && fit) {
+    segments.forEach((run) => {
+      if (run.length < 2) return;
+      svgEl('polyline', {
+        class: 'trial-trail-line',
+        points: run.map(([x, y]) => trialMap(fit, x, y).join(',')).join(' '),
+      }, layer);
+    });
+    if (current) {
+      const [cx, cy] = trialMap(fit, current[0], current[1]);
+      svgEl('circle', { class: 'trial-gaze', cx: cx, cy: cy, r: 6 }, layer);
+    }
+  }
+  if (status) status.textContent = gazeStatus(view, own, current);
+}
+
+/** The status line under the picture: where the eye is, or why there is no
+ *  position. Plain words, one line. */
+function gazeStatus(view, own, current) {
+  if (trialView.problem) return trialView.problem;
+  if (!view.gaze) return 'No gaze: this rig has no eye tracker.';
+  const status = state ? state.status : 'running';
+  if (status === 'paused' || status === 'calibrating') {
+    /* A pause keyed between trials takes effect on the next trial's first
+     * frame, before anything is drawn: that trial's picture, and no trail. */
+    return own.length ? 'Paused. The trail is this trial’s, up to the pause.' : 'Paused.';
+  }
+  if (status !== 'running') return own.length ? 'The trail is the last one this trial drew.' : '';
+  if (!own.length) return 'Waiting for gaze samples…';
+  if (performance.now() - gazeArrivedAt > GAZE_STALE_MS) {
+    return 'Between trials. The trail is the last one this trial drew.';
+  }
+  if (!current) return 'No gaze sample: a blink, or the eye is lost.';
+  const rate = gazeRate(own);
+  return 'Gaze ' + minus(current[0].toFixed(1)) + '°, ' + minus(current[1].toFixed(1)) + '°' +
+    (rate === null ? '' : ' · ' + rate + ' samples/s');
+}
+
+/** Samples a second over the last second of this trial, by the samples' own
+ *  timestamps (gaps excluded), or null before there is a span to measure: a
+ *  trial a tenth of a second old has not shown its rate yet. */
+function gazeRate(samples) {
+  const real = samples.filter((s) => s[1] !== null);
+  if (real.length < 2) return null;
+  const newest = real[real.length - 1][0];
+  const window = real.filter((s) => s[0] >= newest - 1);
+  const span = newest - window[0][0];
+  if (window.length < 2 || span < 0.25) return null;
+  return Math.round((window.length - 1) / span);
+}
+
+function queueGazePaint() {
+  if (trialView.paintQueued) return;
+  trialView.paintQueued = true;
+  requestAnimationFrame(paintGaze);
+}
+
+/** The camera beside the picture. Never a live image during a trial — no
+ *  supported tracker can give one (task/schematic.py, docs/live_monitor.md)
+ *  — but the newest real frame from the last pause or calibration, with how
+ *  long before this trial it was taken, or the tracker's reason there is
+ *  none. While paused the camera streams, and this says so. */
+function paintTrialCamera() {
+  const host = byId('trial-camera');
+  const note = byId('trial-camera-note');
+  if (!host || !note) return;
+  const view = trialView.view;
+  const camera = (view && view.camera) || null;
+  const paused = !!state && (state.status === 'paused' || state.status === 'calibrating');
+  /* What the box holds, for its layout: 'none' (this tracker shows no camera
+   * at all, so a narrow page gives it one line, not an empty picture),
+   * 'waiting' (no frame yet) or 'frame'. */
+  const figure = host.parentElement;
+  const holds = (kind) => { if (figure) figure.dataset.camera = kind; };
+  if (!camera) {
+    holds('waiting');
+    host.replaceChildren(htmlEl('div', 'trial-camera-empty', 'No camera information yet.'));
+    note.textContent = '';
+    return;
+  }
+  if (!camera.has_frames || !cameraFrame) {
+    holds(camera.has_frames ? 'waiting' : 'none');
+    host.replaceChildren(htmlEl('div', 'trial-camera-empty',
+      camera.has_frames ? 'No camera frame yet. Frames are read while paused or calibrating.'
+        : 'No camera image.'));
+    note.textContent = camera.reason;
+    return;
+  }
+  holds('frame');
+  let canvas = host.querySelector('canvas');
+  if (!canvas) {
+    host.replaceChildren();
+    canvas = htmlEl('canvas', null, null, host);
+  }
+  const { width, height, bytes } = cameraFrame;
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  const context = canvas.getContext('2d');
+  const image = context.createImageData(width, height);
+  for (let i = 0, j = 0; i < bytes.length; i += 1, j += 4) {
+    image.data[j] = bytes[i];
+    image.data[j + 1] = bytes[i];
+    image.data[j + 2] = bytes[i];
+    image.data[j + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
+  note.textContent = cameraAgeText(camera, cameraFrame, view, paused);
+}
+
+/** What the camera box's frame is: live (paused), or how long before this
+ *  trial it was taken — both times on the session clock. */
+function cameraAgeText(camera, frame, view, paused) {
+  if (paused && cameraArrivals.length) return 'Live while paused.';
+  if (!Number.isFinite(frame.t) || !Number.isFinite(view.t)) {
+    return 'Last frame from a pause or calibration. ' + camera.reason;
+  }
+  const age = Math.max(0, view.t - frame.t);
+  const ago = age < 90 ? Math.round(age) + ' s' : Math.round(age / 60) + ' min';
+  return 'Last frame, taken ' + ago + ' before this trial (paused or calibrating). ' + camera.reason;
+}
+
+/** The trial channel: the picture of each trial as it starts. */
+async function trialLoop() {
+  for (;;) {
+    let retryMs = 0;
+    try {
+      const response = await fetch('/api/trial?token=' + encodeURIComponent(token) +
+        '&after=' + trialView.seq + '&wait_ms=2000');
+      if (response.status === 200) {
+        trialView.seq = Number(response.headers.get('X-Trial-Seq')) || trialView.seq + 1;
+        trialView.view = await response.json();
+        if (trialView.problem.startsWith('Trial stream')) trialView.problem = '';
+        drawTrialStage();
+        paintTrialCamera();
+      } else if (response.status !== 204) {
+        throw new Error('the server answered ' + response.status + ': ' + await response.text());
+      }
+    } catch (error) {
+      console.error('trial stream failed', error);
+      trialView.problem = 'Trial stream failed: ' + error.message;
+      queueGazePaint();
+      retryMs = 1000;
+    }
+    if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
+  }
+}
+
+/** The gaze channel: batches of samples while trials run. */
+async function gazeLoop() {
+  for (;;) {
+    let retryMs = 0;
+    try {
+      const response = await fetch('/api/gaze?token=' + encodeURIComponent(token) +
+        '&after=' + trialView.gazeSeq + '&wait_ms=2000');
+      if (response.status === 200) {
+        takeGaze(await response.json());
+        gazeArrivedAt = performance.now();
+        if (trialView.problem.startsWith('Gaze stream')) trialView.problem = '';
+      } else if (response.status !== 204) {
+        throw new Error('the server answered ' + response.status + ': ' + await response.text());
+      }
+    } catch (error) {
+      console.error('gaze stream failed', error);
+      trialView.problem = 'Gaze stream failed: ' + error.message;
+      retryMs = 1000;
+    }
+    queueGazePaint();
+    if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
+  }
+}
+
+/** Is the Trial view part of what the sidebar's choice shows? */
+function trialViewShown() {
+  return STATIC_STATE === null && (section === 'all' || section === 'trial');
+}
+
+byId('trial-trail').value = String(trailSeconds);
+byId('trial-trail').onchange = (event) => {
+  trailSeconds = Number(event.target.value) || 0;
+  try { localStorage.setItem('alhazen-trail', String(trailSeconds)); } catch (e) { /* private mode */ }
+  paintGaze();
+};
+new ResizeObserver(() => {
+  if (trialView.view) drawTrialStage();
+}).observe(byId('trial-stage'));
+
+/* ------------------------------------------------------------------ */
+/* end Trial view                                                      */
+/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /* Theme                                                               */
@@ -3030,22 +3774,227 @@ if (pageParams.has('token')) {
   history.replaceState(history.state, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
 }
 
-async function command(name) {
-  if (name === 'quit' && !confirm('Quit this session?')) return;
+/* ------------------------------------------------------------------ */
+/* Operator controls [workstream B]                                    */
+/* ------------------------------------------------------------------ */
+
+/* One owner for every command button on the page: renderControls draws them
+ * into each element marked [data-controls-host] — the sidebar's, and any a
+ * view puts under itself — from the session's `controls` block (what it
+ * shows, what it accepts now, the key each stands for at the rig, why each
+ * other one is off). A click is sent once, with a request id; the button
+ * then reads "sent" until the session acknowledges that id (state.commands,
+ * or at once on /api/commands) as applied, refused, failed or discarded. */
+
+/** Commands sent and not yet acknowledged: request id -> command name. */
+const pendingCommands = new Map();
+/** The session's newest acknowledgements, oldest first. */
+let acknowledgements = [];
+/** The last acknowledgement record number read from /api/commands. */
+let acknowledgementSeq = 0;
+let watchingAcknowledgements = false;
+/** A line under the buttons for what the page itself refused or failed to
+ *  send: a click on a button that is off, a 409 from the server. */
+let controlFeedback = '';
+/** Quit asks first, in the page: true while its confirmation is showing. */
+let confirmingQuit = false;
+/** How many acknowledgements each host lists, newest first. */
+const ACKNOWLEDGEMENTS_SHOWN = 3;
+/** How many the page remembers: the session's own record length. */
+const ACKNOWLEDGEMENT_MEMORY = 20;
+const TERMINAL_STATUSES = ['complete', 'failed', 'cancelled', 'stopping'];
+
+/** A rig key as printed on the key: a letter or symbol as it is, a named key
+ *  in sentence case ("Space", "Esc", "Ctrl-C"), not shouted in capitals. */
+function keyLabel(key) {
+  return String(key).split('-')
+    .map((part) => (/^[A-Za-z]{2,}$/.test(part) ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part))
+    .join('-');
+}
+
+function commandLabel(name) {
+  const labels = (state && state.controls && state.controls.labels) || {};
+  return labels[name] || name.replace(/_/g, ' ');
+}
+
+/** "Pause: the session is already paused." — without naming the button
+ *  twice when the reason already starts with its name. */
+function explainControl(name, reason) {
+  const label = commandLabel(name);
+  const text = String(reason || 'not available now');
+  const line = text.startsWith(label) ? text : label + ': ' + text;
+  return line.endsWith('.') ? line : line + '.';
+}
+
+/** Take the session's acknowledgement record: each command this page sent
+ *  and the session has now answered stops being pending. Merged, never
+ *  replaced: the record arrives two ways (a state publish, the
+ *  acknowledgement channel), and a state published a moment before an
+ *  acknowledgement can be read after it — replacing would drop the newer one. */
+function takeAcknowledgements(records) {
+  if (!Array.isArray(records)) return;
+  const merged = new Map(acknowledgements.map((record) => [record.request_id, record]));
+  records.forEach((record) => {
+    merged.set(record.request_id, record);
+    pendingCommands.delete(record.request_id);
+  });
+  acknowledgements = [...merged.values()]
+    .sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0))
+    .slice(-ACKNOWLEDGEMENT_MEMORY);
+  /* A session that has ended will take nothing more: what is still waiting
+   * was never taken, and says so rather than staying "sent" for ever. */
+  if (state && TERMINAL_STATUSES.includes(state.status) && pendingCommands.size) {
+    controlFeedback = 'The session ended before it took: ' +
+      [...pendingCommands.values()].map(commandLabel).join(', ') + '.';
+    pendingCommands.clear();
+  }
+}
+
+function renderControls() {
+  document.querySelectorAll('[data-controls-host]').forEach(fillControlsHost);
+}
+
+function fillControlsHost(host) {
+  /* The buttons are drawn anew on every state; the one the operator had
+   * focused (a key press, or a click on an off button to read why) keeps the
+   * focus rather than dropping it to the page. */
+  const focused = [...host.querySelectorAll('button.control')]
+    .find((button) => button === document.activeElement);
+  const focusName = focused ? focused.dataset.command : null;
+  host.replaceChildren();
+  const controls = state && state.controls;
+  if (!controls) {
+    /* A saved copy, or a session that has not said yet: no buttons. */
+    if (STATIC_STATE !== null) htmlEl('p', 'control-empty', 'Controls work only during a session.', host);
+    return;
+  }
+  const available = new Set(controls.available || []);
+  const sending = new Set(pendingCommands.values());
+  const grid = htmlEl('div', 'control-grid', null, host);
+  (controls.shown || []).forEach((name) => {
+    if (name === 'quit' && confirmingQuit) {
+      quitConfirmation(grid);
+      return;
+    }
+    const button = htmlEl('button', 'control' + (name === 'quit' ? ' danger' : ''), null, grid);
+    button.type = 'button';
+    button.dataset.command = name;
+    htmlEl('span', 'control-label', commandLabel(name), button);
+    const key = (controls.keys || {})[name];
+    if (key) htmlEl('kbd', null, keyLabel(key), button);
+    const off = !available.has(name);
+    button.setAttribute('aria-disabled', String(off || sending.has(name)));
+    if (off) button.title = (controls.refused || {})[name] || '';
+    if (sending.has(name)) button.dataset.pending = 'true';
+    button.onclick = () => pressControl(name);
+    if (name === focusName) button.focus({ preventScroll: true });
+  });
+  if (controlFeedback) htmlEl('p', 'control-feedback', controlFeedback, host);
+  const log = htmlEl('ol', 'command-log', null, host);
+  pendingCommands.forEach((name) => {
+    const item = htmlEl('li', null, null, log);
+    item.dataset.result = 'pending';
+    htmlEl('span', 'command-name', commandLabel(name), item);
+    htmlEl('span', 'command-note', 'sent, waiting for the task', item);
+  });
+  acknowledgements.slice(-ACKNOWLEDGEMENTS_SHOWN).reverse().forEach((record) => {
+    const item = htmlEl('li', null, null, log);
+    item.dataset.result = record.result;
+    /* A rig key the session refused is listed too, so the page says why the
+     * key did nothing (session/operator_commands.py record_keyboard). */
+    const from = record.source === 'keyboard' ? ' (key at the rig)' : '';
+    htmlEl('span', 'command-name', commandLabel(record.name) + from, item);
+    htmlEl('span', 'command-note', record.result + ' · ' + record.note, item);
+  });
+  if (!log.children.length) log.remove();
+}
+
+/** Quit's in-page confirmation, in Quit's place. */
+function quitConfirmation(parent) {
+  const box = htmlEl('div', 'quit-confirm', null, parent);
+  box.setAttribute('role', 'group');
+  htmlEl('p', null, 'End the session? The data so far is saved.', box);
+  const row = htmlEl('div', 'quit-actions', null, box);
+  const yes = htmlEl('button', 'control danger', 'End session', row);
+  yes.type = 'button';
+  yes.dataset.confirm = 'quit';
+  yes.onclick = () => { confirmingQuit = false; sendCommand('quit'); };
+  const no = htmlEl('button', 'control', 'Cancel', row);
+  no.type = 'button';
+  no.dataset.confirm = 'cancel';
+  no.onclick = () => { confirmingQuit = false; renderControls(); };
+}
+
+function pressControl(name) {
+  const controls = (state && state.controls) || {};
+  if (![...(controls.available || [])].includes(name)) {
+    controlFeedback = explainControl(name, (controls.refused || {})[name]);
+    renderControls();
+    return;
+  }
+  if ([...pendingCommands.values()].includes(name)) return;
+  if (name === 'quit') {
+    confirmingQuit = true;
+    controlFeedback = '';
+    renderControls();
+    return;
+  }
+  sendCommand(name);
+}
+
+async function sendCommand(name) {
+  const requestId = crypto.randomUUID();
+  pendingCommands.set(requestId, name);
+  controlFeedback = '';
+  renderControls();
   try {
     const response = await fetch('/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Alhazen-Token': token },
-      body: JSON.stringify({ name: name, request_id: crypto.randomUUID() }),
+      body: JSON.stringify({ name: name, request_id: requestId }),
     });
-    byId('notice').textContent = response.ok ? 'Command accepted.' : await response.text();
+    if (response.ok) {
+      watchAcknowledgements();
+    } else {
+      pendingCommands.delete(requestId);
+      controlFeedback = explainControl(name, await response.text());
+    }
   } catch (error) {
-    byId('notice').textContent = 'Command failed: ' + error;
+    pendingCommands.delete(requestId);
+    controlFeedback = commandLabel(name) + ' was not sent: ' + error.message;
+  }
+  renderControls();
+}
+
+/** Ask for acknowledgements while any command is waiting for one: a Reward
+ *  clicked mid-trial is acknowledged long before the trial's state publish. */
+async function watchAcknowledgements() {
+  if (watchingAcknowledgements) return;
+  watchingAcknowledgements = true;
+  try {
+    while (pendingCommands.size) {
+      let retryMs = 0;
+      try {
+        const response = await fetch('/api/commands?token=' + encodeURIComponent(token) +
+          '&after=' + acknowledgementSeq + '&wait_ms=2000');
+        if (response.status === 200) {
+          const record = await response.json();
+          acknowledgementSeq = record.seq;
+          takeAcknowledgements(record.commands);
+          renderControls();
+        } else if (response.status !== 204) {
+          throw new Error('the server answered ' + response.status);
+        }
+      } catch (error) {
+        console.error('acknowledgements failed', error);
+        retryMs = 1000;
+      }
+      if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
+    }
+  } finally {
+    watchingAcknowledgements = false;
   }
 }
-document.querySelectorAll('[data-command]').forEach((button) => {
-  button.onclick = () => command(button.dataset.command);
-});
 
 async function poll() {
   try {
@@ -3078,4 +4027,6 @@ if (STATIC_STATE !== null) {
 } else {
   poll();
   cameraLoop();
+  trialLoop();
+  gazeLoop();
 }

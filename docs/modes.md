@@ -810,6 +810,22 @@ it runs — from the flags, from the prompt, or simulate's own `sim` and `1` —
 so what the hook files state under is what the session records. `demo` and
 `movie` have nobody in the chair and pass them as given.
 
+A hook that refuses a file should name it with
+`alhazen.task.params_source(args)` rather than `args.params`. From a shell
+the two agree (the file as given). The experiment workspace runs a copy of
+the file chosen in its Task parameters menu, so `args.params` names the
+copy, and passes the original as `--params-source`, which the helper
+returns. An experiment that must also run on an alhazen without the helper
+imports it in a `try` and falls back to `args.params`:
+
+```python
+try:
+    from alhazen.task import params_source
+except ImportError:  # an alhazen from before it
+    def params_source(args):
+        return getattr(args, "params", None)
+```
+
 `run_experiment(params_hook=...)` still works: given, it **replaces** the
 task's hook for the sessions that `run.py` starts — the two are not chained,
 so a `run.py` written before tasks could declare a hook keeps doing exactly

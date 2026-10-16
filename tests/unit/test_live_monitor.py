@@ -115,7 +115,14 @@ class TestSpecification:
 
 
 class TestRuntime:
-    def test_server_is_paused_only_authenticated_and_deduplicated(self):
+    def test_server_passes_each_command_only_in_its_status_and_deduplicates(self):
+        """The server's allow-sets (live_monitor/controls.py): while a trial
+        runs it passes what the engine acts on (pause, skip, a reward, quit),
+        while paused what the pause menu offers (incl. the three eye-tracker
+        procedures, which are paused-only on every rig), during a procedure
+        nothing; each refusal is a 409 with its reason. Until 2.17 it passed
+        nothing at all unless the session was paused, so nothing could pause
+        it from the page."""
         controller = LiveMonitorController(auto_open=False)
         url = controller.start()
         token = url.partition("token=")[2]
@@ -126,9 +133,14 @@ class TestRuntime:
             assert "const STATIC_STATE = null;" in html
             controller.publish(_state(1, "running"))
             self._wait_for_revision(root, token, 1)
-            with pytest.raises(urllib.error.HTTPError) as error:
-                self._post(root, token, "manual_reward", "same")
-            assert error.value.code == 409
+            assert self._post(root, token, "pause", "p1") == 202
+            assert self._post(root, token, "skip_trial", "s1") == 202
+            assert self._post(root, token, "manual_reward", "r1") == 202
+            for name in ("calibrate", "validate", "drift_correct"):
+                with pytest.raises(urllib.error.HTTPError) as refused:
+                    self._post(root, token, name, name + "0")
+                assert refused.value.code == 409
+                assert "works only while the task is paused" in refused.value.read().decode()
 
             controller.publish(_state(2, "paused"))
             self._wait_for_revision(root, token, 2)
@@ -142,19 +154,86 @@ class TestRuntime:
             with pytest.raises(urllib.error.HTTPError) as unknown:
                 self._post(root, token, "recalibrate", "x1")
             assert unknown.value.code == 400
+            with pytest.raises(urllib.error.HTTPError) as already:
+                self._post(root, token, "pause", "p2")
+            assert already.value.code == 409
+            assert already.value.read().decode() == "the session is already paused"
+
+            controller.publish(_state(3, "calibrating"))
+            self._wait_for_revision(root, token, 3)
+            with pytest.raises(urllib.error.HTTPError) as busy:
+                self._post(root, token, "calibrate", "c1")
+            assert busy.value.code == 409
+
             deadline = time.monotonic() + 2
             commands: list[LiveMonitorCommand] = []
-            while time.monotonic() < deadline and len(commands) < 3:
+            while time.monotonic() < deadline and len(commands) < 6:
                 commands += controller.poll_commands()
                 time.sleep(0.01)
-            assert [command.name for command in commands] == [
-                "manual_reward",
-                "validate",
-                "drift_correct",
+            # Each command carries the status and revision it was accepted in:
+            # the session acts on it only in that status.
+            assert [(c.name, c.status, c.revision) for c in commands] == [
+                ("pause", "running", 1),
+                ("skip_trial", "running", 1),
+                ("manual_reward", "running", 1),
+                ("manual_reward", "paused", 2),
+                ("validate", "paused", 2),
+                ("drift_correct", "paused", 2),
             ]
         finally:
             controller.stop()
         assert not controller.alive()
+
+    def test_the_server_holds_a_command_to_what_the_session_published(self):
+        """On top of the status, the session says which commands it will act
+        on (state["controls"]); the server refuses the rest with the
+        session's own reason."""
+        controller = LiveMonitorController(auto_open=False)
+        url = controller.start()
+        token = url.partition("token=")[2]
+        root = url.partition("/?")[0]
+        try:
+            controller.publish(
+                {
+                    **_state(1, "paused"),
+                    "controls": {
+                        "available": ["resume", "quit"],
+                        "refused": {"manual_reward": "this session has no reward line"},
+                    },
+                }
+            )
+            self._wait_for_revision(root, token, 1)
+            assert self._post(root, token, "resume", "r1") == 202
+            with pytest.raises(urllib.error.HTTPError) as refused:
+                self._post(root, token, "manual_reward", "m1")
+            assert refused.value.code == 409
+            assert refused.value.read().decode() == "this session has no reward line"
+        finally:
+            controller.stop()
+
+    def test_acknowledgements_reach_the_page_on_their_own_channel(self):
+        controller = LiveMonitorController(auto_open=False)
+        url = controller.start()
+        token = url.partition("token=")[2]
+        root = url.partition("/?")[0]
+        try:
+            record = [{"request_id": "a", "name": "pause", "result": "applied", "note": "n"}]
+            controller.publish_commands(record)
+            with urllib.request.urlopen(
+                f"{root}/api/commands?token={token}&after=0&wait_ms=2000", timeout=5
+            ) as response:
+                body = json.loads(response.read().decode())
+            assert body == {"seq": 1, "commands": record}
+            # Nothing newer: 204 once the wait is over.
+            with urllib.request.urlopen(
+                f"{root}/api/commands?token={token}&after=1&wait_ms=0", timeout=5
+            ) as response:
+                assert response.status == 204
+            with pytest.raises(urllib.error.HTTPError) as forbidden:
+                urllib.request.urlopen(f"{root}/api/commands?token=wrong", timeout=5)
+            assert forbidden.value.code == 403
+        finally:
+            controller.stop()
 
     def test_the_page_may_be_framed_by_local_pages_only(self):
         """The experiment workspace (``alhazen dashboard``) embeds this page
@@ -419,6 +498,21 @@ def server():
         controller.stop()
 
 
+class TestPublishReplacesTheUnreadSnapshot:
+    def test_two_publishes_back_to_back_leave_the_newer(self) -> None:
+        """The second of two publishes a moment apart (a procedure's end
+        right after its last report, the pause right after that) used to be
+        the one dropped: the first was still in the queue's feeder thread,
+        where the replace could not take it out. The page must get the newer
+        state, every time."""
+        for _ in range(20):
+            controller = LiveMonitorController(auto_open=False)
+            controller.publish(_state(1, "calibrating"))
+            controller.publish(_state(2, "paused"))
+            revision, status, *_rest = controller._updates.get(timeout=1)
+            assert (revision, status) == (2, "paused")
+
+
 class TestRequestValidation:
     """What the server refuses, and that refusing it leaves the server serving."""
 
@@ -602,6 +696,7 @@ class FakeLiveMonitor:
         # Each frame's eye markers, as the runner handed them over.
         self.frame_eyes: list = []
         self.setting_batches: list[list[tuple[str, object]]] = []
+        self.ack_records: list[list[dict]] = []
         self.stopped = False
         self.url = "http://127.0.0.1:0/"
 
@@ -618,6 +713,10 @@ class FakeLiveMonitor:
     def poll_commands(self) -> list[LiveMonitorCommand]:
         names = self.batches.pop(0) if self.batches else []
         return [LiveMonitorCommand(str(i), name) for i, name in enumerate(names)]
+
+    def publish_commands(self, records: list[dict]) -> None:
+        # The acknowledgement channel: what the page would read at once.
+        self.ack_records.append(records)
 
     def save(self, figures_dir: Path, state: dict) -> None:
         (figures_dir / "live_monitor.html").write_text(state["status"])
@@ -737,10 +836,12 @@ class TestRunnerIntegration:
         # says exactly that rather than "Paused".
         assert any("result unknown" in m for m in paused), paused
 
-    def test_the_in_trial_calibrate_key_reports_its_verdict_too(self, tmp_path: Path):
-        """The C key mid-trial calibrates before the pause begins; the pause
-        notice the browser then shows is the verdict, not the generic
-        "Paused"."""
+    def test_the_in_trial_calibrate_key_is_refused_and_recorded(self, tmp_path: Path, caplog):
+        """The rig's C key during a trial follows the same rule as the page's
+        Calibrate button: calibration runs only while the task is paused. The
+        trial goes on (no pause, no calibration), and the refusal is in the
+        log and in events.csv as OPERATOR_COMMAND from the keyboard. Until
+        2.17 the key paused and calibrated in one press."""
         clock = FakeClock()
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
@@ -755,11 +856,27 @@ class TestRunnerIntegration:
             **wired(live_monitor),
         )
 
-        harness.runner.run()
+        with caplog.at_level(logging.WARNING, logger="alhazen.session.runner"):
+            harness.runner.run()
 
-        first_pause = next(s["message"] for s in live_monitor.states if s["status"] == "paused")
-        assert "result unknown" in first_pause, first_pause
-        assert [e.name for e in harness.collector.events].count("CALIBRATION") == 1
+        names = [e.name for e in harness.collector.events]
+        assert "PAUSED" not in names
+        assert "CALIBRATION" not in names
+        assert not any(s["status"] == "paused" for s in live_monitor.states)
+        (refused,) = [e for e in harness.collector.events if e.name == "OPERATOR_COMMAND"]
+        assert refused.payload == {
+            "name": "calibrate",
+            "request_id": "keyboard-1",
+            "source": "keyboard",
+            "result": "refused",
+            "note": "Calibrate works only while the task is paused; pause it first",
+        }
+        assert "calibrate key during a trial refused" in caplog.text
+        assert names.count("TRIAL_END") == 1  # one trial, run to its end
+        assert live_monitor.states[-1]["status"] == "complete"
+        # Listed on the page, under the buttons, as the key at the rig.
+        (record,) = [c for c in live_monitor.states[-1]["commands"] if c["source"] == "keyboard"]
+        assert (record["name"], record["result"]) == ("calibrate", "refused")
 
     def test_a_click_on_a_rig_without_a_tracker_says_so(self, tmp_path: Path, caplog):
         """The server accepts Validate whether or not a tracker is wired, so
@@ -1318,13 +1435,14 @@ class TestPage:
     def test_every_allowed_command_has_a_button(self):
         # A command the server would accept but the page has no button for is
         # a control nobody can reach; a button for a command the server
-        # refuses is a control that silently does nothing. The two lists are
-        # kept equal so neither can happen.
-        from alhazen.live_monitor.runtime import _ALLOWED_COMMANDS
+        # refuses is a control that silently does nothing. The page draws one
+        # button per name the session lists (OperatorCommands.controls, in
+        # ORDER), so ORDER and the server's names are kept equal.
+        from alhazen.live_monitor.controls import KNOWN_COMMANDS
+        from alhazen.session.operator_commands import ORDER
 
-        html = self.page()
-        buttons = set(re.findall(r'data-command="([a-z_]+)"', html))
-        assert buttons == _ALLOWED_COMMANDS
+        assert set(ORDER) == KNOWN_COMMANDS and len(ORDER) == len(KNOWN_COMMANDS)
+        assert "data-controls-host" in self.page()
 
     def test_the_calibrating_status_has_its_own_colour(self):
         # The status a procedure publishes under has its own colour. What the
@@ -1583,6 +1701,75 @@ class TestTheChildDoesNotLeak:
         assert len(started) == 1 and len(stopped) == 1
 
 
+def _declarations(body: str) -> dict[str, str]:
+    """A CSS rule's declarations as {property: value}."""
+    pairs = (part.split(":", 1) for part in body.split(";") if ":" in part)
+    return {name.strip(): value.strip() for name, value in pairs}
+
+
+class TestOffButtonsAndThePanelBand:
+    """The stylesheet's part of two phone and pointer fixes, checked against
+    the file (tests/js does not run CSS; the screenshots are in the round-3
+    report). An off command button (aria-disabled) once looked hovered under
+    the pointer after a click on it; the panel row on a phone scrolled
+    sideways and hid its last name under the theme button."""
+
+    @staticmethod
+    def _rules():
+        """(selector, declarations) for every rule, a selector list split at
+        its top-level commas (not the ones inside :is(…) or :not(…))."""
+        from alhazen.live_monitor import runtime
+
+        css = (runtime._ASSETS / "live_monitor.css").read_text(encoding="utf-8")
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            depth, start = 0, 0
+            for i, char in enumerate(selectors + ","):
+                depth += {"(": 1, ")": -1}.get(char, 0)
+                if char == "," and depth == 0:
+                    yield " ".join(selectors[start:i].split()), _declarations(body)
+                    start = i + 1
+
+    def test_no_hover_or_press_rule_restyles_an_off_button(self):
+        """Every `button.control` :hover/:active rule either leaves an off
+        button out or is the one guard that keeps the off look."""
+        guards = []
+        for selector, body in self._rules():
+            if "button.control" not in selector or not re.search(r":hover|:active", selector):
+                continue
+            if ':not([aria-disabled="true"])' in selector:
+                continue
+            assert '[aria-disabled="true"]' in selector, selector
+            guards.append((selector, body))
+        assert len(guards) == 1, guards
+        selector, body = guards[0]
+        for state in (":hover", ":active", ":focus"):
+            assert state in selector, selector
+        assert ':not([data-pending="true"])' in selector, "a waiting command keeps its own look"
+        off = [
+            b
+            for s, b in self._rules()
+            if s == 'button.control[aria-disabled="true"]' and "background" in b
+        ][-1]
+        assert body and all(off.get(prop) == value for prop, value in body.items()), (body, off)
+
+    def test_labels_on_the_trial_picture_are_filled_text(self):
+        """A label is an annotation by default, and the annotation rule's
+        fill: none and stroke once drew it as hollow outlined letters."""
+        rules = dict(self._rules())
+        label = rules[".trial-stage-box text.trial-shape"]
+        assert label["fill"] == "var(--ink-2)" and label["stroke"] == "none", label
+        # Scoped to the stage, (0,2,1), so it outranks the role rules' (0,2,0).
+        assert "fill" in rules[".trial-shape.role-annotation"]
+
+    def test_the_narrow_band_wraps_its_panel_row(self):
+        """Under 860 px the panel row wraps rather than scrolling sideways."""
+        sections = [body for selector, body in self._rules() if selector == ".sections"]
+        assert sections, "no .sections rule"
+        assert not any("overflow-x" in body for body in sections)
+        assert all(body.get("flex-wrap", "wrap") == "wrap" for body in sections)
+
+
 class TestFigureConventionsInTheRenderer:
     """Checked against the stylesheet, which tests/js does not execute. The
     renderer's own figure conventions (colour slots, error-bar legends,
@@ -1598,7 +1785,6 @@ class TestFigureConventionsInTheRenderer:
         """A stylesheet `opacity` outranks the SVG attribute the script hides
         the crosshair with, and left a stray vertical line at x = 0 on every
         line chart."""
-        import re
 
         css = self._asset("live_monitor.css")
         rule = re.search(r"\.hairline\s*\{([^}]*)\}", css)

@@ -22,6 +22,10 @@ The rules, so the number is one a person can plan on:
   one that differs.
 - Simulate mode's time is the simulated session's own, paced at that refresh
   rate; how fast this machine renders it is not estimated.
+- How many conditions run, and how many trials of each, come from the same
+  drained schedule as the total (``PlannedSchedule.cell_counts``), never
+  from the params by hand; an adaptive plan gives each estimator's bounds,
+  or says its stopping rule decides.
 
 Nothing here opens a window or a device, writes a file, draws from a
 session's generators or runs the params hook (which may read or write a
@@ -51,6 +55,9 @@ SCHEMA = 1
 # Test and simulate turn an adaptive run down to this many trials
 # (build_mode_session's default, which the command line does not change).
 REHEARSAL_ADAPTIVE_TRIALS = 10
+# The per-condition list in an answer stops here: the groups by trial count
+# always cover every condition, the list is for reading a few.
+MAX_CONDITION_ROWS = 200
 
 
 # ----------------------------------------------------------------------
@@ -88,6 +95,60 @@ def range_text(low: float, high: float | None, expected: float | None) -> str:
 
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+# ----------------------------------------------------------------------
+# Conditions
+# ----------------------------------------------------------------------
+
+
+def _condition_label(condition: Condition) -> str:
+    """``motion=static, side=-1``: a cell as its factors' levels."""
+    return ", ".join(f"{k}={v}" for k, v in condition.params.items()) or "(no factors)"
+
+
+def planned_conditions(schedule: PlannedSchedule) -> dict[str, Any]:
+    """The conditions a fixed plan serves and how many trials of each:
+    ``conditions`` (how many), ``groups`` (``[{trials, conditions}]``, most
+    trials first: every condition, by its count) and ``rows`` (each
+    condition's label and count, sorted by label, the first
+    ``MAX_CONDITION_ROWS``)."""
+    if schedule.cell_counts is not None:
+        cells = list(schedule.cell_counts)
+    else:
+        # A schedule a task built itself, without the counts: the conditions
+        # it lists, counted as listed.
+        counted: dict[str, list[Any]] = {}
+        for condition in schedule.conditions():
+            key = repr(sorted(condition.params.items(), key=lambda kv: kv[0]))
+            counted.setdefault(key, [condition, 0])[1] += 1
+        cells = [(c, n) for c, n in counted.values()]
+    by_count: dict[int, int] = {}
+    for _, n in cells:
+        by_count[n] = by_count.get(n, 0) + 1
+    rows = sorted(((_condition_label(c), n) for c, n in cells), key=lambda row: row[0])
+    return {
+        "conditions": len(cells),
+        "groups": [
+            {"trials": t, "conditions": by_count[t]} for t in sorted(by_count, reverse=True)
+        ],
+        "rows": [{"label": label, "trials": n} for label, n in rows[:MAX_CONDITION_ROWS]],
+        "rows_total": len(cells),
+    }
+
+
+def adaptive_conditions(schedule: AdaptiveSchedule) -> dict[str, Any]:
+    """What an adaptive plan says about its conditions: how many (None when
+    it names none: a search choosing its stimuli as it runs), who decides
+    each one's trials, and each estimator's bounds when it has them."""
+    named = [c for c in schedule.conditions if c.params]
+    per = schedule.per_estimator
+    return {
+        "conditions": len(named) if named else None,
+        "decided_by": schedule.decided_by,
+        "estimators": schedule.estimators,
+        "per_estimator": None if per is None else {"min": per[0], "max": per[1]},
+    }
 
 
 # ----------------------------------------------------------------------
@@ -210,6 +271,7 @@ def estimate_trials(
     if isinstance(schedule, PlannedSchedule):
         conditions = schedule.conditions()
         timings = [timer(c) for c in conditions]
+        per_condition = planned_conditions(schedule)
         counts: dict[str, Any] = {
             "kind": "planned",
             "trials": schedule.n_trials,
@@ -217,7 +279,8 @@ def estimate_trials(
             "blocks": len(schedule.blocks),
             "breaks": schedule.breaks,
             "breaks_max": schedule.breaks,
-            "conditions": schedule.n_cells,
+            "conditions": per_condition["conditions"],
+            "per_condition": per_condition,
         }
         breaks_min = schedule.breaks
         breaks_max: int | None = schedule.breaks
@@ -227,6 +290,7 @@ def estimate_trials(
         assert isinstance(schedule, AdaptiveSchedule)
         conditions = list(schedule.conditions)
         timings = [timer(c) for c in conditions]
+        per_condition = adaptive_conditions(schedule)
         counts = {
             "kind": "adaptive",
             "trials": schedule.min_trials,
@@ -234,7 +298,8 @@ def estimate_trials(
             "blocks": None,
             "breaks": schedule.min_breaks,
             "breaks_max": schedule.max_breaks,
-            "conditions": len(conditions),
+            "conditions": per_condition["conditions"],
+            "per_condition": per_condition,
         }
         breaks_min, breaks_max = schedule.min_breaks, schedule.max_breaks
         validate = schedule.validate_after_break
@@ -407,6 +472,26 @@ def _all_same(timings: Sequence[TrialTiming]) -> bool:
     return all(t.spans == first for t in timings)
 
 
+def condition_text(counts: Mapping[str, Any]) -> str:
+    """``72 conditions × 8 trials``, ``24 conditions, 8–16 trials each``,
+    ``6 conditions, trials decided by the staircase``: what each condition
+    runs, as the page says it beside the total ('' when nothing says)."""
+    per = counts.get("per_condition")
+    n = counts.get("conditions")
+    if not per:
+        return ""
+    if counts.get("kind") == "planned":
+        groups = per["groups"]
+        if not groups or not n:
+            return ""
+        if len(groups) == 1:
+            return f"{_plural(n, 'condition')} × {_plural(groups[0]['trials'], 'trial')}"
+        low, high = groups[-1]["trials"], groups[0]["trials"]
+        return f"{_plural(n, 'condition')}, {low}–{high} trials each"
+    decided = f"trials decided by {per['decided_by']}"
+    return f"{_plural(n, 'condition')}, {decided}" if n else decided
+
+
 def _count_text(counts: Mapping[str, Any]) -> str:
     trials = counts["trials"]
     high = counts.get("trials_max", trials)
@@ -416,6 +501,9 @@ def _count_text(counts: Mapping[str, Any]) -> str:
         text = f"at least {trials} trials"
     else:
         text = f"{trials}–{high} trials"
+    each = condition_text(counts)
+    if each:
+        text = f"{each} = {text}" if counts.get("kind") == "planned" else f"{text} ({each})"
     if counts.get("blocks"):
         text += f" in {_plural(counts['blocks'], 'block')}"
     return text

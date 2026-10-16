@@ -364,6 +364,112 @@ class TestEstimateTrials:
         assert any("Stopping rule" in a for a in answer["assumptions"])
 
 
+# ----------------------------------------------------------------------
+# Conditions: how many, and how many trials of each (from the drain)
+# ----------------------------------------------------------------------
+
+
+class TestConditionCounts:
+    def test_the_drain_counts_each_cell_block_number_aside(self):
+        rng = np.random.default_rng(1)
+        sources = [
+            ConstantStimuli({"motion": [m], "side": [-1, 1]}, n_per_condition=2, rng=rng)
+            for m in ("static", "moving", "static", "moving")
+        ]
+        schedule = timing.drain(BlockPlan(sources, rng=rng, breaks=True))
+        counts = {(c.params["motion"], c.params["side"]): n for c, n in schedule.cell_counts or ()}
+        # Each motion level runs in two blocks of 2 per side: 4 of each cell,
+        # one cell per (motion, side) whatever block served it.
+        assert counts == {(m, s): 4 for m in ("static", "moving") for s in (-1, 1)}
+        assert all("block" not in c.params for c, _ in schedule.cell_counts or ())
+        assert sum(n for _, n in schedule.cell_counts or ()) == schedule.n_trials
+
+    def test_unequal_counts_are_kept_per_cell(self):
+        rng = np.random.default_rng(4)
+        sources = [
+            SimpleSequence([Condition({"x": 1}), Condition({"x": 2})], n_repeats=2, rng=rng),
+            SimpleSequence([Condition({"x": 1})], n_repeats=3, rng=rng),
+        ]
+        schedule = timing.drain(BlockPlan(sources, rng=rng))
+        assert {c.params["x"]: n for c, n in schedule.cell_counts or ()} == {1: 5, 2: 2}
+        per = est.planned_conditions(schedule)
+        assert per["conditions"] == 2
+        assert per["groups"] == [{"trials": 5, "conditions": 1}, {"trials": 2, "conditions": 1}]
+        assert {r["label"]: r["trials"] for r in per["rows"]} == {"x=1": 5, "x=2": 2}
+        words = est.condition_text({"kind": "planned", "conditions": 2, "per_condition": per})
+        assert words == "2 conditions, 2–5 trials each"
+
+    def test_a_schedule_built_without_counts_is_counted_as_it_lists(self):
+        a, b = Condition({"x": 1}), Condition({"x": 2})
+        schedule = timing.PlannedSchedule(blocks=((a, b, a),), breaks=0)
+        per = est.planned_conditions(schedule)
+        assert per["groups"] == [{"trials": 2, "conditions": 1}, {"trials": 1, "conditions": 1}]
+
+    def test_the_answer_says_conditions_times_trials(self, tmp_path):
+        task = TimedTask(TimedParams())
+        answer = est.estimate_trials(Mode.RUN, task, task.params, load_rig(rig(tmp_path)))
+        counts = answer["counts"]
+        # 2 levels x 2 sides, 3 per condition in each of 2 blocks.
+        assert counts["conditions"] == 4
+        assert counts["per_condition"]["groups"] == [{"trials": 6, "conditions": 4}]
+        assert len(counts["per_condition"]["rows"]) == 4
+        assert {r["label"] for r in counts["per_condition"]["rows"]} == {
+            f"level={lv}, side={sd}" for lv in ("a", "b") for sd in (-1, 1)
+        }
+        assert est.condition_text(counts) == "4 conditions × 6 trials"
+        # The answer still goes out as JSON, as run.py prints it.
+        json.dumps(answer, allow_nan=False)
+
+    def test_test_mode_counts_the_reduced_plan(self, tmp_path):
+        task = TimedTask(TimedParams())
+        answer = est.estimate_trials(
+            Mode.TEST, task, task.params, load_rig(rig(tmp_path)), trials_per_condition=1
+        )
+        groups = answer["counts"]["per_condition"]["groups"]
+        assert sum(g["trials"] * g["conditions"] for g in groups) == answer["counts"]["trials"]
+
+    def test_the_counted_but_not_timed_headline_names_them(self, tmp_path):
+        task = UntimedTask(TimedParams())
+        answer = est.estimate_trials(Mode.RUN, task, task.params, load_rig(rig(tmp_path)))
+        assert answer["headline"].startswith("4 conditions × 6 trials = 24 trials in 2 blocks")
+
+    def test_an_adaptive_plan_gives_each_staircases_bounds(self, tmp_path):
+        params = TimedParams(
+            paradigm=SchedulerConfig(
+                kind="staircase",
+                staircase=StaircaseConfig(
+                    parameter="c",
+                    start=1,
+                    step=0.1,
+                    n_trials=40,
+                    n_reversals=8,
+                    interleave_by="level",
+                ),
+            )
+        )
+        task = TimedTask(params)
+        answer = est.estimate_trials(Mode.RUN, task, params, load_rig(rig(tmp_path)))
+        per = answer["counts"]["per_condition"]
+        assert answer["counts"]["conditions"] == 4
+        assert per == {
+            "conditions": 4,
+            "decided_by": "the staircase",
+            "estimators": 2,
+            "per_estimator": {"min": 8, "max": 40},
+        }
+        assert est.condition_text(answer["counts"]) == (
+            "4 conditions, trials decided by the staircase"
+        )
+
+    def test_a_search_naming_no_conditions_does_not_claim_one(self):
+        schedule = timing.AdaptiveSchedule(min_trials=150, max_trials=209, stopping_rule="r")
+        per = est.adaptive_conditions(schedule)
+        assert per["conditions"] is None
+        assert per["per_estimator"] is None
+        counts = {"kind": "adaptive", "conditions": None, "per_condition": per}
+        assert est.condition_text(counts) == "trials decided by the stopping rule"
+
+
 class TestWords:
     @pytest.mark.parametrize(
         ("low", "high", "expected", "text"),
