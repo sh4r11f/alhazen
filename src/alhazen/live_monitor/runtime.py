@@ -1226,7 +1226,16 @@ def _serve(
         if slot is not None:
             threading.Thread(target=pump_slot, args=(slot, take), daemon=True).start()
     # --- end Trial view ---------------------------------------------------
+    # The session that started this child. If it dies without stopping it (it
+    # was killed: SIGKILL, a dashboard's kill after a hung exit, Task Manager),
+    # the child must not outlive it: an orphan would keep the port, the
+    # session's inherited pipes and the resource tracker alive indefinitely.
+    # None when _serve runs in the calling process (nothing to outlive).
+    parent = mp.parent_process()
     while not stop.is_set():
+        if parent is not None and not parent.is_alive():
+            log.warning("live monitor: the session process is gone; stopping")
+            break
         server.handle_request()
     server.server_close()
 

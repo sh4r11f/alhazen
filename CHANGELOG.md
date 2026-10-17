@@ -65,6 +65,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `POST /api/stream`, `GET /api/streams`, `streams` in every state.
   docs/live_monitor.md, "Switching streams off".
 
+### Fixed
+
+- **The live monitor no longer outlives a killed session.** Its server child (and the
+  multiprocessing resource tracker with it) used to keep running, holding its port and the
+  session's inherited pipes, when the session was killed without stopping it (a dashboard's
+  kill after a run hung at exit, SIGKILL, Task Manager). It now notices within a fraction of
+  a second and exits.
+
 ## 3.1.0 - 2026-10-17
 
 3.1 adds the Experiment Platform: a catalogue and methods reader for alhazen
