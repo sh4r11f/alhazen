@@ -92,10 +92,20 @@ alhazen platform serve --config /etc/alhazen-platform.toml
   `trusted_proxy` to the proxy's address so sign-in throttling sees the client address).
   The server refuses to start on a non-loopback address without that setting, and refuses
   an `http://` public URL that is not loopback.
+- With `trusted_proxy` set, the client address used for sign-in throttling is the rightmost
+  `X-Forwarded-For` entry, taken only from connections that come from that proxy address
+  (waitress drops forwarding headers from every other peer). The proxy must append the
+  client address (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
+  Without it, every client behind the proxy shares one throttling bucket.
+- `public_catalogue = true` lets visitors browse the catalogue, read methods and download
+  published files without an account; a Sign in button opens the sign-in card. Copies,
+  uploads, publishing and My experiments still need an account. The default (`false`)
+  shows only the sign-in card.
 - Accounts: `alhazen platform users add|list|passwd|disable|enable NAME --config FILE`
   (`--password-stdin` for scripts). Passwords have at least 12 characters and are stored as
-  scrypt hashes. Changing a password or disabling a user ends their sessions. There is no
-  self-registration.
+  scrypt hashes. Changing a password or disabling a user ends their sessions, including a
+  sign-in that was being checked at that moment (each session is bound to the account's
+  credential generation). There is no self-registration.
 - Catalogue: the operator refreshes it on the server with
   `alhazen platform refresh --store /srv/alhazen-platform --config sources.toml --publisher <uid> --publisher-name "Lab"`
   (`alhazen platform users list` shows uids). Users publish their own copies from the web

@@ -110,7 +110,7 @@ function createPoller() {
 
 function useStandaloneTheme() {
   const media = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-  const stored = () => { try { const v = window.localStorage.getItem(THEME_KEY); return v === 'dark' || v === 'light' ? v : ''; } catch (e) { return ''; } };
+  const stored = () => { try { const v = window.localStorage.getItem(THEME_KEY); return v === 'dark' || v === 'light' ? v : ''; } catch (e) { console.warn('The saved theme choice could not be read; following the system theme.', e); return ''; } };
   const [choice, setChoice] = React.useState(stored);
   const [system, setSystem] = React.useState(media && media.matches ? 'dark' : 'light');
   React.useEffect(() => {
@@ -136,15 +136,19 @@ function useStandaloneTheme() {
 const enc = encodeURIComponent;
 let httpHostSerial = 0;
 
-function createHttpHost({ session, transport, onSignedOut, useThemeHook }) {
+function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHook }) {
   const poller = createPoller();
   const { request } = transport;
   const unavailable = (what) => () => { throw new Error(what + ' is not available on this host.'); };
+  // A visitor of a public catalogue: a host with accounts and nobody signed in.
+  const visitor = !session.viewer && !!(session.capabilities || {}).signIn;
   const host = {
     kind: session.kind,
     key: 'http:' + (++httpHostSerial),
     viewer: session.viewer || null,
-    capabilities: { ...(session.capabilities || {}), changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, themeToggle: true },
+    // A visitor of a public catalogue reads only: every change needs an account (the server
+    // refuses them too; these flags keep the page from offering them).
+    capabilities: { ...(session.capabilities || {}), ...(visitor ? { fork: false, publish: false, uploadRevision: false, downloadRevision: false } : {}), changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, themeToggle: true },
     art: { url: transport.url('api/art/'), encodePath: (p) => String(p).split('/').map(enc).join('/'), error: null },
     fontStylesheet: null,
     inlineStyles: false,
@@ -160,7 +164,7 @@ function createHttpHost({ session, transport, onSignedOut, useThemeHook }) {
       const a = await request('GET', 'api/assets');
       return a && typeof a.hero === 'string' ? { ...a, hero: a.hero.replace(/^(<svg\b[^>]*?)\s+style="[^"]*"/, '$1') } : a;
     }, cb, onError),
-    subscribeForks: (cb, onError) => poller.subscribe(async () => (await request('GET', 'api/forks')).forks || {}, cb, onError),
+    subscribeForks: (cb, onError) => (!visitor ? poller.subscribe(async () => (await request('GET', 'api/forks')).forks || {}, cb, onError) : (cb({}), () => undefined)),
     subscribeMachines: () => undefined,
     subscribeDocs: (listing, cb, onError) => poller.subscribe(() => request('GET', 'api/catalogue/' + enc(listing.uid) + '/' + enc(listing.exp) + '/docs'), cb, onError),
     subscribeForkDocs: (fork, cb, onError) => poller.subscribe(async () => {
@@ -205,6 +209,7 @@ function createHttpHost({ session, transport, onSignedOut, useThemeHook }) {
     showChat: () => undefined,
     openTerminalApp: () => undefined,
     async signOut() { await request('POST', 'api/logout', { json: {} }); onSignedOut(); },
+    signIn: () => (onSignIn ? onSignIn() : undefined),
     refresh: () => poller.refresh(),
   };
   return host;
@@ -216,7 +221,7 @@ function StandalonePage({ theme, children }) {
   return <div className="eh w-full" style={{ ...vars, colorScheme: theme === 'dark' ? 'dark' : 'light' }}>{children}</div>;
 }
 
-function SignInCard({ theme, onSignedIn, transport }) {
+function SignInCard({ theme, onSignedIn, transport, onCancel }) {
   const [username, setUsername] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [error, setError] = React.useState('');
@@ -239,6 +244,7 @@ function SignInCard({ theme, onSignedIn, transport }) {
         <div className="field"><label htmlFor="eh-signin-pass">Password</label><input id="eh-signin-pass" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
         {error ? <p className="eh-signin-error" role="alert">{error}</p> : null}
         <button className="btn btn-primary" type="submit" disabled={busy || !username.trim() || !password}>{busy ? 'Signing in…' : 'Sign in'}</button>
+        {onCancel ? <button className="btn btn-quiet" type="button" onClick={onCancel}>Back to the catalogue</button> : null}
       </form>
     </main>
   </StandalonePage>;
@@ -271,15 +277,22 @@ function StandaloneRoot() {
       .catch((e) => { if (!off) setFailure(e); });
     return () => { off = true; };
   }, []);
-  const host = React.useMemo(() => (session && (session.viewer || !(session.capabilities || {}).signIn)
-    ? createHttpHost({ session, transport, onSignedOut: signedOut, useThemeHook: useStandaloneTheme }) : null),
-  [session && session.kind, session && session.viewer && session.viewer.uid, session && session.csrf, transport]);
+  // A public catalogue (the server's public_catalogue) can be read without an account; the
+  // sign-in card then opens on request (Sign in) instead of in front of everything.
+  const [wantSignIn, setWantSignIn] = React.useState(false);
+  const readable = !!session && (!!session.viewer || !(session.capabilities || {}).signIn || !!session.publicCatalogue);
+  const host = React.useMemo(() => (readable
+    ? createHttpHost({ session, transport, onSignedOut: signedOut, onSignIn: () => setWantSignIn(true), useThemeHook: useStandaloneTheme }) : null),
+  [readable, session && session.kind, session && session.viewer && session.viewer.uid, session && session.csrf, transport]);
   if (failure) {
     const local = !!tokenRef.current || failure.status === 401;
     return <StandaloneMessage theme={themeApi.theme} title="The platform could not be opened"
       text={local ? 'Open the link printed by alhazen platform local; it carries this launch’s access token. (' + (failure.message || failure) + ')' : (failure.message || String(failure))} />;
   }
   if (!session) return <StandalonePage theme={themeApi.theme}><main className="eh-signin"><p className="eh-muted">Loading…</p></main></StandalonePage>;
-  if (!host) return <SignInCard theme={themeApi.theme} transport={transport} onSignedIn={(s) => setSession(s)} />;
+  if (!host || (wantSignIn && !session.viewer)) {
+    return <SignInCard theme={themeApi.theme} transport={transport} onSignedIn={(s) => { setWantSignIn(false); setSession(s); }}
+      onCancel={host ? () => setWantSignIn(false) : null} />;
+  }
   return <PlatformApp host={host} />;
 }

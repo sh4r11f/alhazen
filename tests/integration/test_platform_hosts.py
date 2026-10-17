@@ -194,3 +194,137 @@ def test_the_server_keeps_two_users_apart_and_survives_a_restart(server):  # typ
     # sessions and copies are durable: the same cookie still works after a restart
     status, _, body = request(port, "GET", "/api/forks", headers=ada)
     assert status == 200 and json.loads(body)["forks"][fork["id"]]["head"]["path"] == handle
+
+
+def _from(
+    source: str,
+    port: int,
+    method: str,
+    path: str,
+    *,
+    headers: dict[str, str],
+    body: bytes | None = None,
+) -> tuple[int, bytes]:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20, source_address=(source, 0))
+    try:
+        conn.request(method, path, body=body, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+@pytest.fixture()
+def proxied(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """The server behind a reverse proxy at 127.0.0.2; 127.0.0.1 is any other peer."""
+    try:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.2", 0))
+    except OSError:
+        pytest.skip("this machine cannot use 127.0.0.2 as a second loopback source address")
+    port = free_port()
+    config = tmp_path / "platform.toml"
+    made = cli(
+        "server-init",
+        "--store",
+        str(tmp_path / "store"),
+        "--config",
+        str(config),
+        "--public-url",
+        "https://lab.example.org",
+        "--port",
+        str(port),
+    )
+    assert made.returncode == 0, made.stderr
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "[server]\n", '[server]\ntrusted_proxy = "127.0.0.2"\n', 1
+        ),
+        encoding="utf-8",
+    )
+    added = cli(
+        "users", "add", "ada", "--config", str(config), "--password-stdin", stdin=PASSWORD + "\n"
+    )
+    assert added.returncode == 0, added.stderr
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "alhazen", "platform", "serve", "--config", str(config)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base = {
+        "Host": "lab.example.org",
+        "Content-Type": "application/json",
+        "X-Alhazen-Platform": "1",
+    }
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            if _from("127.0.0.1", port, "GET", "/api/session", headers=base)[0] == 200:
+                break
+        except OSError:
+            pass
+        if time.monotonic() > deadline:
+            proc.kill()
+            raise AssertionError("the server did not answer")
+        time.sleep(0.2)
+    yield port, base
+    proc.terminate()
+    proc.wait(timeout=20)
+
+
+def _login(port: int, source: str, headers: dict[str, str], user: str, password: str) -> int:
+    body = json.dumps({"username": user, "password": password}).encode()
+    return _from(source, port, "POST", "/api/login", headers=headers, body=body)[0]
+
+
+def test_failed_sign_ins_behind_the_proxy_count_per_client(proxied):  # type: ignore[no-untyped-def]
+    port, base = proxied
+    attacker = {**base, "X-Forwarded-For": "198.51.100.1", "X-Forwarded-Proto": "https"}
+    member = {**base, "X-Forwarded-For": "198.51.100.2", "X-Forwarded-Proto": "https"}
+    for i in range(5):
+        assert _login(port, "127.0.0.2", attacker, f"nobody-{i}", "wrong password") == 401
+    # the attacker's client is locked; another client behind the same proxy is not
+    status, body = _from(
+        "127.0.0.2",
+        port,
+        "POST",
+        "/api/login",
+        headers=attacker,
+        body=json.dumps({"username": "x", "password": "y"}).encode(),
+    )
+    assert status == 401 and b"Too many" in body
+    assert _login(port, "127.0.0.2", member, "ada", PASSWORD) == 200
+    # the proxy's address only appears in the header the proxy appends to: a client that
+    # sends its own X-Forwarded-For is still known by the entry the proxy added (rightmost)
+    chained = {**base, "X-Forwarded-For": "198.51.100.2, 198.51.100.1"}
+    status, body = _from(
+        "127.0.0.2",
+        port,
+        "POST",
+        "/api/login",
+        headers=chained,
+        body=json.dumps({"username": "ada", "password": PASSWORD}).encode(),
+    )
+    assert status == 401 and b"Too many" in body
+
+
+def test_forwarding_headers_from_any_other_peer_are_ignored(proxied):  # type: ignore[no-untyped-def]
+    port, base = proxied
+    for i in range(5):
+        spoofed = {**base, "X-Forwarded-For": f"203.0.113.{i}"}
+        assert _login(port, "127.0.0.1", spoofed, f"nobody-{i}", "wrong password") == 401
+    # five different claimed addresses from one real peer are one bucket: that peer is locked
+    fresh = {**base, "X-Forwarded-For": "203.0.113.200"}
+    status, body = _from(
+        "127.0.0.1",
+        port,
+        "POST",
+        "/api/login",
+        headers=fresh,
+        body=json.dumps({"username": "ada", "password": PASSWORD}).encode(),
+    )
+    assert status == 401 and b"Too many" in body
+    # while a client behind the real proxy still signs in
+    member = {**base, "X-Forwarded-For": "198.51.100.7"}
+    assert _login(port, "127.0.0.2", member, "ada", PASSWORD) == 200

@@ -44,7 +44,10 @@ Removed below).
   Mana-only, and on the standalone hosts changing and running a copy are manual.
   `alhazen platform refresh` builds catalogue versions from git at exact commits without
   running experiment code; versions and copies are immutable, and `alhazen platform check`
-  fails on stale or missing documentation. See docs/experiment-platform/.
+  fails on stale or missing documentation. Unlike the hub tooling it was ported from, the
+  parameter reader refuses YAML anchors/aliases (reported per set, not expanded), and a
+  timeline written as text is kept as `timelineText` but not drawn yet. See
+  docs/experiment-platform/.
 - The mouse stand-in (`eyetracker.backend: mouse_sim`) takes
   `eyetracker.calibration_target` and walks its calibration as the
   TRACKPixx3 does: the guide's wait, then the rig's target (standard, chosen

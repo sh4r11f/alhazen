@@ -283,12 +283,17 @@ def refresh_one(
         listing = dict(record["listing"])
         versions = dict((current or {}).get("versions") or {})
         commit7 = str(listing["source"].get("commit", ""))[:7]
-        versions[bid] = {
+        # History is keyed by version (files plus documentation), so a documentation-only
+        # refresh adds an entry rather than overwriting the earlier one.
+        versions[key] = {
             "version": listing.get("version", ""),
             "commit": commit7,
-            "at": (versions.get(bid) or {}).get("at", t),
+            "at": (versions.get(key) or {}).get("at", t),
             "key": key,
+            "bundle": bid,
         }
+        if docs_commit:
+            versions[key]["docsCommit"] = str(docs_commit)[:7]
         listing["versions"] = versions
         listing["versionKey"] = key
         listing["publishedAt"] = (

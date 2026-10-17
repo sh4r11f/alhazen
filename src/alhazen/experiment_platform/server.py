@@ -19,6 +19,13 @@ Configuration (TOML, ``[server]`` table)::
     threads = 8
     trusted_proxy = "127.0.0.1"              # the reverse proxy's address, if any
 
+With ``trusted_proxy`` set, waitress takes the client address from the rightmost entry of
+``X-Forwarded-For`` (the address the proxy itself saw: one trusted hop), and the scheme from
+``X-Forwarded-Proto``, but only on connections that come from that address; it removes
+those headers from every other connection. The proxy must append the client address to
+``X-Forwarded-For`` (nginx: ``proxy_add_x_forwarded_for``). Sign-in throttling then counts
+failures per client, not per proxy.
+
 Startup refuses unsafe combinations instead of warning: a non-loopback ``host`` without
 ``tls_terminated_by_proxy = true`` (passwords would cross the network in clear), an
 ``http://`` public URL anywhere but loopback, or a store that is not a platform store.
@@ -200,9 +207,9 @@ class ServerGate:
         return ("Set-Cookie", "; ".join(attrs))
 
     def _client(self, request: Request) -> str:
-        if self.config.trusted_proxy and request.client == self.config.trusted_proxy:
-            forwarded = (request.header("X-Forwarded-For") or "").split(",")[-1].strip()
-            return forwarded or request.client
+        # REMOTE_ADDR as waitress leaves it: the forwarded client when the connection came
+        # from the trusted proxy, the real peer otherwise. Raw forwarding headers are never
+        # read here, so a client cannot choose its own throttling bucket.
         return request.client
 
     def login(
@@ -260,7 +267,9 @@ def serve(
     }
     if config.trusted_proxy:
         options.update(
-            trusted_proxy=config.trusted_proxy, trusted_proxy_headers={"x-forwarded-proto"}
+            trusted_proxy=config.trusted_proxy,
+            trusted_proxy_count=1,
+            trusted_proxy_headers={"x-forwarded-for", "x-forwarded-proto"},
         )
     if config.secure:
         options["url_scheme"] = "https"

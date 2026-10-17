@@ -6,6 +6,13 @@ token given to the browser in an HttpOnly cookie; only its SHA-256 is stored, wi
 per-session CSRF token, an absolute expiry and the user it belongs to. Sign-in failures
 are throttled per user name and per client address.
 
+Every user row carries a credential generation, raised in the same transaction that
+changes the password or disables the account and deletes its sessions. A session records
+the generation it was issued under, it is inserted only if that generation is still the
+user's (an atomic conditional insert), and a lookup accepts it only while the two agree.
+So a sign-in that verified a password just before a reset or a disable cannot leave a
+working session behind.
+
 The decision this module hides is how identity is proven and remembered. The rest of the
 platform sees only a ``Principal(uid, name)``.
 """
@@ -22,6 +29,7 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 
 from alhazen.experiment_platform.errors import AuthError, Conflict, InvalidRequest, NotFound
@@ -42,14 +50,16 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   password TEXT NOT NULL,
   created INTEGER NOT NULL,
-  disabled INTEGER NOT NULL DEFAULT 0
+  disabled INTEGER NOT NULL DEFAULT 0,
+  generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,
   uid TEXT NOT NULL REFERENCES users(uid),
   csrf TEXT NOT NULL,
   created INTEGER NOT NULL,
-  expires INTEGER NOT NULL
+  expires INTEGER NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -102,6 +112,12 @@ class Accounts:
         self._dummy = hash_password(secrets.token_urlsafe(16))
         with self._db() as db:
             db.executescript(_SCHEMA)
+            for table in ("users", "sessions"):
+                columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                if "generation" not in columns:  # a database from before generations
+                    db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
+                    )
         with contextlib.suppress(OSError):
             self.path.chmod(0o600)
 
@@ -114,6 +130,20 @@ class Accounts:
             conn.execute("PRAGMA busy_timeout=30000")
             self._local.conn = conn
         return conn
+
+    @contextlib.contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction (the connection is in autocommit mode, so each statement
+        would otherwise commit on its own). BEGIN IMMEDIATE takes the write lock at once,
+        so credential changes and session issuance are serialized."""
+        db = self._db()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            yield db
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
 
     # ------------------------------------------------------------------ users
     def add_user(self, username: str, name: str, password: str) -> Principal:
@@ -145,10 +175,11 @@ class Accounts:
 
     def set_password(self, username: str, password: str) -> None:
         self._check_password(password)
-        with self._db() as db:
+        hashed = hash_password(password)
+        with self._transaction() as db:
             changed = db.execute(
-                "UPDATE users SET password = ? WHERE username = ?",
-                (hash_password(password), username.strip().lower()),
+                "UPDATE users SET password = ?, generation = generation + 1 WHERE username = ?",
+                (hashed, username.strip().lower()),
             ).rowcount
             if not changed:
                 raise NotFound(f"No user {username!r}")
@@ -158,9 +189,9 @@ class Accounts:
             )
 
     def set_disabled(self, username: str, disabled: bool) -> None:
-        with self._db() as db:
+        with self._transaction() as db:
             changed = db.execute(
-                "UPDATE users SET disabled = ? WHERE username = ?",
+                "UPDATE users SET disabled = ?, generation = generation + 1 WHERE username = ?",
                 (1 if disabled else 0, username.strip().lower()),
             ).rowcount
             if not changed:
@@ -207,7 +238,8 @@ class Accounts:
         row = (
             self._db()
             .execute(
-                "SELECT uid, name, password, disabled FROM users WHERE username = ?", (username,)
+                "SELECT uid, name, password, disabled, generation FROM users WHERE username = ?",
+                (username,),
             )
             .fetchone()
         )
@@ -218,13 +250,20 @@ class Accounts:
         token = secrets.token_urlsafe(32)
         csrf = secrets.token_urlsafe(24)
         now = int(time.time())
-        with self._db() as db:
+        with self._transaction() as db:
             db.execute("DELETE FROM sessions WHERE expires < ?", (now,))
-            db.execute(
-                "INSERT INTO sessions (token_hash, uid, csrf, created, expires) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (_token_hash(token), row[0], csrf, now, now + self.session_seconds),
-            )
+            # Issued only if the password just verified is still the user's credential and
+            # the account is still enabled: a reset or disable since then raised the
+            # generation, and this inserts nothing.
+            issued = db.execute(
+                "INSERT INTO sessions (token_hash, uid, csrf, created, expires, generation) "
+                "SELECT ?, uid, ?, ?, ?, generation FROM users "
+                "WHERE uid = ? AND generation = ? AND password = ? AND disabled = 0",
+                (_token_hash(token), csrf, now, now + self.session_seconds, row[0], row[4], row[2]),
+            ).rowcount
+        if not issued:
+            self._fail(keys)
+            raise AuthError("The user name or password is not right")
         return token, csrf, Principal(row[0], row[1])
 
     def session(self, token: str | None) -> tuple[Principal, str] | None:
@@ -235,7 +274,7 @@ class Accounts:
             self._db()
             .execute(
                 "SELECT u.uid, u.name, s.csrf, s.expires, u.disabled "
-                "FROM sessions s JOIN users u ON u.uid = s.uid "
+                "FROM sessions s JOIN users u ON u.uid = s.uid AND u.generation = s.generation "
                 "WHERE s.token_hash = ?",
                 (_token_hash(token),),
             )
@@ -247,8 +286,7 @@ class Accounts:
 
     def logout(self, token: str | None) -> None:
         if token:
-            with self._db() as db:
-                db.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
+            self._db().execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
 
     def backup(self, dest: Path) -> Path:
         """A consistent copy of the database (SQLite's online backup)."""

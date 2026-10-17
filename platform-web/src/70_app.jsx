@@ -377,7 +377,7 @@ function PlatformApp({ host }) {
     if (!L) return published === null ? <p className="eh-muted">Loading…</p> : <div className="empty"><h3>This experiment is not on the marketplace</h3><p>It may have been taken off. <button className="btn btn-quiet" onClick={() => go({v:'browse'})}>Browse experiments</button></p></div>;
     const d = docs[L.key];
     const mine = forkedFrom[L.key];
-    const actions = mine ? <><button className="btn btn-primary" onClick={() => go({v:'fork',id:mine})}>Open my copy</button><button className="btn btn-line" disabled={!!busy} onClick={() => forkListing(L)}>Fork again</button></> : <><button className="btn btn-primary" disabled={!!busy || !viewerUid} onClick={() => forkListing(L)}>Add to library</button>{caps.changeWithMana ? <button className="btn btn-line" disabled={!!busy || !viewerUid} onClick={() => setDialog({kind:'forkai',L,text:''})}>Fork with AI</button> : null}</>;
+    const actions = mine ? <><button className="btn btn-primary" onClick={() => go({v:'fork',id:mine})}>Open my copy</button><button className="btn btn-line" disabled={!!busy} onClick={() => forkListing(L)}>Fork again</button></> : <>{caps.signIn && !viewerUid ? <button className="btn btn-primary" onClick={() => host.signIn()}>Sign in to add to library</button> : <button className="btn btn-primary" disabled={!!busy || !viewerUid} onClick={() => forkListing(L)}>Add to library</button>}{caps.changeWithMana ? <button className="btn btn-line" disabled={!!busy || !viewerUid} onClick={() => setDialog({kind:'forkai',L,text:''})}>Fork with AI</button> : null}</>;
     const onFile = async file => {
       go({v:'exp',id:L.key,tab:'files'});
       try { await openFile(L.bundle.path,file); }
@@ -427,7 +427,7 @@ function PlatformApp({ host }) {
                 {live ? statusChip(live.status) : null}
               </button>);
           })}
-        </div> : <div className="empty"><h3>Nothing here yet</h3><p>{caps.newWithMana ? 'Fork an experiment from Browse, or start a new one.' : 'Fork an experiment from Browse.'}</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-line" onClick={() => go({ v: 'browse' })}>Browse experiments</button></div></div>}
+        </div> : (caps.signIn && !viewerUid ? <div className="empty"><h3>Sign in to keep experiments</h3><p>Your copies are private to your account.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-primary" onClick={() => host.signIn()}>Sign in</button></div></div> : <div className="empty"><h3>Nothing here yet</h3><p>{caps.newWithMana ? 'Fork an experiment from Browse, or start a new one.' : 'Fork an experiment from Browse.'}</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-line" onClick={() => go({ v: 'browse' })}>Browse experiments</button></div></div>)}
       </>
     );
   }
@@ -648,9 +648,10 @@ function PlatformApp({ host }) {
         <nav className="eh-nav" aria-label="Hub">
           {[['home', 'Home'], ['browse', 'Browse'], ['mine', 'My experiments'], ['machines', 'My machines']].filter(([k]) => k !== 'machines' || caps.machines).map(([k, label]) => <button key={k} aria-current={navCur === k ? 'page' : undefined} onClick={() => go({ v: k })}>{label}{k === 'mine' && forkList.length ? <span className="eh-count">{forkList.length}</span> : null}{k === 'machines' && machines.sessions.length ? <span className="eh-count" title="Terminal windows open">{machines.sessions.length}</span> : null}</button>)}
         </nav>
-        {caps.themeToggle || (caps.signIn && host.viewer) ? <div className="eh-host-tools">
+        {caps.themeToggle || caps.signIn ? <div className="eh-host-tools">
           {caps.signIn && host.viewer ? <span className="eh-viewer">{host.viewer.name}</span> : null}
           {caps.signIn && host.viewer ? <button className="btn btn-quiet btn-small" onClick={() => host.signOut()}>Sign out</button> : null}
+          {caps.signIn && !host.viewer ? <button className="btn btn-quiet btn-small" onClick={() => host.signIn()}>Sign in</button> : null}
           {caps.themeToggle ? <button className="btn btn-quiet btn-small eh-theme-toggle" aria-label={theme === 'dark' ? 'Use the light theme' : 'Use the dark theme'} onClick={toggleTheme}>{theme === 'dark' ? 'Light' : 'Dark'}</button> : null}
         </div> : null}
       </div></header>

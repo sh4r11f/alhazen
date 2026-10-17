@@ -70,6 +70,22 @@ def fork_handle(fork_id: str, bundle_id: str) -> str:
     return f"F~{fork_id}~{bundle_id}"
 
 
+def _version_entry(listing: Mapping[str, Any], wanted: str) -> tuple[str, dict[str, Any] | None]:
+    """(version key, entry) of a listing's history for a version key or a bundle id. A
+    bundle id may have several versions (documentation refreshed); the latest is meant."""
+    versions = listing.get("versions") or {}
+    if isinstance(versions.get(wanted), dict):
+        return wanted, versions[wanted]
+    matches = [
+        (k, v)
+        for k, v in versions.items()
+        if isinstance(v, dict) and (v.get("bundle") or k) == wanted
+    ]
+    if not matches:
+        return wanted, None
+    return max(matches, key=lambda kv: kv[1].get("at") or 0)
+
+
 class PlatformService:
     """The platform over one FileStore."""
 
@@ -119,19 +135,19 @@ class PlatformService:
     def docs(
         self, principal: Principal | None, publisher: str, exp: str, bundle_id: str | None = None
     ) -> dict[str, Any]:
-        """The documentation record of the listing's current version, or of the version of
-        ``bundle_id`` (one the listing has had)."""
+        """The documentation record of the listing's current version, or of the version
+        ``bundle_id`` names: a version key, or a bundle id (its latest version)."""
         self._reader(principal)
         listing = self._listing(publisher, exp)
         if bundle_id is None:
             key = listing.get("versionKey") or listing["bundle"]["id"]
             bid = listing["bundle"]["id"]
         else:
-            bid = check_id(bundle_id, "Version")
-            entry = (listing.get("versions") or {}).get(bid)
+            wanted = check_id(bundle_id, "Version")
+            key, entry = _version_entry(listing, wanted)
             if entry is None:
                 raise NotFound("The listing has no such version")
-            key = entry.get("key") or bid
+            bid = entry.get("bundle") or key
         version = self.store.version(publisher, exp, key)
         docs = dict((version or {}).get("docs") or {})
         shown = dict((version or {}).get("listing") or listing)
@@ -156,7 +172,7 @@ class PlatformService:
             mine = principal is not None and principal.uid == pub
             known = listing is not None and (
                 bid == (listing.get("bundle") or {}).get("id")
-                or bid in (listing.get("versions") or {})
+                or _version_entry(listing, bid)[1] is not None
             )
             if not (known or (mine and self.store.has_bundle(None, bid))):
                 raise NotFound("No such version")
@@ -228,17 +244,23 @@ class PlatformService:
             listing = self._listing(publisher, exp)
             bid = listing["bundle"]["id"]
             self.store.copy_bundle(None, who.uid, bid)
-            version = self.store.version(publisher, exp, listing.get("versionKey") or bid)
+            # The snapshot is named by the catalogue version (files plus documentation), not
+            # the files alone: a documentation-only refresh keeps the bundle and makes a new
+            # version, and its snapshot must sit beside the earlier one, never replace it.
+            # Its content comes only from the immutable version record, so two copies of
+            # one version share one identical snapshot.
+            docs_key = listing.get("versionKey") or bid
+            version = self.store.version(publisher, exp, docs_key)
             if version is not None and version.get("docs"):
                 self.store.put_fork_docs(
                     who.uid,
-                    bid,
+                    docs_key,
                     {
                         **version["docs"],
                         "source": {
                             "publisher": publisher,
                             "exp": exp,
-                            "version": listing.get("version", ""),
+                            "version": (version.get("listing") or {}).get("version", ""),
                         },
                     },
                 )
@@ -268,6 +290,7 @@ class PlatformService:
                     "exp": exp,
                     "title": listing.get("title", exp),
                     "bundle": bid,
+                    "docsKey": docs_key,
                     "version": listing.get("version", ""),
                     "commit": str((listing.get("source") or {}).get("commit", ""))[:7],
                 },
@@ -296,7 +319,8 @@ class PlatformService:
         fork = self._fork(who, fork_id)
         origin = fork.get("origin") or {}
         bid = origin.get("bundle") if not origin.get("scratch") else None
-        docs = self.store.fork_docs(who.uid, bid) if bid else None
+        docs_key = (origin.get("docsKey") or bid) if bid else None
+        docs = self.store.fork_docs(who.uid, docs_key) if docs_key else None
         if docs is not None:
             return {"docs": docs, "readme": None, "stale": False}
         readme = None
@@ -420,7 +444,7 @@ class PlatformService:
             origin = fork.get("origin") or {}
             docs: dict[str, Any] = {}
             if origin.get("bundle") == head:
-                snapshot = self.store.fork_docs(who.uid, head)
+                snapshot = self.store.fork_docs(who.uid, origin.get("docsKey") or head)
                 docs = {k: v for k, v in (snapshot or {}).items() if k != "source"}
             if not self.store.version(who.uid, fork_id, head):
                 self.store.put_version(

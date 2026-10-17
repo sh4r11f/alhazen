@@ -330,3 +330,42 @@ def test_the_command_line_manages_a_server_store(tmp_path: Path, repo: Path, cap
         copy.listing("lab", "fixation-demo") and (tmp_path / "copy" / "accounts.sqlite3").exists()
     )
     assert alhazen_main(["platform"]) == 2
+
+
+def test_a_documentation_only_refresh_is_a_new_version_that_can_be_copied(store, repo):
+    git(repo, "checkout", "-qb", "docs")
+    methods = repo / "docs" / "methods.md"
+    methods.write_text(methods.read_text(encoding="utf-8") + "\nFirst note.\n", encoding="utf-8")
+    git(repo, "commit", "-qam", "docs one")
+    git(repo, "checkout", "-q", "main")
+    docs_spec = spec(repo, docs_ref="docs")
+    [first] = refresh.refresh(store, [docs_spec], LAB)
+    service = PlatformService(store)
+    old_fork, _ = service.fork(ADA, "lab", "fixation-demo")
+    old_docs = service.fork_docs(ADA, old_fork)["docs"]
+    old_key = store.listing("lab", "fixation-demo")["versionKey"]
+
+    git(repo, "checkout", "-q", "docs")
+    methods.write_text(methods.read_text(encoding="utf-8") + "\nSecond note.\n", encoding="utf-8")
+    git(repo, "commit", "-qam", "docs two")
+    git(repo, "checkout", "-q", "main")
+    [second] = refresh.refresh(store, [docs_spec], LAB)
+    listing = store.listing("lab", "fixation-demo")
+    new_key = listing["versionKey"]
+    assert second.bundle_id == first.bundle_id and new_key != old_key
+
+    # a second copy of the same files, now with the new documentation, succeeds
+    new_fork, record = service.fork(ADA, "lab", "fixation-demo")
+    assert record["origin"]["docsKey"] == new_key
+    new_docs = service.fork_docs(ADA, new_fork)["docs"]
+    assert "Second note." in new_docs["methods"] and "Second note." not in old_docs["methods"]
+    # the earlier copy keeps the documentation it was made with
+    assert service.fork_docs(ADA, old_fork)["docs"] == old_docs
+    # both versions stay in the history and each is addressable
+    assert {old_key, new_key} <= set(listing["versions"])
+    assert listing["versions"][old_key]["bundle"] == first.bundle_id
+    assert "Second note." not in service.docs(ADA, "lab", "fixation-demo", old_key)["methods"]
+    assert "Second note." in service.docs(ADA, "lab", "fixation-demo", first.bundle_id)["methods"]
+    # and a third copy of the current version reuses the identical snapshot
+    third, _ = service.fork(ADA, "lab", "fixation-demo")
+    assert service.fork_docs(ADA, third)["docs"] == new_docs

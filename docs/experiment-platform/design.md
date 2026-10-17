@@ -122,7 +122,15 @@ copied at fork time; a fork's documentation never changes by itself.
   the catalogue (local: the token holder; server: signed-in users, or anyone when the
   operator sets `public_catalogue = true`).
 - Forks, private bundles and doc snapshots: readable and writable only by their owner.
-  Another user's fork id returns 404, never 403, so ids do not leak.
+  Another user's fork id returns 404, never 403, so ids do not leak. A doc snapshot is
+  named by the catalogue version it was taken from (`versionKey`: the bundle id, plus the
+  documentation commit when documentation is read from another ref); the fork's origin
+  records it as `docsKey`, so a documentation-only refresh gives later copies a new
+  snapshot and leaves earlier ones untouched. A listing's `versions` history is keyed the
+  same way, each entry naming its `bundle`.
+- Accounts: a session is bound to the account's credential generation, raised in the same
+  transaction that changes a password or disables the account; issuing a session is a
+  conditional insert on that generation, so a sign-in racing a reset cannot survive it.
 - Publishing writes `catalogue/<principal.uid>/<forkId>` only; the publisher name comes
   from the account, not the request. A published bundle is copied (verified) into the
   shared bundle store. Unpublishing removes the listing pointer; versions already forked
@@ -140,7 +148,7 @@ One WSGI application (`experiment_platform.http`) serves both standalone hosts:
 | `GET /api/session` | who is signed in, host kind, capabilities |
 | `POST /api/login`, `POST /api/logout` | server mode only |
 | `GET /api/catalogue` | all listings `{publisher: {exp: listing}}` |
-| `GET /api/catalogue/<pub>/<exp>/docs[?version=<bundleId>]` | documentation record + docsStatus |
+| `GET /api/catalogue/<pub>/<exp>/docs[?version=<versionKey or bundleId>]` | documentation record + docsStatus (a bundle id means its latest version) |
 | `GET /api/bundles/<handle>/meta`, `/chunks/<n>` | bundle files (handle: `L.<pub>.<exp>.<bundleId>` or `F.<forkId>.<bundleId>`) |
 | `GET /api/bundles/<handle>/archive` | the bundle as a zip |
 | `GET /api/forks`, `POST /api/forks` | the principal's forks; fork a listing |

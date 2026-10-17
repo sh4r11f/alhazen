@@ -198,3 +198,26 @@ test('a server sign-in carries the page header the server requires, before any C
   assert.equal(calls[0].headers['X-Alhazen-CSRF'], undefined);
   assert.equal(calls[0].headers['X-Alhazen-Token'], undefined);
 });
+
+test('a visitor of a public catalogue reads only: no copies are fetched and no changes are offered', async () => {
+  const session = { kind: 'server', viewer: null, csrf: null, publicCatalogue: true, capabilities: { signIn: true, fork: true, publish: true, uploadRevision: true, downloadRevision: true } };
+  const { host, calls } = makeHost({ 'GET /api/catalogue': { body: { published: { lab: { dots: { id: 'dots' } } } } } }, session);
+  assert.equal(host.viewer, null);
+  for (const k of ['fork', 'publish', 'uploadRevision', 'downloadRevision']) assert.equal(host.capabilities[k], false, k);
+  let forks;
+  host.subscribeForks((v) => { forks = v; }, () => {});
+  assert.deepEqual(forks, {});
+  let listings;
+  const off = host.subscribeListings((v) => { listings = v; }, (e) => { throw e; });
+  await flush(); await flush();
+  assert.deepEqual(Object.keys(listings), ['lab']);
+  off();
+  assert.equal(calls.filter((c) => new URL(c.url).pathname === '/api/forks').length, 0);
+});
+
+test('a signed-in server user keeps every capability the server grants', () => {
+  const session = { kind: 'server', viewer: { uid: 'u1', name: 'Ada' }, csrf: 'c', capabilities: { signIn: true, fork: true, publish: true } };
+  const { host } = makeHost({}, session);
+  assert.equal(host.capabilities.fork, true);
+  assert.equal(host.capabilities.publish, true);
+});
