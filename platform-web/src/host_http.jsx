@@ -67,6 +67,8 @@ function createTransport({ kind, token, getCsrf, onSignedOut }) {
 
 // A subscription is a fetch the host repeats; `refresh()` re-runs every live one and resolves when
 // all have answered, so a view opened after a write already sees it.
+const UNCHANGED = Symbol('unchanged');
+
 function createPoller() {
   const live = new Set();
   let timer = null;
@@ -86,6 +88,7 @@ function createPoller() {
     entry.run = async () => {
       try {
         const value = await load();
+        if (value === UNCHANGED) return;
         const text = JSON.stringify(value === undefined ? null : value);
         if (!entry.active || text === entry.last) return;
         entry.last = text; await cb(value);
@@ -148,12 +151,19 @@ function createHttpHost({ session, transport, onSignedOut, useThemeHook }) {
     copyText,
 
     subscribeListings: (cb, onError) => poller.subscribe(async () => (await request('GET', 'api/catalogue')).published || {}, cb, onError),
-    subscribeAssets: (cb, onError) => poller.subscribe(() => request('GET', 'api/assets'), cb, onError),
+    // The hero drawing carries a style attribute; under the server's CSP (no inline styles) it would be
+    // refused, so it is dropped here and platform.css sizes the drawing instead (.eh-art svg).
+    subscribeAssets: (cb, onError) => poller.subscribe(async () => {
+      const a = await request('GET', 'api/assets');
+      return a && typeof a.hero === 'string' ? { ...a, hero: a.hero.replace(/^(<svg\b[^>]*?)\s+style="[^"]*"/, '$1') } : a;
+    }, cb, onError),
     subscribeForks: (cb, onError) => poller.subscribe(async () => (await request('GET', 'api/forks')).forks || {}, cb, onError),
     subscribeMachines: () => undefined,
     subscribeDocs: (listing, cb, onError) => poller.subscribe(() => request('GET', 'api/catalogue/' + enc(listing.uid) + '/' + enc(listing.exp) + '/docs'), cb, onError),
     subscribeForkDocs: (fork, cb, onError) => poller.subscribe(async () => {
-      const res = await request('GET', 'api/forks/' + enc(fork.id) + '/docs');
+      let res;
+      try { res = await request('GET', 'api/forks/' + enc(fork.id) + '/docs'); }
+      catch (e) { if (e.status === 404) return UNCHANGED; throw e; } // the copy was just removed; its page is closing
       return res && res.docs ? { docs: res.docs } : { stale: true };
     }, cb, onError),
     async bundleMeta(handle) {

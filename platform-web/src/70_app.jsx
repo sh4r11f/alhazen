@@ -634,12 +634,12 @@ function PlatformApp({ host }) {
     return <div className="eh-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}><div className="eh-dialog" role="dialog" aria-modal="true">{body}</div></div>;
   }
 
-  const view = route.v === 'browse' ? Browse() : route.v === 'exp' ? Exp() : route.v === 'mine' ? Mine() : route.v === 'machines' ? Machines() : route.v === 'fork' ? Fork() : Home();
+  const view = route.v === 'browse' ? Browse() : route.v === 'exp' ? Exp() : route.v === 'mine' ? Mine() : route.v === 'machines' && caps.machines ? Machines() : route.v === 'fork' ? Fork() : Home();
   const navCur = route.v === 'exp' ? 'browse' : route.v === 'fork' ? 'mine' : route.v;
   return (
     <div className="eh w-full" data-eh-view={route.v} style={{ ...vars, colorScheme: theme === 'dark' ? 'dark' : 'light' }} onKeyDown={(e) => { if (e.key === 'Escape' && dialog) setDialog(null); }}>
       {host.fontStylesheet ? <link rel="stylesheet" href={host.fontStylesheet} /> : null}
-      <style>{CSS + GUIDE_CSS + (host.extraCss || '')}</style>
+      {host.inlineStyles === false ? null : <style>{CSS + GUIDE_CSS + (host.extraCss || '')}</style>}
       <header className="eh-top"><div className="eh-wrap">
         <button className="eh-brand" onClick={() => go({ v: 'home' })} aria-label="Alhazen Experiment Platform, home">
           <span dangerouslySetInnerHTML={{ __html: assets.penrose || '' }} style={{ display: 'flex' }} />

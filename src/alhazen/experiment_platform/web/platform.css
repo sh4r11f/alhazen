@@ -770,6 +770,7 @@ html,body{margin:0;padding:0;background:#fbf9f5}
 @media (prefers-color-scheme: dark){html,body{background:#151311}}
 #root{width:100%;min-height:100vh}
 #root>.eh{min-height:100vh}
+.eh-art svg{width:100%;height:auto;display:block}
 .w-full{width:100%}
 .eh-host-tools{display:flex;align-items:center;gap:6px;margin-left:8px}
 .eh-viewer{font-size:13px;font-weight:600;color:var(--muted);padding:0 4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
