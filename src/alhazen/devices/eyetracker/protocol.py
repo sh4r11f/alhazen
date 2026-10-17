@@ -45,6 +45,14 @@ today, and must go on doing so without growing methods it has no use for.
   calls from inside its blocking ``calibrate()`` with ``(stage, detail)`` —
   ``("calibrating", "target 3 of 9 · eyes: both tracked")`` — so the
   live monitor can follow a procedure the render thread is busy running.
+- ``set_command_source(source: CommandSource | None)``: a callable the
+  backend's own calibration walk reads between its key reads, for the live
+  monitor's buttons: ``source(accepted)`` returns the commands it can act on
+  now, by name, oldest first — ``"resume"`` (what SPACE does: start at the
+  guide, accept the target), ``"back"`` (BACKSPACE) and ``"pause"`` (the stop
+  key) — and only those of ``accepted``; the others wait for a later read.
+  Offered by a backend whose walk alhazen draws (the TRACKPixx3, the mouse
+  stand-in); the EyeLink's calibration runs on its setup screen and has none.
 - ``set_calibration_rng(rng: numpy.random.Generator)``: the generator a
   random calibration picture order is dealt from — the session seed's
   ``calibration_target`` stream, handed over by the session builder before
@@ -86,7 +94,7 @@ it is why it cannot see a recording that died mid-trial on its own.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -221,6 +229,10 @@ class CameraFrame:
 # What a backend calls, from inside a blocking procedure, to say how far it
 # has got: ``hook(stage, detail)``. See the module docstring.
 ProgressHook = Callable[[str, str], None]
+
+# What a backend's calibration walk reads the live monitor's commands from:
+# ``source(accepted)`` -> the names it can act on now. See the module docstring.
+CommandSource = Callable[[Collection[str]], list[str]]
 
 
 @dataclass(frozen=True)

@@ -39,7 +39,7 @@ import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from alhazen.config.models import (
     IRIS_SIZE_RANGE_PX,
@@ -73,6 +73,9 @@ from alhazen.session.procedure_guide import (
     progressed,
     started,
 )
+
+if TYPE_CHECKING:
+    from alhazen.session.procedure_control import ProcedureControl
 
 log = logging.getLogger(__name__)
 
@@ -336,6 +339,11 @@ class EyeTrackerMonitor:
         # The one-line verdicts of the procedures the outermost one ran, for
         # the publish at its end.
         self._verdicts: list[str] = []
+        # Set by the runner when a live monitor is open: the page's hold on a
+        # running procedure — its Resume/Back/Pause read by the walk, the
+        # Trial view's picture of the targets, the gaze while one is measured
+        # (session/procedure_control.py).
+        self.control: ProcedureControl | None = None
 
     # ------------------------------------------------------------------
     # Procedures
@@ -358,11 +366,18 @@ class EyeTrackerMonitor:
         set_hook = getattr(self._tracker, "set_progress_hook", None)
         if set_hook is not None:
             set_hook(self._on_progress)
+        # A walk alhazen draws reads the live monitor's Resume/Back/Pause too
+        # (protocol.py set_command_source); one that runs elsewhere does not.
+        set_source = getattr(self._tracker, "set_command_source", None)
+        if set_source is not None and self.control is not None:
+            set_source(self.control.walk_source)
         try:
             reported = self._tracker.calibrate()
         finally:
             if set_hook is not None:
                 set_hook(None)
+            if set_source is not None and self.control is not None:
+                set_source(None)
         result = reported if reported is not None else self._no_result()
         self.calibration = result
         self._end_guide(ended_calibration, result, result.summary())
@@ -453,12 +468,12 @@ class EyeTrackerMonitor:
 
     def _validate(self, advance: Advance | None) -> ValidationResult:
         result = validate(
-            self._tracker,
+            self._walk_tracker(),
             self._display,
             self._screen,
             self._clock,
             self._cfg,
-            poll_keys=self._poll_keys,
+            poll_keys=self._walk_keys,
             correction=self.correction,
             advance=advance,
             calibration_targets=self.calibration_targets,
@@ -493,13 +508,13 @@ class EyeTrackerMonitor:
 
     def _drift_correct(self, advance: Advance | None) -> DriftResult:
         result = drift_correct(
-            self._tracker,
+            self._walk_tracker(),
             self._display,
             self._screen,
             self._clock,
             self._cfg,
             self.correction,
-            poll_keys=self._poll_keys,
+            poll_keys=self._walk_keys,
             advance=advance,
             calibration_targets=self.calibration_targets,
             progress=self._on_progress,
@@ -508,6 +523,22 @@ class EyeTrackerMonitor:
         self._end_guide(ended_drift, result, result.summary())
         self._emit("DRIFT_CORRECTION", result.payload())
         return result
+
+    def _walk_keys(self) -> list[str]:
+        """The keys a validation or drift-correction walk reads: the rig's,
+        then the live monitor's Resume/Back/Pause as the keys they stand for."""
+        keys = list(self._poll_keys())
+        if self.control is not None:
+            keys += self.control.walk_keys()
+        return keys
+
+    def _walk_tracker(self) -> EyeTracker:
+        """The tracker a validation or drift correction reads gaze from: with
+        a live monitor open, one that also shows that gaze on the Trial view."""
+        if self.control is None:
+            return self._tracker
+        tracker: EyeTracker = self.control.gaze_tracker(self._tracker, self.correction)
+        return tracker
 
     def _advance(self) -> Advance | None:
         """The rig's advance mode — except on a simulated display, where
@@ -537,6 +568,8 @@ class EyeTrackerMonitor:
         self._depth += 1
         self._guide = started(kind, self._clock.now())
         self._guide_advance = advance
+        if self.control is not None:
+            self.control.begin(kind, self._tracker, self._cfg)
         try:
             self._stage(stage, "starting")
             yield
@@ -546,9 +579,12 @@ class EyeTrackerMonitor:
             raise
         finally:
             self._depth -= 1
-            if self._depth == 0 and self.publisher is not None:
+            if self._depth == 0:
                 line = " · ".join(self._verdicts) or f"{stage}: stopped"
-                self.publisher(PROCEDURE_STATUS, line)
+                if self.control is not None:
+                    self.control.end(line)
+                if self.publisher is not None:
+                    self.publisher(PROCEDURE_STATUS, line)
 
     def _end_guide(
         self,
@@ -586,6 +622,7 @@ class EyeTrackerMonitor:
         self._published_stage = stage
         if self.publisher is not None:
             self.publisher(PROCEDURE_STATUS, f"{stage}: {detail}")
+        self._show_progress(f"{stage}: {detail}")
 
     def _on_progress(self, stage: str, detail: str) -> None:
         """A procedure's progress line, published at most every PROGRESS_PUBLISH_S.
@@ -623,6 +660,16 @@ class EyeTrackerMonitor:
         self._published_stage = stage
         if self.publisher is not None:
             self.publisher(PROCEDURE_STATUS, " · ".join([f"{stage}: {detail}", *messages]))
+        self._show_progress(f"{stage}: {detail}")
+
+    def _show_progress(self, line: str) -> None:
+        """The Trial view's picture of the running procedure, at the target
+        the guide is on (session/procedure_control.py)."""
+        if self.control is not None:
+            guide = self._guide
+            step = guide.step if guide is not None else None
+            n = guide.n if guide is not None else None
+            self.control.progress(step, n, line)
 
     def _emit(self, name: str, payload: dict[str, Any]) -> None:
         if self.emit is not None:

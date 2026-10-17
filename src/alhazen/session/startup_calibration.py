@@ -14,8 +14,14 @@ now** is the default (ENTER or C); reusing the previous calibration is a
 second, explicit key (R), offered only when this rig's own record says the
 previous calibration fits (same tracker, layout, area and screen geometry, the
 same subject, the most recent one recorded, and — where the device can say —
-still held); ESC cancels the session. Whatever is chosen goes on the record as
-a ``CALIBRATION_CHOICE`` event. An aborted or failed calibration brings the
+still held); ESC cancels the session, once a second ESC confirms it. Whatever
+is chosen goes on the record as a ``CALIBRATION_CHOICE`` event.
+
+The live monitor answers it too: while the request is up the session
+publishes ``waiting``, and the page's Calibrate, Reuse calibration (offered
+when R is), Accept calibration (when A is) and Quit do what those keys do
+(session/operator_commands.py ``offer``). The page's Quit was confirmed on the
+page, so it cancels without the second ESC. An aborted or failed calibration brings the
 request back; trials never start on the old model behind the operator's back.
 
 What alhazen knows about a previous calibration is only what it recorded
@@ -43,6 +49,7 @@ from typing import Any
 
 from alhazen.config.models import EyeTrackerConfig, MonitorConfig
 from alhazen.devices.eyetracker.protocol import CalibrationResult
+from alhazen.session.operator_commands import Offer, OperatorCommands
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +64,15 @@ CANCEL_KEYS = frozenset({"escape", "q"})
 # launched the session, or a held one, must never answer it.
 ARMING_S = 0.3
 TITLE = "CALIBRATE BEFORE TRIALS"
+# The live monitor's commands at the request, as the keys that mean the same.
+# Quit is its own: confirmed on the page, it cancels without the second ESC.
+PAGE_CANCEL = "live-monitor:quit"
+PAGE_KEYS = {
+    "calibrate": "c",
+    "reuse_calibration": REUSE_KEY,
+    "accept_calibration": ACCEPT_UNKNOWN_KEY,
+    "quit": PAGE_CANCEL,
+}
 TITLE_COLOR = (1.0, 0.81, 0.2)
 
 # What a calibration must match to be offered for reuse.
@@ -307,15 +323,54 @@ class StartupCalibration:
     wait: Callable[[float], None] = time.sleep
     now: Callable[[], float] = time.monotonic
     choices: list[str] = field(default_factory=list)
+    # Asked before ESC or Q cancels the session (session/pause.py
+    # QuitConfirmation.ask); None cancels at once.
+    confirm_quit: Callable[[], bool] | None = None
+    # The live monitor's commands and the runner's publisher, wired by the
+    # runner when a live monitor is open; None without one.
+    operator: OperatorCommands | None = None
+    publish: Callable[[str, str | None], object] | None = None
 
     def _key(self) -> str:
-        """The next key pressed after the request is armed."""
+        """The next key pressed after the request is armed — or the live
+        monitor's command, as the key it stands for (``PAGE_KEYS``)."""
         armed_at = self.now() + ARMING_S
         while True:
+            if self.operator is not None:
+                answers = self.operator.take_offered()
+                if answers:
+                    return PAGE_KEYS[answers[0]]
             keys = self.poll_keys()
             if keys and self.now() >= armed_at:
                 return keys[0]
             self.wait(0.01)
+
+    def _offer(self, previous: PreviousCalibration, unknown: bool, message: str) -> None:
+        """Tell the live monitor what the request answers to now, and publish
+        it under ``waiting``. Re-offered every time the request is drawn:
+        reuse and accept come and go with what the last calibration did."""
+        if self.operator is None:
+            return
+        commands = {"calibrate": "calibrating now"}
+        keys = {"calibrate": "return", "quit": "escape"}
+        if previous.reusable:
+            commands["reuse_calibration"] = "the previous calibration is reused; trials start"
+            keys["reuse_calibration"] = REUSE_KEY
+        if unknown:
+            commands["accept_calibration"] = (
+                "the calibration just run is accepted with an unknown outcome; trials start"
+            )
+            keys["accept_calibration"] = ACCEPT_UNKNOWN_KEY
+        commands["quit"] = "the session is cancelled; nothing more is recorded"
+        self.operator.offer(Offer("waiting", commands, keys, "the calibration request"))
+        if self.publish is not None:
+            line = "Calibration request on the subject's screen: Calibrate"
+            if previous.reusable:
+                line += ", Reuse calibration"
+            if unknown:
+                line += ", Accept calibration"
+            line += " or Quit."
+            self.publish("waiting", f"{message} {line}".strip() if message else line)
 
     def _body(self, previous: PreviousCalibration, message: str, unknown: bool) -> str:
         lines = ["Calibrate the eye tracker before the trials start.", ""]
@@ -337,8 +392,21 @@ class StartupCalibration:
         )
         message = ""
         unknown: CalibrationResult | None = None
+        try:
+            return self._ask(previous, message, unknown)
+        finally:
+            if self.operator is not None:
+                self.operator.withdraw("the calibration request had been answered; not acted on")
+
+    def _ask(
+        self,
+        previous: PreviousCalibration,
+        message: str,
+        unknown: CalibrationResult | None,
+    ) -> bool:
         while True:
             self.show(TITLE, self._body(previous, message, unknown is not None))
+            self._offer(previous, unknown is not None, message)
             key = self._key()
             if key in CALIBRATE_KEYS:
                 result = self.monitor.calibrate()
@@ -367,7 +435,9 @@ class StartupCalibration:
                 return self._chosen("accepted with unknown outcome", previous, unknown)
             elif key == REUSE_KEY and previous.reusable:
                 return self._chosen("reused previous", previous, None)
-            elif key in CANCEL_KEYS:
+            elif key in CANCEL_KEYS and self.confirm_quit is not None and not self.confirm_quit():
+                continue  # not confirmed: the request is drawn again
+            elif key in CANCEL_KEYS or key == PAGE_CANCEL:
                 self._chosen("cancelled", previous, None)
                 return False
 

@@ -89,6 +89,12 @@ RESERVED_EVENTS = frozenset(
         # be told apart afterwards from one nobody asked for, and a click the
         # session discarded from one it acted on.
         "OPERATOR_COMMAND",
+        # A quit key asked first (session/pause.py QuitConfirmation): ``where``
+        # it was pressed, whether a second ESC confirmed it (``quit``), and the
+        # ``key`` that answered. On the record so a session that ended on a
+        # quit shows it was confirmed, and one that went on shows the quit was
+        # taken back.
+        "QUIT_CONFIRMATION",
     }
 )
 

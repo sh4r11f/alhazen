@@ -159,6 +159,7 @@ class PauseController:
         emit_session_event: Callable[[str, dict[str, Any]], None],
         on_session_command: Callable[[Command], None],
         operator: OperatorCommands | None = None,
+        confirm_quit: Callable[[], bool] | None = None,
     ) -> None:
         """``on_pause`` is the blocking keyboard strategy, None for an
         unattended run. ``rest_resume_after_s`` is how long a rest waits for
@@ -168,7 +169,11 @@ class PauseController:
         and ``on_session_command`` are the runner's own. ``operator`` is the
         live monitor's command queue as the session reads it, and must be
         given with ``live_monitor``: every browser command a pause takes is
-        acknowledged through it."""
+        acknowledged through it. ``confirm_quit`` asks a quit key at the rig
+        to be confirmed (session/pause.py ``QuitConfirmation``) before the
+        pause ends in a quit; the live monitor's Quit is confirmed on the
+        page and is not asked again. None: a quit key quits at once (the
+        keyboard strategy ``on_pause`` asks it itself, run_pause_menu)."""
         if live_monitor is not None and operator is None:
             raise ValueError("a live monitor's pauses need its OperatorCommands to read clicks")
         self._display = display
@@ -187,6 +192,7 @@ class PauseController:
         self._emit_session_event = emit_session_event
         self._on_session_command = on_session_command
         self._operator = operator
+        self._confirm_quit = confirm_quit
 
     def _pause_menu(
         self,
@@ -327,6 +333,7 @@ class PauseController:
         if resume_after_s is not None:
             deadline = self._clock.now() + resume_after_s
         while True:
+            keyed = False
             if deadline is not None:
                 # `on_pause` blocks until a key is pressed, so a pause that can
                 # time out polls the keyboard here instead, until the deadline.
@@ -336,11 +343,17 @@ class PauseController:
                 # Somebody is there after all. From here the rest waits for
                 # them, and the screen stops promising otherwise.
                 action = timed
+                keyed = True
                 deadline = None
                 menu = self._pause_menu(fault=fault, rest=rest, due=due)
             else:
                 action = self._on_pause(menu)
             if action == "quit":
+                # A key read here, not through on_pause (which asks itself):
+                # asked to be confirmed like every quit key at the rig.
+                if keyed and self._confirm_quit is not None and not self._confirm_quit():
+                    self._show_pause_menu(menu)
+                    continue
                 return False
             if action == "resume":
                 if not _owes_validation(due):
@@ -670,6 +683,13 @@ class PauseController:
                     self._publish("running", "Resumed.")
                     return self._resumed()
                 if action == "quit":
+                    if sent is None and self._confirm_quit is not None and not self._confirm_quit():
+                        # A quit key at the rig not confirmed: back to the
+                        # menu, and the rest of this batch is still read.
+                        self._show_pause_menu(menu)
+                        self._publish("paused", "Quit not confirmed at the rig; still paused.")
+                        published_at = self._clock.now()
+                        continue
                     if sent is not None:
                         operator.acknowledge(
                             sent, "applied", "the session ends; the data so far is saved"

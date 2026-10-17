@@ -96,10 +96,12 @@ from alhazen.session.identity import RunIdentity, record_reward_delivered, write
 from alhazen.session.operator_commands import (
     KEYBOARD_COMMAND_NAMES,
     Capabilities,
+    Offer,
     OperatorCommands,
 )
-from alhazen.session.pause import PauseMenu
+from alhazen.session.pause import PauseMenu, QuitConfirmation
 from alhazen.session.pause_control import PauseController
+from alhazen.session.procedure_control import ProcedureControl
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.reward_payer import RewardPayer
 from alhazen.session.startup_calibration import StartupCalibration
@@ -227,6 +229,7 @@ class SessionRunner:
         recording: RecordingSystem | None = None,
         startup_calibration: StartupCalibration | None = None,
         operator_commands: OperatorCommands | None = None,
+        quit_confirmation: QuitConfirmation | None = None,
     ) -> None:
         # What the run records about how it was set up: the experiment and
         # version its data is filed under, the mode, the files it started
@@ -384,6 +387,10 @@ class SessionRunner:
         if live_monitor is not None and operator_commands is None:
             operator_commands = OperatorCommands(live_monitor)
         self._operator = operator_commands
+        # Somebody is at the rig to answer a blocking screen (a keyboard and a
+        # rendering display): what the instruction screen's offer to the
+        # live monitor needs, since an auto-start never reads it.
+        self._on_pause_attended = on_pause is not None
         # How many rig keys this session refused (their request ids).
         self._keyboard_refusals = 0
         if operator_commands is not None:
@@ -440,7 +447,19 @@ class SessionRunner:
             emit_session_event=self._emit_session_event,
             on_session_command=self.on_session_command,
             operator=self._operator,
+            confirm_quit=(
+                (lambda: confirmation.ask("the pause menu"))
+                if (confirmation := quit_confirmation) is not None
+                else None
+            ),
         )
+        # The second-ESC question before a quit key ends the session
+        # (session/pause.py): its answer is a session event, and while it is
+        # up the live monitor says why the session is waiting.
+        self._quit_confirmation = quit_confirmation
+        if quit_confirmation is not None:
+            quit_confirmation.emit = self._emit_session_event
+            quit_confirmation.on_ask = self._quit_asked
         self._live_monitor_revision = 0
         self._live_monitor_message: str | None = None
         # The status of the last publish: a trial that starts right after a
@@ -590,13 +609,22 @@ class SessionRunner:
                     # And the tracker settings the page sends (the iris size),
                     # applied between frames, even while a procedure runs.
                     self._eyetracker.settings_source = self._poll_tracker_settings
+                    # The page's hold on a running procedure: its Resume,
+                    # Back and Pause read by the walk, the Trial view's
+                    # picture of the targets and the gaze measured on them.
+                    if self._operator is not None:
+                        self._eyetracker.control = self._procedure_control()
+                if self._startup_calibration is not None:
+                    # The calibration request answers the page too.
+                    self._startup_calibration.operator = self._operator
+                    self._startup_calibration.publish = self._publish_live_monitor
             self._publish_live_monitor("running")
 
             if self._instructions:
                 self._display.show_message(self._instructions)
                 # A simulated session has no subject and therefore no start
                 # callback.  It records the message and proceeds immediately.
-                if self._await_start is not None and not self._await_start():
+                if self._await_start is not None and not self._wait_at_instructions():
                     log.info("session cancelled from instructions screen")
                     self._cancelled = True
                     return
@@ -605,6 +633,8 @@ class SessionRunner:
                     log.info("session cancelled at the calibration request")
                     self._cancelled = True
                     return
+                # Answered: the page's buttons are a trial's again.
+                self._publish_live_monitor("running")
             elif not self._require_tracker_calibration():
                 return
             while True:
@@ -900,6 +930,84 @@ class SessionRunner:
             record=record,
         )
         return ctx, plan.phases
+
+    def _wait_at_instructions(self) -> bool:
+        """The instruction screen's wait (``await_start``): True to start.
+
+        With the live monitor open and somebody to answer, the screen is
+        published as ``waiting`` and offered to the page — Resume starts, Quit
+        cancels — so the operator need not click into the subject's window to
+        press SPACE (session/operator_commands.py ``offer``; the gate reads
+        the page between its keys, session/builder.py _psychopy_await_start).
+        """
+        assert self._await_start is not None
+        operator = self._operator
+        if operator is None or self._on_pause_attended is False:
+            return self._await_start()
+        operator.offer(
+            Offer(
+                "waiting",
+                {
+                    "resume": "the session starts",
+                    "quit": "the session is cancelled; nothing more is recorded",
+                },
+                {"resume": "space", "quit": "escape"},
+                "the instructions screen",
+            )
+        )
+        self._publish_live_monitor(
+            "waiting", "Instructions on the subject's screen: Resume starts, Quit cancels."
+        )
+        try:
+            started = self._await_start()
+        finally:
+            operator.withdraw("the instructions screen had been answered; not acted on")
+        if started:
+            self._publish_live_monitor("running")
+        return started
+
+    def _quit_asked(self, where: str) -> None:
+        """A quit key at the rig is waiting for its second ESC: said on the
+        live monitor, in the status the session is in."""
+        if self._live_monitor is None:
+            return
+        self._publish_live_monitor(
+            self._live_monitor_status or "running",
+            f"ESC pressed at the rig ({where}): a second ESC quits, any other key goes back.",
+        )
+
+    def _procedure_control(self) -> ProcedureControl:
+        """The page's hold on a running eye-tracker procedure
+        (session/procedure_control.py), with this session's channels: the
+        Trial view's, the gaze channel and the operator's switches."""
+        assert self._operator is not None
+        monitor = self._live_monitor
+        gaze_sink = getattr(monitor, "publish_gaze", None) if self._tracker is not None else None
+        return ProcedureControl(
+            operator=self._operator,
+            screen=self._screen,
+            clock=self._clock,
+            publish_view=getattr(monitor, "publish_trial", None),
+            camera=self._procedure_camera,
+            trial_index=lambda: self._trial_index,
+            gaze_sink=gaze_sink,
+            gaze_switch=getattr(monitor, "gaze_traces_on", None),
+        )
+
+    def _procedure_camera(self) -> dict[str, Any]:
+        """What the Trial view says of the camera while a procedure runs: it
+        streams (session/eyetracker.py), so it is live, or the reason not."""
+        monitor = self._eyetracker
+        if monitor is None or not monitor.has_camera:
+            return {
+                "live": False,
+                "has_frames": False,
+                "reason": "This eye tracker gives the session no camera image.",
+            }
+        if monitor.camera_switched_off:
+            camera = monitor.trial_camera()  # the switch's own sentence
+            return {**camera, "live": False}
+        return {"live": True, "has_frames": True, "reason": "Live while the procedure runs."}
 
     def _publish_trial_view(self, plan: TrialPlan, condition: Condition, attempt: int) -> None:
         """Send the live monitor's Trial view the picture of the trial about to

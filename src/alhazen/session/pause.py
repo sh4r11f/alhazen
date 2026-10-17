@@ -25,10 +25,15 @@ menu, because it is believed.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from alhazen.core.commands import DEFAULT_KEYMAP, Command
+
+log = logging.getLogger(__name__)
 
 # Orange, in PsychoPy's -1..1 RGB space (0-1 value v maps to 2v-1). Roughly
 # #FF9426. The pause screen is the one screen that must never be mistaken for
@@ -325,6 +330,7 @@ def run_pause_menu(
     show: Callable[[PauseMenu], None],
     raw_keys: Callable[[], list[str]],
     wait: Callable[[float], None],
+    confirm_quit: Callable[[], bool] | None = None,
 ) -> str:
     """Draw the menu and block until the experimenter picks something.
 
@@ -332,6 +338,11 @@ def run_pause_menu(
     decides what each one means; this only reads the keyboard, so the same
     loop serves a rig, a test with a scripted key source, and the live monitor
     path.
+
+    ``confirm_quit`` (``QuitConfirmation.ask``, wired for a rig with somebody
+    at the keyboard) is asked before a quit key is taken: "quit" is returned
+    only once it is confirmed, and a quit that is not confirmed brings the
+    menu back.
 
     The short wait keeps an idle pause from spinning a core — a session can
     sit here for minutes while somebody fetches the experimenter.
@@ -342,6 +353,77 @@ def run_pause_menu(
             # The menu's own key mapping, the one the runner's polling loops
             # use too (PauseMenu.action_for_key).
             action = menu.action_for_key(key)
+            if action == "quit" and confirm_quit is not None and not confirm_quit():
+                show(menu)
+                break
             if action is not None:
                 return action
         wait(0.01)
+
+
+# The screen a quit key brings up first, on the subject's display: a session
+# ends on a second ESC, never on one key pressed in passing. Red, the fault's
+# colour: what follows ESC here cannot be undone.
+QUIT_CONFIRM_TITLE = "QUIT THE SESSION?"
+QUIT_CONFIRM_BODY = (
+    "Press ESC again to quit. The data recorded so far is saved.\n\nAny other key goes back."
+)
+QUIT_CONFIRM_KEY = "escape"
+QUIT_CONFIRM_COLOR = FAULT_COLOR
+# Keys arriving this soon after the question appears are dropped: a held ESC
+# (key repeat), or a double press made before anybody read the question, must
+# not answer it.
+QUIT_CONFIRM_ARMING_S = 0.3
+
+
+@dataclass
+class QuitConfirmation:
+    """The question a quit key asks before the session ends: a second ESC
+    quits, any other key goes back to the screen it was pressed on.
+
+    Built for a rig with somebody at the keyboard (session/builder.py) and
+    asked wherever a key quits: the pause menu, the instructions screen and
+    the calibration request before trial 1. The live monitor's Quit asks on
+    the page instead, so a command from the page is never asked again here.
+
+    Every answer is on the record: a QUIT_CONFIRMATION session event
+    (``emit``, wired by the session runner) and a line in the log. ``on_ask``
+    (also the runner's) tells the live monitor the question is up, so the
+    operator watching the page knows why the session is waiting.
+    """
+
+    show: Callable[[str, str], None]
+    raw_keys: Callable[[], list[str]]
+    wait: Callable[[float], None] = time.sleep
+    now: Callable[[], float] = time.monotonic
+    emit: Callable[[str, dict[str, Any]], None] | None = None
+    on_ask: Callable[[str], None] | None = None
+
+    def ask(self, where: str, redraw: Callable[[], None] | None = None) -> bool:
+        """Show the question and wait for the next key: True to quit (ESC),
+        False to go back. ``where`` names the screen the quit key was pressed
+        on (for the record); ``redraw`` puts it back after a False — the
+        pause menu redraws itself."""
+        self.raw_keys()  # whatever is buffered was pressed before the question
+        self.show(QUIT_CONFIRM_TITLE, QUIT_CONFIRM_BODY)
+        if self.on_ask is not None:
+            self.on_ask(where)
+        armed_at = self.now() + QUIT_CONFIRM_ARMING_S
+        while True:
+            keys = self.raw_keys()
+            if keys and self.now() >= armed_at:
+                key = keys[0].lower()
+                break
+            self.wait(0.01)
+        confirmed = key == QUIT_CONFIRM_KEY
+        log.info(
+            "quit at %s %s (key %s)",
+            where,
+            "confirmed" if confirmed else "not confirmed; going back",
+            key,
+        )
+        if self.emit is not None:
+            self.emit("QUIT_CONFIRMATION", {"where": where, "quit": confirmed, "key": key})
+        if not confirmed and redraw is not None:
+            redraw()
+        return confirmed
