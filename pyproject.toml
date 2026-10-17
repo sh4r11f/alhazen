@@ -267,6 +267,9 @@ module = [
   # The workspace's SFTP upload (alhazen.cli.upload_sftp): paramiko ships no
   # stubs, and types-paramiko trails its releases.
   "paramiko.*",
+  # The platform server's WSGI server (the platform extra); no stubs on PyPI
+  # that track its releases.
+  "waitress.*",
 ]
 ignore_missing_imports = true
 

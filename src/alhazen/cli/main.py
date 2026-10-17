@@ -9,6 +9,7 @@
     alhazen calibrate ...     verify the monitor's geometry and gamma
     alhazen monitor ...       tell PsychoPy about this rig's monitor
     alhazen report --run      what happened, and does the data check out?
+    alhazen platform ...      the Experiment Platform: browse, fork, change, share
 
 Each command does one thing an experimenter needs, and each does it through
 the same code a session would: ``check-rig`` constructs the real device
@@ -116,6 +117,11 @@ def main(argv: list[str] | None = None) -> int:
     dashboard.add_argument(
         "--no-browser", action="store_true", help="print the URL without opening it"
     )
+    # `alhazen platform ...` (alhazen.experiment_platform.cli): its parser is
+    # stdlib-only, so adding it costs a plain install nothing.
+    from alhazen.experiment_platform.cli import add_parser as add_platform_parser
+
+    add_platform_parser(sub)
     calibrate = sub.add_parser("calibrate", help="check a monitor's geometry and gamma")
     calibrate_sub = calibrate.add_subparsers(dest="calibration")
     ruler = calibrate_sub.add_parser(
@@ -1904,8 +1910,15 @@ def _with_explicit_flags(args: argparse.Namespace) -> argparse.Namespace:
 
 # Looked up by name at call time for `run` and `sim-sorter`, whose handlers
 # take other arguments; the rest are the functions themselves.
+def _platform(args: argparse.Namespace) -> int:
+    from alhazen.experiment_platform.cli import run
+
+    return run(args)
+
+
 _COMMANDS: dict[str, Handler] = {
     "dashboard": _dashboard,
+    "platform": lambda args, parser: _platform(args),
     "validate": _validate,
     "rigs": _rigs,
     "preview": _preview,
