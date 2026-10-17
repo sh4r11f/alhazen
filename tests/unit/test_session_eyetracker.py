@@ -1432,7 +1432,7 @@ class TestAValidationThePageDrives:
         assert all(p["name"] == "resume" for p in applied)
         # While it ran the page could press Pause, Resume and Back; after, nothing.
         assert w["controls"][0]["available"] == ["pause", "resume", "back"]
-        assert w["controls"][0]["keys"]["resume"] == "space"
+        assert w["controls"][0]["keys"]["resume"] == "SPACE"
         assert w["operator"].controls("calibrating")["available"] == []
         views = w["views"]
         first, last = views[0], views[-1]

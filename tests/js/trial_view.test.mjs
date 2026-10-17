@@ -510,3 +510,118 @@ describe('the live page', () => {
     assert.ok(!rows.includes('Trial'));
   });
 });
+
+
+/* 2026-10-17: the Trial view shows a running eye-tracker procedure (its
+ * targets, the one on screen, the camera live, gaze where a model exists) and
+ * says plainly when the pause menu is up. */
+const PROCEDURE_VIEW = {
+  trial_index: 3,
+  attempt: 0,
+  t: 50,
+  screen: { width_dva: 40, height_dva: 30 },
+  source: 'procedure',
+  shapes: [
+    { kind: 'circle', role: 'stimulus', name: 'Target on screen', center: [0, 0], radius: 0.35 },
+    { kind: 'circle', role: 'annotation', name: 'Target', center: [10, 0], radius: 0.35 },
+    { kind: 'circle', role: 'annotation', name: 'Target', center: [-10, 0], radius: 0.35 },
+  ],
+  undrawn: [],
+  condition: {},
+  procedure: { id: 49, kind: 'validation', title: 'Validation', step: 1, n: 3, line: 'validating: target 1 of 3',
+    ended: false, targets_known: true, reads_page: true },
+  gaze: true,
+  camera: { live: true, has_frames: true, reason: 'Live while the procedure runs.' },
+};
+
+describe('a procedure in the Trial view', () => {
+  function drawnProcedure(view, status = 'calibrating') {
+    const live_monitor = loadLiveMonitor();
+    live_monitor.get(`state = { status: '${status}', message: 'Calibrating.' }`);
+    live_monitor.get('trialView').view = view;
+    live_monitor.get('drawTrialStage')();
+    return live_monitor;
+  }
+
+  it('names the procedure and the target on screen, and keys the targets', () => {
+    const live_monitor = drawnProcedure(PROCEDURE_VIEW);
+    assert.equal(live_monitor.byId('trial-title').textContent, 'Validation');
+    assert.equal(live_monitor.byId('trial-meta').textContent, 'Target 1 of 3');
+    const legend = live_monitor.byId('trial-legend').children.map((item) => item.textContent);
+    assert.deepEqual(legend, ['Gaze', 'Trail', 'Target on screen', 'Other targets']);
+    assert.match(live_monitor.byId('trial-note').textContent, /filled one is on the subject’s screen/);
+  });
+
+  it('says a calibration shows no gaze, and a walk run elsewhere has its keys at the rig', () => {
+    const calibration = { ...PROCEDURE_VIEW, gaze: false, shapes: [],
+      procedure: { ...PROCEDURE_VIEW.procedure, kind: 'calibration', title: 'Calibration', step: null,
+        line: 'calibrating: on the Host PC', targets_known: false, reads_page: false } };
+    const live_monitor = drawnProcedure(calibration);
+    assert.equal(live_monitor.byId('trial-meta').textContent, 'Starting');
+    const note = live_monitor.byId('trial-note').textContent;
+    assert.match(note, /lays out its calibration targets itself/);
+    assert.match(note, /keys are at the rig/);
+    assert.equal(live_monitor.byId('trial-status').textContent,
+      'No gaze during a calibration: the gaze model is what it fits.');
+  });
+
+  it('says the guide waits for Resume', () => {
+    const guide = { ...PROCEDURE_VIEW, procedure: { ...PROCEDURE_VIEW.procedure, step: null,
+      line: 'calibration guide: eyes: both · press SPACE to start' } };
+    assert.equal(drawnProcedure(guide).byId('trial-meta').textContent, 'Waiting to start: Resume starts the walk');
+  });
+
+  it('shows the gaze live while it measures, not "paused"', () => {
+    const live_monitor = drawnProcedure(PROCEDURE_VIEW);
+    const tv = live_monitor.get('trialView');
+    tv.gazeTrial = 3;
+    tv.samples = [[1.0, 0.2, 0.1], [1.1, 0.3, -0.1]];
+    live_monitor.get('paintGaze')();
+    assert.equal(live_monitor.byId('trial-status').textContent, 'Gaze 0.3°, −0.1°');
+  });
+
+  it('starts a fresh trail when a procedure begins, and keeps it through its targets', () => {
+    const live_monitor = loadLiveMonitor();
+    const tv = live_monitor.get('trialView');
+    const take = live_monitor.get('takeProcedureView');
+    tv.gazeTrial = 3;
+    tv.samples = [[0.5, 1, 1]];
+    take({ ...VIEW, trial_index: 3 }, PROCEDURE_VIEW);
+    assert.equal(tv.samples.length, 0);
+    tv.samples = [[1.0, 0, 0]];
+    take(PROCEDURE_VIEW, { ...PROCEDURE_VIEW, procedure: { ...PROCEDURE_VIEW.procedure, step: 2 } });
+    assert.equal(tv.samples.length, 1, 'the next target keeps the trail');
+  });
+
+  it('says live during the procedure for the camera', () => {
+    const live_monitor = loadLiveMonitor();
+    live_monitor.get("state = { status: 'calibrating' }");
+    live_monitor.get('cameraArrivals').push(1);
+    assert.equal(live_monitor.get('cameraAgeText')({ reason: '' }, { t: 1 }, { t: 2 }, true),
+      'Live during the procedure.');
+  });
+});
+
+describe('the Trial view banner', () => {
+  it('says the pause menu is up, a screen is waiting, or the session is quitting', () => {
+    const trialBanner = loadLiveMonitor().get('trialBanner');
+    assert.equal(trialBanner({ status: 'paused', message: 'Paused — browser controls are enabled.' }),
+      'Paused: the pause menu is on the subject’s screen. Paused — browser controls are enabled.');
+    assert.equal(trialBanner({ status: 'waiting', message: 'Resume starts.' }),
+      'Waiting before the first trial. Resume starts.');
+    assert.equal(trialBanner({ status: 'running', message: 'x' }), '');
+    assert.equal(trialBanner(null), '');
+  });
+
+  it('is shown over the picture only while it has something to say', () => {
+    const live_monitor = loadLiveMonitor();
+    live_monitor.get("state = { status: 'paused', message: '' }");
+    live_monitor.get('paintTrialBanner')();
+    const banner = live_monitor.byId('trial-banner');
+    assert.equal(banner.hasAttribute('hidden'), false);
+    assert.equal(banner.dataset.status, 'paused');
+    live_monitor.get("state = { status: 'running' }");
+    live_monitor.get('paintTrialBanner')();
+    assert.equal(banner.hasAttribute('hidden'), true);
+  });
+});

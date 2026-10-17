@@ -279,7 +279,7 @@ class OperatorCommands:
         keys = {}
         for name in shown:
             if name in offered and self._offer is not None and name in self._offer.keys:
-                keys[name] = self._offer.keys[name]
+                keys[name] = key_label(self._offer.keys[name])
                 continue
             where = (
                 status
