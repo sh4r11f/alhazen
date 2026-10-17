@@ -255,3 +255,24 @@ class TestTheSession:
         val = validation["targets_shown"]
         assert [s["ordinal"] for s in val] == list(range(6, 6 + len(val)))
         assert val[0]["image"] == "monkey_7"  # the deck carries on
+
+
+class TestThePageDrivesTheMousesWalk:
+    def test_resume_and_pause_from_the_page(self, mouse_sdk):
+        pending = ["resume", "resume", "pause"]
+
+        def page(accepted):
+            for index, name in enumerate(pending):
+                if name in accepted:
+                    return [pending.pop(index)]
+            return []
+
+        clock = FakeClock()
+        display = WalkDisplay(clock, 60.0)
+        mouse_sdk.state.clock, mouse_sdk.state.window = clock, display.window
+        mouse_sdk.state.schedule = []
+        tracker = MouseSimTracker(display, SCREEN, clock, mouse_cfg())
+        tracker.configure(SCREEN, clock)
+        tracker.set_command_source(page)
+        result = tracker.calibrate()
+        assert result.aborted and result.note == "stopped for the pause menu at target 2 of 5"

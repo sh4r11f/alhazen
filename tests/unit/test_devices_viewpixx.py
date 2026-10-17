@@ -2504,3 +2504,57 @@ class TestCalibrationPlot:
         assert result.ok is True and result.targets == ()
         assert "fitted coefficients could not be read (DPX_ERR_USB" in result.note
         assert "fitted coefficients could not be read" in caplog.text
+
+
+class ScriptedPageCommands:
+    """The live monitor's Resume/Back/Pause for the walk (set_command_source):
+    each read takes the oldest command the walk can act on now, the rest wait
+    in order — as OperatorCommands.take_offered does."""
+
+    def __init__(self, names):
+        self.pending = list(names)
+        self.reads: list[tuple[str, ...]] = []
+
+    def __call__(self, accepted):
+        self.reads.append(tuple(accepted))
+        for index, name in enumerate(self.pending):
+            if name in accepted:
+                return [self.pending.pop(index)]
+        return []
+
+
+class TestThePageDrivesTheWalk:
+    """2026-10-17: Resume on the live monitor starts the walk and accepts a
+    target, Back steps back, Pause stops it — the rig's SPACE, BACKSPACE and
+    P, so the operator need not reach the subject's keyboard."""
+
+    def test_resume_starts_and_accepts_and_pause_stops(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        page = ScriptedPageCommands(["resume", "resume", "pause"])
+        tracker.set_command_source(page)
+        fake_psychopy.keys.extend([None] * 10)
+        result = tracker.calibrate()
+        assert len(fake_pypixxlib.calibration_points) == 1
+        assert result.aborted and "stopped for the pause menu at target 2 of 5" in result.note
+        # The guide answers Resume and Pause only; a target answers all three.
+        assert page.reads[0] == ("resume", "pause")
+        assert set(page.reads[-1]) == {"resume", "back", "pause"}
+
+    def test_back_waits_at_the_guide_and_steps_back_on_a_target(
+        self, fake_pypixxlib, fake_psychopy
+    ):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        page = ScriptedPageCommands(["back", "resume", "resume", "resume"])
+        tracker.set_command_source(page)
+        fake_psychopy.keys.extend([None] * 6)
+        tracker.calibrate()
+        # Resume starts (Back waits: the guide has nothing to step back to);
+        # Back on target 1 stays on target 1; two accepts sample two points.
+        assert len(fake_pypixxlib.calibration_points) == 2
+        assert page.pending == []
+
+    def test_without_a_source_only_the_keys_count(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        tracker.set_command_source(None)
+        fake_psychopy.keys.extend([START, "space", "p"])
+        assert "target 2 of 5" in tracker.calibrate().note

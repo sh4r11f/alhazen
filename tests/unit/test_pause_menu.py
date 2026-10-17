@@ -283,3 +283,85 @@ class TestAResumeThatValidatesFirstSaysSo:
     def test_only_a_session_with_an_eye_tracker_can_validate(self):
         with pytest.raises(ValueError, match="only with an eye tracker wired"):
             build_pause_menu(rest="BLOCK 1 OF 2 COMPLETE — REST", resume_validates=True)
+
+
+class TestQuitConfirmation:
+    """2026-10-17: a quit key asks first; a second ESC quits, any other key
+    goes back, and the answer is on the record."""
+
+    def make(self, keys):
+        from alhazen.session.pause import QuitConfirmation
+
+        batches = [list(k) for k in keys]
+        t = [0.0]
+        shown: list = []
+        events: list = []
+        asked: list = []
+
+        def raw():
+            if not batches:
+                raise AssertionError("the question is still waiting for a key")
+            return batches.pop(0)
+
+        def wait(s):
+            t[0] += s
+
+        confirmation = QuitConfirmation(
+            show=lambda title, body: shown.append(title),
+            raw_keys=raw,
+            wait=wait,
+            now=lambda: t[0],
+            emit=lambda name, payload: events.append((name, payload)),
+            on_ask=asked.append,
+        )
+        return confirmation, shown, events, asked
+
+    def test_a_second_escape_quits(self):
+        confirmation, shown, events, asked = self.make([[]] + [[]] * 31 + [["escape"]])
+        assert confirmation.ask("the pause menu") is True
+        assert shown == ["QUIT THE SESSION?"] and asked == ["the pause menu"]
+        assert events == [
+            ("QUIT_CONFIRMATION", {"where": "the pause menu", "quit": True, "key": "escape"})
+        ]
+
+    def test_any_other_key_goes_back_and_redraws(self):
+        confirmation, _shown, events, _ = self.make([[]] + [[]] * 31 + [["space"]])
+        redrawn: list = []
+        assert (
+            confirmation.ask("the instructions screen", redraw=lambda: redrawn.append(1)) is False
+        )
+        assert redrawn == [1] and events[0][1]["quit"] is False
+
+    def test_a_held_or_buffered_escape_cannot_answer(self):
+        """The buffer is drained as the question shows, and a key inside the
+        first 0.3 s (key repeat, a double press) is dropped."""
+        confirmation, _shown, _events, _ = self.make(
+            [["escape"], ["escape"]] + [[]] * 31 + [["space"]]
+        )
+        assert confirmation.ask("the pause menu") is False
+
+    def test_the_pause_menu_asks_before_returning_quit(self):
+        from alhazen.session.pause import run_pause_menu
+
+        menu = build_pause_menu(has_tracker=False, has_reward=False, has_training=False)
+        keys = [["q"], ["space"]]
+        answers = iter([False])
+        shown: list = []
+        action = run_pause_menu(
+            menu,
+            shown.append,
+            lambda: keys.pop(0) if keys else [],
+            lambda s: None,
+            confirm_quit=lambda: next(answers),
+        )
+        assert action == "resume"
+        assert len(shown) == 2  # the menu came back after the quit was taken back
+
+    def test_a_confirmed_quit_is_returned(self):
+        from alhazen.session.pause import run_pause_menu
+
+        menu = build_pause_menu(has_tracker=False, has_reward=False, has_training=False)
+        action = run_pause_menu(
+            menu, lambda m: None, lambda: ["escape"], lambda s: None, confirm_quit=lambda: True
+        )
+        assert action == "quit"

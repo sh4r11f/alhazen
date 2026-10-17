@@ -1247,3 +1247,67 @@ class TestTheSeedIsPrinted:
         self.run(tmp_path, monkeypatch, "--seed", "5")
 
         assert "seed: 5 (as given with --seed)" in capsys.readouterr().out.splitlines()
+
+
+class TestTheInstructionsGate:
+    """2026-10-17: the attended gate reads the live monitor between its keys
+    (Resume starts, Quit cancels at once) and asks a second ESC before it
+    cancels."""
+
+    @pytest.fixture
+    def keys(self, monkeypatch):
+        import sys
+        import types
+
+        batches: list[list[str]] = []
+        event = types.ModuleType("psychopy.event")
+        event.clearEvents = lambda eventType=None: None  # type: ignore[attr-defined]
+        event.getKeys = lambda keyList=None: batches.pop(0) if batches else []  # type: ignore[attr-defined]
+        package = types.ModuleType("psychopy")
+        package.event = event  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "psychopy", package)
+        monkeypatch.setitem(sys.modules, "psychopy.event", event)
+        monkeypatch.setattr("alhazen.session.builder.time.sleep", lambda s: None)
+        return batches
+
+    def test_space_starts(self, keys):
+        from alhazen.session.builder import _psychopy_await_start
+
+        keys.extend([[], ["space"]])
+        assert _psychopy_await_start() is True
+
+    def test_the_pages_resume_and_quit(self, keys):
+        from alhazen.session.builder import _psychopy_await_start
+
+        answers = [[], ["resume"]]
+        assert _psychopy_await_start(answers=lambda: answers.pop(0) if answers else []) is True
+        asked: list = []
+        assert (
+            _psychopy_await_start(answers=lambda: ["quit"], confirm_quit=lambda: asked.append(1))
+            is False
+        )
+        assert asked == []  # the page's Quit was confirmed on the page
+
+    def test_escape_asks_and_a_no_keeps_waiting(self, keys):
+        from alhazen.session.builder import _psychopy_await_start
+
+        keys.extend([["escape"], [], ["space"]])
+        answers = iter([False])
+        assert _psychopy_await_start(confirm_quit=lambda: next(answers)) is True
+        keys.extend([["escape"]])
+        assert _psychopy_await_start(confirm_quit=lambda: True) is False
+
+    def test_only_the_attended_gate_is_bound(self):
+        from alhazen.session.builder import (
+            _bind_start_gate,
+            _psychopy_auto_start,
+            _psychopy_await_start,
+        )
+
+        assert _bind_start_gate(None, answers=None, confirm_quit=None) is None
+        assert (
+            _bind_start_gate(_psychopy_auto_start, answers=list, confirm_quit=None)
+            is _psychopy_auto_start
+        )
+        bound = _bind_start_gate(_psychopy_await_start, answers=list, confirm_quit=None)
+        assert bound.func is _psychopy_await_start and bound.keywords["answers"] is list

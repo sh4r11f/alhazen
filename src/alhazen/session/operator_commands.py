@@ -326,8 +326,10 @@ class OperatorCommands:
                 kept.append(command)
         self._pending = kept
 
-    def take_offered(self, accepted: Collection[str] | None = None) -> list[str]:
-        """The commands the blocking screen up now takes, oldest first, each
+    def take_offered(self, accepted: Collection[str] | None = None, limit: int = 1) -> list[str]:
+        """The commands the blocking screen up now takes, oldest first, at
+        most ``limit`` of them (one by default: a screen acts on one answer
+        per read, as on one key, and the next waits for its next read), each
         acknowledged as applied with its offer's note.
 
         ``accepted`` narrows it to what the screen can act on at this moment
@@ -363,7 +365,7 @@ class OperatorCommands:
                 )
                 self.acknowledge(command, "refused", reason or "not offered")
                 continue
-            if accepted is not None and command.name not in accepted:
+            if (accepted is not None and command.name not in accepted) or len(taken) >= limit:
                 kept.append(command)
                 continue
             self.acknowledge(command, "applied", offer.commands[command.name])
