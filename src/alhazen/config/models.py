@@ -346,13 +346,30 @@ class DatabaseConfig(Model):
 # who wrote it believes they configured something, and nothing at runtime
 # would ever tell them otherwise. Fields absent from both maps are shared.
 EYELINK_ONLY_FIELDS = ("host_ip", "edf_host_filename")
-VIEWPIXX_ONLY_FIELDS = ("eye", "led_intensity", "camera_image", "iris_size_px")
+VIEWPIXX_ONLY_FIELDS = (
+    "eye",
+    "led_intensity",
+    "camera_image",
+    "iris_size_px",
+    "pupil_threshold",
+)
 
 # The TRACKPixx3's expected iris size, in camera px: from 1 up to the height of
 # the camera image it is searched for in (512 px, pypixxlib's TPxGetEyeImage),
 # since an iris cannot be larger than the image. The rig config, the backend
 # and the live monitor server all check against these same bounds.
 IRIS_SIZE_RANGE_PX = (1, 512)
+
+# The TRACKPixx3 infrared illuminator, in its own levels. LabMaestro allows 0-8
+# for human tracking, but 0 turns the lamp off, which no session wants.
+LED_INTENSITY_RANGE = (1, 8)
+
+# The TRACKPixx3 fixed pupil threshold, LabMaestro's "pupil black level
+# threshold": the grey level under which the camera image may be pupil. 0 means
+# automatic (the device chooses, its default; TPxDisableFixedPupilThreshold).
+# VPixx documents no range for TPxSetFixedPupilThreshold(unsigned int); 255, the
+# top of an 8-bit camera image, is an assumption, not a documented limit.
+PUPIL_THRESHOLD_RANGE = (0, 255)
 
 # Target layouts alhazen can lay out itself, for backends whose calibration
 # it drives (viewpixx). The EyeLink accepts more of them, but its Host PC
@@ -645,6 +662,12 @@ class EyeTrackerConfig(Model):
     # device holds; the live monitor's camera panel can change it during a
     # session, and every change is recorded as a TRACKER_SETTING event.
     iris_size_px: int | None = None
+    # TRACKPixx3 fixed pupil threshold (LabMaestro's pupil black level
+    # threshold), 1-255, or 0 for automatic. Raise it when the pupil is lost
+    # because it looks too light; lower it when dark lashes or shadows are
+    # taken for pupil. None leaves the device as it is. The live monitor's
+    # camera panel changes it too, recorded as a TRACKER_SETTING event.
+    pupil_threshold: int | None = None
     # Dropout detection (docs/eye-tracker.md, "When the tracker drops out"):
     # how long the tracker may go without delivering a new sample mid-trial
     # before its recording is called dead and the trial ends as a system
@@ -823,8 +846,17 @@ class EyeTrackerConfig(Model):
                 f"for the viewpixx backend — use one of "
                 f"{', '.join(SELF_DRIVEN_CALIBRATION_TYPES)}"
             )
-        if self.led_intensity is not None and not 1 <= self.led_intensity <= 8:
-            raise ValueError("led_intensity must be in 1-8 (the TRACKPixx3 illuminator range)")
+        led_low, led_high = LED_INTENSITY_RANGE
+        if self.led_intensity is not None and not led_low <= self.led_intensity <= led_high:
+            raise ValueError(
+                f"led_intensity must be in {led_low}-{led_high} (the TRACKPixx3 illuminator range)"
+            )
+        th_low, th_high = PUPIL_THRESHOLD_RANGE
+        if self.pupil_threshold is not None and not th_low <= self.pupil_threshold <= th_high:
+            raise ValueError(
+                f"pupil_threshold must be in {th_low}-{th_high} (a camera grey level; "
+                "0 = automatic)"
+            )
         low, high = IRIS_SIZE_RANGE_PX
         if self.iris_size_px is not None and not low <= self.iris_size_px <= high:
             raise ValueError(

@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import ctypes
 import io
 import logging
 import math
@@ -74,7 +75,12 @@ from typing import Any, TypeVar
 
 import numpy as np
 
-from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
+from alhazen.config.models import (
+    IRIS_SIZE_RANGE_PX,
+    LED_INTENSITY_RANGE,
+    PUPIL_THRESHOLD_RANGE,
+    EyeTrackerConfig,
+)
 from alhazen.core.clock import Clock
 from alhazen.core.commands import DEFAULT_KEYMAP, Command
 from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets, TargetPresenter
@@ -1120,6 +1126,10 @@ class ViewPixxTracker:
         # stop_trial()/shutdown() know whether there is anything real to undo.
         self._tracker: Any = None  # pypixxlib TRACKPixx3 handle, once open
         self._libdpx: Any = None  # pypixxlib's free functions, once imported
+        # The fixed pupil threshold this tracker last set, 0 for automatic;
+        # None until it sets one. The device cannot be asked which mode it is
+        # in (TPxGetFixedPupilThreshold reads the value, not whether it is used).
+        self._pupil_threshold: int | None = None
         # One lock around every call into the device library (see GazeReader).
         # Until connect() this one is private; connect() replaces it with the
         # lock of the DATAPixx3 link (devices/vpixx.py), which the reward gate
@@ -1263,6 +1273,13 @@ class ViewPixxTracker:
             log.info(
                 "TRACKPixx3 expected iris size is %d camera px, as the device holds it",
                 self.iris_size(),
+            )
+        # The fixed pupil threshold likewise: only when the rig asks.
+        if self._cfg.pupil_threshold is not None:
+            held = self.set_pupil_threshold(self._cfg.pupil_threshold)
+            log.info(
+                "TRACKPixx3 pupil threshold set to %s (rig config)",
+                "automatic" if held == 0 else held,
             )
 
         # The device library picks its own filename inside whatever folder it
@@ -1920,6 +1937,110 @@ class ViewPixxTracker:
                 f"asked the TRACKPixx3 for an iris size of {px} px; it holds {held} px"
             )
         return held
+
+    def led_intensity(self) -> int:
+        """The infrared illuminator level the device holds now (1-8).
+
+        Optional capability (protocol.py), for the live monitor's camera panel.
+        """
+        self._require_device("led_intensity()")
+        with self._device_lock:
+            self._libdpx.DPxUpdateRegCache()
+            value = self._libdpx.TPxGetLEDIntensity()
+            fault = dpx_fault(self._libdpx)
+        if fault is not None:
+            raise TrackerError(f"the TRACKPixx3 IR intensity could not be read: {fault}")
+        return int(value)
+
+    def set_led_intensity(self, level: int) -> int:
+        """Set the infrared illuminator level; returns what the device holds.
+
+        Read back after writing, like the iris size: a device holding any
+        other level is an error rather than a number on the page that is not
+        the one in use.
+        """
+        low, high = LED_INTENSITY_RANGE
+        if isinstance(level, bool) or not isinstance(level, int) or not low <= level <= high:
+            raise ValueError(f"IR intensity must be a whole number in [{low}, {high}], got {level!r}")
+        self._require_device("set_led_intensity()")
+        with self._device_lock:
+            self._libdpx.TPxSetLEDIntensity(level)
+            self._libdpx.DPxUpdateRegCache()
+            fault = dpx_fault(self._libdpx)
+            held = None if fault is not None else int(self._libdpx.TPxGetLEDIntensity())
+        if fault is not None:
+            raise TrackerError(f"the TRACKPixx3 refused IR intensity {level}: {fault}")
+        if held != level:
+            raise TrackerError(f"asked the TRACKPixx3 for IR intensity {level}; it holds {held}")
+        return held
+
+    def pupil_threshold(self) -> int | None:
+        """The fixed pupil threshold this tracker set, 0 for automatic, or None
+        when it has set none (the device's own mode, which it cannot report).
+
+        Optional capability (protocol.py), for the live monitor's camera panel.
+        """
+        self._require_device("pupil_threshold()")
+        return self._pupil_threshold
+
+    def set_pupil_threshold(self, value: int) -> int:
+        """Set the fixed pupil threshold (LabMaestro's pupil black level
+        threshold), or 0 to return to automatic; returns the value now in use.
+
+        pypixxlib 1.9 does not wrap these functions; libdpx exports them
+        (libtpx.h: TPxSetFixedPupilThreshold(unsigned int),
+        TPxGetFixedPupilThreshold(), TPxDisableFixedPupilThreshold()), so they
+        are called through the library pypixxlib already loaded. A fixed value
+        is read back; automatic cannot be, since the device does not say which
+        mode it is in.
+        """
+        low, high = PUPIL_THRESHOLD_RANGE
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ValueError(
+                f"pupil threshold must be a whole number in [{low}, {high}] "
+                f"(0 = automatic), got {value!r}"
+            )
+        self._require_device("set_pupil_threshold()")
+        with self._device_lock:
+            if value == 0:
+                self._vendor_function("TPxDisableFixedPupilThreshold", [], None)()
+                self._libdpx.DPxUpdateRegCache()
+                fault = dpx_fault(self._libdpx)
+                held: int | None = 0
+            else:
+                self._vendor_function("TPxSetFixedPupilThreshold", [ctypes.c_uint], None)(value)
+                self._libdpx.DPxUpdateRegCache()
+                fault = dpx_fault(self._libdpx)
+                getter = self._vendor_function("TPxGetFixedPupilThreshold", [], ctypes.c_uint)
+                held = None if fault is not None else int(getter())
+        if fault is not None:
+            shown = "automatic" if value == 0 else value
+            raise TrackerError(f"the TRACKPixx3 refused pupil threshold {shown}: {fault}")
+        if held != value:
+            raise TrackerError(f"asked the TRACKPixx3 for pupil threshold {value}; it holds {held}")
+        self._pupil_threshold = held
+        return held
+
+    def _vendor_function(self, name: str, argtypes: list[Any], restype: Any) -> Callable[..., Any]:
+        """A libdpx function by name: pypixxlib's wrapper when it has one,
+        otherwise the export from the DLL pypixxlib loaded (``DPxDll``).
+        A library without it raises TrackerError naming the update needed."""
+        wrapped = getattr(self._libdpx, name, None)
+        if callable(wrapped):
+            return wrapped  # type: ignore[no-any-return]
+        dll = getattr(self._libdpx, "DPxDll", None)
+        try:
+            function = dll[name] if dll is not None else None
+        except (AttributeError, KeyError, OSError):
+            function = None
+        if function is None:
+            raise TrackerError(
+                f"this VPixx library has no {name}; update VPixx Software Tools "
+                "(pypixxlib and libdpx) to change the pupil threshold"
+            )
+        function.argtypes = argtypes
+        function.restype = restype
+        return function  # type: ignore[no-any-return]
 
     # ------------------------------------------------------------------
     # Per trial

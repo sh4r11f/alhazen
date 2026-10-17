@@ -301,6 +301,31 @@ The **Eye tracker** section of the panels holds:
   recorded as a TRACKER_SETTING event with the value and the one before it.
   Set `eyetracker.iris_size_px` to start every session from a known size;
   left unset, the session logs the size the device holds.
+
+  Two more settings sit under it, changed the same way and recorded the same
+  way:
+
+  - **IR intensity** (1-8), the infrared illuminator. Lower it when extra
+    reflections appear on the eye (glasses, hard contact lenses) or the
+    corneal reflection smears; the tracker needs little light. The session
+    reads the device back. `eyetracker.led_intensity` sets it at the start.
+  - **Pupil threshold**, LabMaestro's *pupil black level threshold*: the
+    grey level under which the camera image may be pupil. **auto** (0) lets
+    the tracker choose, which is the device's default. Raise it when the
+    pupil is lost because it looks too light (light irises, a reflective
+    pupil); lower it when lashes, lid shadow or a dark iris rim are taken for
+    pupil. A fixed value is read back; automatic cannot be, because the device
+    does not report which mode it is in, so the panel shows only what this
+    session set. `eyetracker.pupil_threshold` sets it at the start (0 =
+    automatic). VPixx documents no upper limit for it; alhazen allows up to
+    255, the top of an 8-bit camera image. pypixxlib 1.9 has no Python
+    wrapper for it, so alhazen calls the libdpx exports
+    (`TPxSetFixedPupilThreshold`, `TPxGetFixedPupilThreshold`,
+    `TPxDisableFixedPupilThreshold`) through the library pypixxlib loaded; a
+    library without them says to update VPixx Software Tools.
+
+  Each setting changes what the tracker measures, so recalibrate after
+  changing one.
 - **Calibration** — the verdict (calibrated / NOT calibrated / aborted, or
   *result unknown* when the tracker reported nothing either way — an EyeLink
   Host PC that never ran one, or the scripted tracker in tests), layout,
@@ -819,6 +844,8 @@ devices:
     drift_max_deg: 3.0             # largest offset a drift correction will apply
     camera_image: true             # TRACKPixx3 only: the live monitor's camera panel
     iris_size_px: 120              # TRACKPixx3 only: expected iris size, camera px
+    led_intensity: 5               # TRACKPixx3 only: IR illuminator, 1-8
+    pupil_threshold: 0             # TRACKPixx3 only: pupil grey level, 1-255; 0 = automatic
     max_sample_gap_ms: 100         # no new sample for this long mid-trial = a dropout
                                    #   (default: 50 on an EyeLink, 100 on a TRACKPixx3)
     max_consecutive_dropouts: 3    # dropouts in a row before the session pauses

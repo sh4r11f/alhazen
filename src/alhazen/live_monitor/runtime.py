@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
-from alhazen.config.models import IRIS_SIZE_RANGE_PX, LiveMonitorConfig
+from alhazen.config.models import (
+    IRIS_SIZE_RANGE_PX,
+    LED_INTENSITY_RANGE,
+    PUPIL_THRESHOLD_RANGE,
+    LiveMonitorConfig,
+)
 from alhazen.errors import SessionError
 from alhazen.live_monitor.controls import KNOWN_COMMANDS, status_refusal
 from alhazen.live_monitor.heatmap import check_heatmap
@@ -62,7 +67,11 @@ SAVED_PAGE = "live_monitor.html"
 # The tracker settings the page may change, with the range a value must lie in.
 # Checked here so a malformed request never reaches the session; the session
 # reads the device back and says what it then holds.
-_TRACKER_SETTINGS = {"iris_size_px": IRIS_SIZE_RANGE_PX}
+_TRACKER_SETTINGS = {
+    "iris_size_px": IRIS_SIZE_RANGE_PX,
+    "led_intensity": LED_INTENSITY_RANGE,
+    "pupil_threshold": PUPIL_THRESHOLD_RANGE,
+}
 # When the server passes a setting on: while paused, and while an eye-tracker
 # procedure runs ("calibrating", session/eyetracker.py PROCEDURE_STATUS),
 # because an eye dropping out mid-calibration is exactly when the experimenter
@@ -1035,7 +1044,8 @@ def _serve(
             self._send(HTTPStatus.OK, json.dumps(stream_switches()), "application/json")
 
         def _tracker_setting(self) -> None:
-            """A tracker setting from the page: the camera panel's iris size.
+            """A tracker setting from the page: the camera panel's iris size, IR
+            intensity or pupil threshold.
 
             Refused unless it names a setting this server knows, with a whole
             number inside that setting's range, while the session is paused or

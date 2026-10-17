@@ -841,9 +841,9 @@ alert never covers the picture.
 
 ```mermaid
 flowchart TB
-  S["stats strip: read at · eyes · iris size<br/>one line, with or without an eye"]
+  S["stats strip: read at · eyes · iris size · IR intensity · pupil threshold<br/>one line, with or without an eye"]
   I["camera image, with the eye circles drawn over it<br/>height fixed by the image's shape"]
-  C["Iris size − value +"]
+  C["Iris size − value +<br/>IR intensity − value +<br/>Pupil threshold − value + auto"]
   A["alert: NO EYE IN THE CAMERA IMAGE<br/>only while no eye is found"]
   L["live line, key to the circle, note"]
   S --> I --> C --> A --> L

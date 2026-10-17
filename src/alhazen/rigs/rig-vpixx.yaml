@@ -113,6 +113,7 @@ devices:
     # while paused) keeps alhazen's 3 deg limit: past that it is a
     # calibration that no longer holds, not a drift.
     # led_intensity: 5     # 1-8; omit to keep whatever VPixx's own tools set
+    # pupil_threshold: 0   # 1-255 fixed pupil grey level, 0 = automatic; omit to leave it
     #
     # NOTE: `host_ip` and `edf_host_filename` are EyeLink-only and are a
     # load-time error on this backend. There is no EDF: a run directory gets

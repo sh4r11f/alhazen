@@ -532,3 +532,57 @@ describe('tracker settings', () => {
     assert.equal(live_monitor.byId('notice').textContent, 'Iris size must be a whole number from 1 to 50 px.');
   });
 });
+
+describe('tracker settings with a named zero (the pupil threshold)', () => {
+  const panel = (value) => ({
+    ...CAMERA_PANEL,
+    data: {
+      ...CAMERA_PANEL.data,
+      controls: [
+        { setting: 'pupil_threshold', label: 'Pupil threshold', unit: '', min: 0, max: 255, step: 1, value: value, zero_label: 'auto' },
+      ],
+    },
+  });
+  const button = (live_monitor, text) =>
+    grid(live_monitor).querySelectorAll('button').find((node) => node.textContent === text);
+
+  it('send 0 from the Auto button and call it auto in the notice', async () => {
+    const sent = [];
+    const live_monitor = await livePage({
+      states: [stateWith([panel(60)], { status: 'paused' })],
+      tracker: (url, init) => {
+        sent.push(JSON.parse(init.body));
+        return response({});
+      },
+    });
+    button(live_monitor, 'auto').click();
+    await settle();
+    assert.deepEqual(sent.map((body) => [body.setting, body.value]), [['pupil_threshold', 0]]);
+    assert.equal(live_monitor.byId('notice').textContent, 'Pupil threshold: auto sent to the tracker…');
+  });
+
+  it('show automatic as an empty box marked auto, and step up from it to 1', async () => {
+    const sent = [];
+    const live_monitor = await livePage({
+      states: [stateWith([panel(0)], { status: 'paused' })],
+      tracker: (url, init) => {
+        sent.push(JSON.parse(init.body).value);
+        return response({});
+      },
+    });
+    const input = grid(live_monitor).querySelector('input[data-setting="pupil_threshold"]');
+    assert.equal(input.value, '');
+    assert.equal(input.placeholder, 'auto');
+    button(live_monitor, '+').onpointerdown({ button: 0 });
+    await settle();
+    assert.deepEqual(sent, [1]);
+  });
+
+  it('keep the Auto button inert while the session runs', async () => {
+    const live_monitor = await livePage({
+      states: [stateWith([panel(60)], { status: 'running' })],
+      tracker: () => assert.fail('a setting was sent while running'),
+    });
+    assert.equal(button(live_monitor, 'auto').disabled, true);
+  });
+});

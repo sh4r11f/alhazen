@@ -560,6 +560,25 @@ class TestRequestValidation:
         assert self._post(root, token, "/api/tracker", setting) == 400
         self._still_serving(root, token)
 
+    @pytest.mark.parametrize(
+        ("setting", "value", "expected"),
+        [
+            ("led_intensity", 3, 202),
+            ("led_intensity", 0, 400),
+            ("led_intensity", 9, 400),
+            ("pupil_threshold", 0, 202),
+            ("pupil_threshold", 255, 202),
+            ("pupil_threshold", 256, 400),
+        ],
+    )
+    def test_ir_intensity_and_pupil_threshold_are_held_to_their_ranges(
+        self, server, setting, value, expected
+    ):
+        controller, root, token = server
+        controller.poll_settings()
+        body = {"setting": setting, "value": value, "request_id": f"{setting}-{value}"}
+        assert self._post(root, token, "/api/tracker", body) == expected
+
     def test_a_command_name_that_is_not_a_string_is_refused(self, server):
         # Unhashable, like the request id above: the allow-list lookup raised.
         _controller, root, token = server
