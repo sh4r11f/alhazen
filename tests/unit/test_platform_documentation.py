@@ -28,6 +28,7 @@ from alhazen.experiment_platform.documentation import (
     MAX_MARKDOWN_BYTES,
     DocumentationError,
     SourceFiles,
+    format_value,
     read_documentation,
 )
 from alhazen.experiment_platform.errors import PlatformError
@@ -413,3 +414,218 @@ class TestDescriptorValidation:
         text = b"<script>alert(1)</script> <img src=x onerror=alert(1)>"
         files = with_descriptor(descriptor(), extra={"docs/methods.md": text})
         assert resolve(files)["methods"]["markdown"] == text.decode()
+
+
+def free(name: str, kind: str, **extra: Any) -> dict[str, Any]:
+    """A documented parameter not read from the params file (``source.file`` null)."""
+    return {
+        "name": name,
+        "type": kind,
+        "meaning": "A test value.",
+        "source": {"file": None},
+        **extra,
+    }
+
+
+def add_param(value: dict[str, Any], parameter: dict[str, Any]) -> None:
+    task_of(value)["parameters"].append(parameter)
+
+
+class TestMoreBounds:
+    """Refusals the hub's own tests did not reach, one rule each."""
+
+    @pytest.mark.parametrize(
+        ("change", "match"),
+        [
+            (lambda v: v.update(methods=3), "must be a relative path"),
+            (lambda v: v.update(methods="docs/tasks/../methods.md"), "documentation.methods"),
+            (lambda v: v.update(methods="docs/experiment.json"), "must name a Markdown"),
+            (lambda v: task_of(v).update(parameters_file="docs/methods.md"), ".yaml, .yml"),
+            (lambda v: task_of(v).update(id="1bad"), "must be a task name"),
+            (lambda v: task_of(v).update(parameters={}), "must be a list"),
+            (lambda v: task_of(v).update(timeline=[1]), "must be an object"),
+            (lambda v: v.update(references=["x"] * 101), "the limit is 100"),
+            (lambda v: v.update(summary=3), "must be text"),
+            (lambda v: v.update(summary="a\x01b"), "control characters"),
+            (lambda v: task_of(v)["outcomes"][0].pop("completed"), "completed is required"),
+            (lambda v: task_of(v)["outcomes"][0].update(success="yes"), "true or false"),
+            (lambda v: param_of(v, "iti").update(unit="x" * 30), "unit must be short"),
+            (lambda v: param_of(v, "hold_duration").update(default={"sec": 1}), "must be {'ms'"),
+            (
+                lambda v: param_of(v, "paradigm.n_per_condition").update(default=10.5),
+                "whole number",
+            ),
+            (lambda v: param_of(v, "paradigm.shuffle").update(default="yes"), "true or false"),
+            (
+                lambda v: param_of(v, "paradigm.n_per_condition").update(
+                    constraints={"min": 5, "max": 1}
+                ),
+                "min is greater than max",
+            ),
+            (
+                lambda v: param_of(v, "paradigm.n_per_condition").update(constraints={"max": 1}),
+                "above the documented maximum",
+            ),
+            (
+                lambda v: param_of(v, "paradigm.kind").update(constraints={"choices": ["fixed"]}),
+                "not one of the documented choices",
+            ),
+            (
+                lambda v: param_of(v, "paradigm.kind").update(constraints={"choices": [{"a": 1}]}),
+                "must be text, a number",
+            ),
+            (lambda v: param_of(v, "paradigm.kind").pop("constraints"), "choices"),
+            (
+                lambda v: param_of(v, "paradigm.kind").update(constraints={"note": "open"}),
+                "choices is required",
+            ),
+            (
+                lambda v: add_param(v, free("blob", "object", default={"k": "x" * 5000})),
+                "too large to document",
+            ),
+            (
+                lambda v: (
+                    add_param(v, free("wait", "duration")),
+                    task_of(v)["timeline"]["phases"][1].update(
+                        timing={"kind": "parameter", "param": "wait"}
+                    ),
+                ),
+                "has no default to time",
+            ),
+            (
+                lambda v: task_of(v)["timeline"]["phases"][1].update(
+                    timing={"kind": "fixed", "ms": -1}
+                ),
+                "ms must be >= 0",
+            ),
+            (
+                lambda v: task_of(v)["timeline"]["phases"][0]["timing"].update(max={"ms": -5}),
+                "max.ms must be >= 0",
+            ),
+            (lambda v: task_of(v)["timeline"].update(phases=[]), "at least one phase"),
+            (lambda v: task_of(v)["timeline"]["tracks"][0].update(role="glow"), "role must be"),
+            (lambda v: task_of(v)["timeline"]["branches"][0].update(**{"from": "x"}), "'*'"),
+            (lambda v: task_of(v)["timeline"]["branches"][0].update(kind="win"), "kind must be"),
+            (lambda v: task_of(v)["diagram"].update(unit="<b>"), "unit must be short text"),
+            (lambda v: task_of(v)["diagram"].update(width=500), "at most 200"),
+            (lambda v: task_of(v)["diagram"].update(background=2), "between 0 and 1"),
+            (lambda v: task_of(v)["diagram"].update(elements=[]), "at least one shape"),
+            (lambda v: task_of(v)["diagram"]["elements"][0].update(role="glow"), "role must be"),
+        ],
+    )
+    def test_refused(self, change, match):
+        refused(edit(change), match)
+
+    @pytest.mark.parametrize(
+        ("element", "match"),
+        [
+            ({"type": "grating", "cx": 0, "cy": 0, "radius": 1, "cycles": 41}, "at most 40"),
+            (
+                {"type": "grating", "cx": 0, "cy": 0, "radius": 1, "cycles": 4, "contrast": 2},
+                "between 0 and 1",
+            ),
+            (
+                {
+                    "type": "dot_field",
+                    "cx": 0,
+                    "cy": 0,
+                    "radius": 1,
+                    "dot_radius": 0.1,
+                    "count": 5,
+                    "seed": -1,
+                },
+                "seed must be",
+            ),
+        ],
+    )
+    def test_refused_shapes(self, element, match):
+        refused(edit(lambda v: task_of(v)["diagram"]["elements"].append(element)), match)
+
+    @pytest.mark.parametrize(
+        "raw", [b"fix_size_dva: [1\n", b"fix_size_dva: .nan\n", b"a: {b: [1, .inf]}\n"]
+    )
+    def test_a_bad_params_file_is_refused(self, raw):
+        with pytest.raises(DocumentationError, match="params|parameters file|not finite"):
+            resolve(with_descriptor(descriptor(), extra={"configs/task.yaml": raw}))
+
+
+class TestMoreResolution:
+    def test_every_shape_resolves(self):
+        shapes = [
+            {"type": "ellipse", "cx": 1, "cy": 1, "rx": 1, "ry": 0.5, "rotation": 30},
+            {"type": "rect", "cx": 0, "cy": 0, "width": 2, "height": 1},
+            {"type": "grating", "cx": 0, "cy": 0, "radius": 1, "cycles": 4, "orientation": 45},
+            {"type": "dot_field", "cx": 0, "cy": 0, "radius": 1, "dot_radius": 0.1, "count": 5},
+            {"type": "text", "x": 0, "y": 2, "text": "Label"},
+            {"type": "screen", "cx": 0, "cy": 0, "width": 20, "height": 12},
+            {"type": "arrow", "x1": 0, "y1": 0, "x2": 1, "y2": 1},
+            {
+                "type": "dimension",
+                "x1": 0,
+                "y1": 0,
+                "x2": 2,
+                "y2": 0,
+                "text": "window",
+                "value": {"param": "fix_window_dva"},
+            },
+        ]
+        value = edit(lambda v: task_of(v)["diagram"]["elements"].extend(shapes))
+        drawn = the_task(resolve(with_descriptor(value)))["diagram"]["elements"][-len(shapes) :]
+        ellipse, rect, grating, dots, text, screen, arrow, dimension = drawn
+        assert (ellipse["rotation"], rect["rotation"]) == (30.0, 0.0)
+        assert (grating["orientation"], grating["contrast"]) == (45.0, 1.0)
+        assert (dots["count"], dots["seed"]) == (5, 1)
+        assert text["text"] == "Label" and screen["role"] == "apparatus"
+        assert arrow["role"] == "annotation"
+        assert dimension["value_text"] == "2 dva"
+        assert dimension["refs"]["value"] == {"param": "fix_window_dva", "factor": 1.0}
+
+    def test_a_number_in_seconds_times_a_phase(self):
+        def change(v):
+            add_param(v, free("wait_s", "number", unit="s", default=0.25))
+            task_of(v)["timeline"]["phases"][1].update(
+                timing={"kind": "parameter", "param": "wait_s"}
+            )
+            task_of(v)["timeline"]["phases"][0]["timing"].update(max={"ms": 1500})
+
+        acquire, hold = the_task(resolve(with_descriptor(edit(change))))["timeline"]["phases"]
+        assert (hold["timing"]["ms"], hold["timing"]["text"]) == (250.0, "0.25 s")
+        assert acquire["timing"]["text"] == "until gaze is inside the window, at most 1500 ms"
+
+    def test_a_json_params_file_and_an_explicit_key(self):
+        params = json.dumps({"size": 0.3, "fix_window_dva": 2.0}).encode()
+
+        def change(v):
+            task_of(v).update(parameters_file="configs/task.json")
+            task_of(v)["parameters"] = [
+                {
+                    "name": "fix_size_dva",
+                    "type": "number",
+                    "unit": "dva",
+                    "meaning": "Fixation point size.",
+                    "source": {"key": "size"},
+                },
+                param_of(v, "fix_window_dva"),
+            ]
+            task_of(v).pop("timeline")
+            task_of(v).pop("diagram")
+
+        plain = {"docs/methods.md": b"Methods.", "docs/tasks/fixation-demo.md": b"The task."}
+        files = with_descriptor(edit(change), extra={"configs/task.json": params, **plain})
+        (size, window) = the_task(resolve(files))["parameters"]
+        assert (size["default"], size["source"]["key"], size["source"]["status"]) == (
+            0.3,
+            "size",
+            "read",
+        )
+        assert window["source"]["status"] == "matched"
+
+    def test_value_formatting_of_structures(self):
+        assert format_value({"a": 1, "b": "x"}, None) == "a: 1, b: x"
+        assert format_value({"frames": 3}, None) == "3 frames"
+        assert format_value(1.23456789, "s") == "1.23457 s"
+        assert format_value((1, 2), None) == "(1, 2)"
+
+    def test_source_files_membership(self):
+        files = SourceFiles({"a.md": "x"})
+        assert files.has("a.md") and not files.has("b.md")

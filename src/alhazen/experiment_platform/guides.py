@@ -17,7 +17,9 @@ The decisions it hides:
   ``source.citation``; a ``null`` default is kept with ``nullable: true``; a choice with no
   enumerated choices is validated as a JSON value and keeps its declared type with a note;
   an inline task description becomes a generated Markdown file; tasks that share an id
-  (one per parameters file) get distinct ids and references follow them.
+  (one per parameters file) get distinct ids and references follow them; a timeline
+  written as one line of text (``"fixation 0.5 s | cue 0.2 s | ..."``) is not a drawable
+  timeline: it is kept as ``timelineText`` and the document says no timeline is drawn.
 - **Bounded drawing extensions** on diagram elements: ``color`` (a six-digit hex colour),
   ``font_size`` and ``stroke_width`` (numbers or parameter quantities, positive, at most
   200 diagram units), ``font_family`` and ``font_weight`` (closed lists). They are validated
@@ -41,6 +43,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from alhazen.experiment_platform.documentation import (
+    CONTROL_CHARACTERS,
     MAX_DESCRIPTOR_BYTES,
     TEXT_LIMITS,
     DocumentationError,
@@ -195,6 +198,26 @@ def _short_hash(text: str, length: int) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:length]
 
 
+def _is_text_timeline(value: Any) -> bool:
+    return isinstance(value, str) or (
+        isinstance(value, list) and bool(value) and all(isinstance(v, str) for v in value)
+    )
+
+
+def _legacy_timeline(value: str | list[str], task_id: str) -> str:
+    """A timeline written as text (one line, or a list of stage lines joined with ' | ')."""
+    where = f"task {task_id!r}.timeline"
+    text = value if isinstance(value, str) else " | ".join(v.strip() for v in value)
+    if CONTROL_CHARACTERS.search(text):
+        raise DocumentationError(f"{where} contains control characters")
+    stripped = text.strip()
+    if not stripped or len(stripped) > TEXT_LIMITS["caption"]:
+        raise DocumentationError(
+            f"{where} as text must be 1 to {TEXT_LIMITS['caption']} characters"
+        )
+    return stripped
+
+
 def _adapt_parameters(raw: dict[str, Any]) -> dict[str, Any]:
     """Adapt legacy parameter shapes in place for the version-1 resolver; returns what
     must be restored on the resolved records."""
@@ -334,6 +357,13 @@ def build_guide(
             raw["id"] = original_id + "-" + _short_hash(key, 7)
         seen.add(raw["id"])
         raw = {k: v for k, v in raw.items() if k in TASK_FIELDS}
+        timeline_text = None
+        if _is_text_timeline(raw.get("timeline")):
+            timeline_text = _legacy_timeline(raw.pop("timeline"), original_id)
+            warnings.append(
+                f"task {original_id!r}: its timeline is a line of text, not a drawable "
+                f"timeline; no timeline is drawn for this version"
+            )
         adapted = _adapt_parameters(raw)
         description = raw.get("description")
         if isinstance(description, str) and description not in files:
@@ -357,6 +387,8 @@ def build_guide(
             _apply_extensions(resolved, extensions, f"task {original_id!r}")
         resolved["taskKey"] = key
         resolved["sourceTaskId"] = original_id
+        if timeline_text is not None:
+            resolved["timelineText"] = timeline_text
         if addition:
             resolved["guideNotes"] = addition.get("notes", [])
             resolved["guideSources"] = addition.get("sourceFiles", [])

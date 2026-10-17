@@ -334,6 +334,32 @@ class TestLegacyShapes:
         with pytest.raises(DocumentationError, match="not in this source version"):
             build(descriptor={"tasks": [task(description="docs/tasks/absent.md")]})
 
+    @pytest.mark.parametrize(
+        ("timeline", "text"),
+        [
+            ("fixation 0.5 s | patch 0.2 s", "fixation 0.5 s | patch 0.2 s"),
+            (["fixation 0.5 s", "patch until a key"], "fixation 0.5 s | patch until a key"),
+        ],
+    )
+    def test_a_text_timeline_is_kept_as_text_and_not_drawn(self, timeline, text):
+        guide = build(descriptor={"tasks": [task(timeline=timeline)]})
+        (resolved,) = guide["tasks"]
+        assert resolved["timeline"] is None
+        assert resolved["timelineText"] == text
+        assert "no timeline is drawn" in guide["warnings"][0]
+
+    def test_an_overlay_timeline_replaces_a_text_timeline_silently(self):
+        guide = build(
+            descriptor={"tasks": [task(timeline="fixation 0.5 s")]},
+            overlay=overlay(timeline=TIMELINE),
+        )
+        assert guide["warnings"] == [] and "timelineText" not in guide["tasks"][0]
+
+    @pytest.mark.parametrize("timeline", ["  ", "a\x01b", "x" * 1201])
+    def test_a_malformed_text_timeline_is_refused(self, timeline):
+        with pytest.raises(DocumentationError, match="timeline"):
+            build(descriptor={"tasks": [task(timeline=timeline)]})
+
     def test_unknown_replication_fields_are_not_passed_to_the_reader(self):
         (resolved,) = build(descriptor={"tasks": [task(assumed=[{"item": "x"}])]})["tasks"]
         assert "assumed" not in resolved

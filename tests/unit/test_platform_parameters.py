@@ -8,9 +8,13 @@ imported or run.
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 
+import pytest
+
 from alhazen.experiment_platform import parameters as ep
+from alhazen.experiment_platform.sources import read_tree
 
 RUN_PY = """
 from pathlib import Path
@@ -449,3 +453,292 @@ class ExtractTests(unittest.TestCase):
 
     def test_deterministic(self):
         self.assertEqual(json.dumps(build(), sort_keys=True), json.dumps(build(), sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
+# What the port adds or changes (the hub tests above are unchanged)
+# ---------------------------------------------------------------------------
+def test_yaml_aliases_are_refused_not_expanded():
+    with pytest.raises(ep.SourceError, match="YAML alias at line 2"):
+        ep.parse_yaml("a: &x [1, 2]\nb: *x\n", "t.yaml")
+
+
+def test_an_anchor_without_an_alias_is_harmless():
+    assert ep.parse_yaml("a: &x 1\nb: 2\n", "t.yaml").data == {"a": 1, "b": 2}
+
+
+def test_a_set_whose_file_uses_an_alias_is_reported_not_read():
+    files = project()
+    files["configs/task-fast.yaml"] = "subject_kind: human\nbase: &b {ms: 1}\niti: *b\n"
+    entry = ep.extract_experiment("x", files, source_commit="c", docs=DOCS, library_files=LIB)
+    fast = next(s for s in entry["sets"] if s["id"] == "fast-human")
+    assert fast["values"] == [] and fast["runValues"] == []
+    assert any("fast-human" in w and "YAML alias" in w for w in entry["warnings"])
+
+
+def test_an_alias_in_another_config_is_reported():
+    files = project()
+    files["configs/rig-booth.yaml"] = "a: &x 1\nb: *x\n"
+    entry = ep.extract_experiment("x", files, source_commit="c", docs=DOCS, library_files=LIB)
+    assert any("rig-booth.yaml: YAML alias" in w for w in entry["warnings"])
+    (rig,) = entry["otherConfigs"]
+    assert "extends" not in rig
+
+
+def test_invalid_yaml_in_another_config_is_reported():
+    files = project()
+    files["configs/rig-booth.yaml"] = "a: [1\n"
+    entry = ep.extract_experiment("x", files, source_commit="c", docs=DOCS, library_files=LIB)
+    assert "configs/rig-booth.yaml: invalid YAML" in entry["warnings"]
+
+
+def test_no_run_py_is_an_error():
+    with pytest.raises(ep.SourceError, match="no run.py"):
+        ep.extract_experiment("x", {"configs/task.yaml": "a: 1\n"}, source_commit="c0ffee")
+
+
+def test_experiment_code_is_never_executed(tmp_path):
+    sentinel = tmp_path / "ran"
+    files = project()
+    hostile = f"open({str(sentinel)!r}, 'w').write('x')\n"
+    files["run.py"] = hostile + RUN_PY
+    files["src/demo/task.py"] = hostile + TASK_PY
+    ep.extract_experiment("x", files, source_commit="c", docs=DOCS, library_files=LIB)
+    assert not sentinel.exists()
+
+
+class TestInheritedDefaults:
+    def test_listed_when_the_library_is_given(self):
+        # OtherParams inherits SubjectParams from alhazen; its set has no params file, so
+        # every value is a model default, the inherited ones read from alhazen's source.
+        human = next(s for s in build()["sets"] if s["id"] == "other-human")
+        inherited = {v["key"]: v for v in human["runValues"]}
+        assert sorted(inherited) == ["reward", "subject_kind"]
+        assert all(v["source"] == "model default" for v in inherited.values())
+        assert inherited["subject_kind"]["definedIn"].startswith("lib:alhazen/task/subject_kind.py")
+
+    def test_not_listed_without_the_library(self):
+        human = next(s for s in build(library_files=None)["sets"] if s["id"] == "other-human")
+        assert [v["key"] for v in human["values"] + human["runValues"]] == ["level"]
+
+    def test_warned_when_the_library_is_absent(self):
+        entry = build(library_files=None)
+        warnings = "\n".join(entry["warnings"])
+        assert "params model bases not readable" in warnings
+        assert "run metadata fields (alhazen SubjectParams) unknown" in warnings
+
+    def test_build_parameter_guide_says_when_alhazen_is_not_readable(self):
+        entry = ep.build_parameter_guide(
+            "demo-exp", project(), source_commit="c0ffee", docs=DOCS, library=None, pinned="v9.9.9"
+        )
+        assert entry["alhazen"] == "v9.9.9"
+        assert "runMetadataFields" not in entry
+        assert (
+            "alhazen v9.9.9 source not readable: defaults inherited from alhazen are not listed"
+            in entry["warnings"]
+        )
+
+    def test_build_parameter_guide_binds_the_alhazen_it_read(self):
+        files = project()
+        files["pyproject.toml"] = (
+            "[tool.uv.sources]\n"
+            'alhazen-vision = { git = "https://example.org/a", tag = "v2.1.0" }\n'
+        )
+        entry = ep.build_parameter_guide(
+            "demo-exp",
+            files,
+            source_commit="c0ffee",
+            docs=DOCS,
+            library=LIB,
+            pinned="v0",
+            listed_sets=["Main (human)"],
+            listed_ladders=["Other ladder"],
+        )
+        assert entry["alhazen"] == "v2.1.0"
+        assert entry["runMetadataFields"] == ["reward", "subject_kind"]
+        warnings = "\n".join(entry["warnings"])
+        assert "listing parameterSets ['Main (human)'] differ from run.py at c0ffee" in warnings
+        assert "listing ladders ['Other ladder'] differ from run.py" in warnings
+
+    def test_matching_listing_names_add_no_warning(self):
+        plain = ep.build_parameter_guide(
+            "demo-exp", project(), source_commit="c", docs=DOCS, library=LIB
+        )
+        named = ep.build_parameter_guide(
+            "demo-exp",
+            project(),
+            source_commit="c",
+            docs=DOCS,
+            library=LIB,
+            listed_sets=[s["name"] for s in plain["sets"]],
+            listed_ladders=[lad["name"] for lad in plain["ladders"]],
+        )
+        assert named["warnings"] == plain["warnings"]
+
+
+class TestLibrarySources:
+    def test_alhazen_pin(self):
+        pyproject = 'alhazen-vision = { git = "https://example.org/x.git", tag = "v2.16.0" }\n'
+        assert ep.alhazen_pin({"pyproject.toml": pyproject}) == "v2.16.0"
+        assert ep.alhazen_pin({"pyproject.toml": b"[project]\n"}) is None
+        assert ep.alhazen_pin({}) is None
+
+    def test_run_fields_from_library(self):
+        assert ep.run_fields_from_library(LIB) == {"subject_kind", "reward"}
+        assert ep.run_fields_from_library(None) is None
+        assert ep.run_fields_from_library({"alhazen/task/subject_kind.py": "x = 1\n"}) is None
+        assert ep.run_fields_from_library({"alhazen/task/subject_kind.py": "def (:\n"}) is None
+
+    def test_library_files_from_a_source_tree(self, tmp_path):
+        repo = tmp_path / "alhazen"
+        (repo / "src" / "alhazen" / "task").mkdir(parents=True)
+        (repo / "src" / "alhazen" / "__init__.py").write_text("")
+        (repo / "src" / "alhazen" / "task" / "subject_kind.py").write_text(ALHAZEN_SK)
+        (repo / "src" / "alhazen" / "task" / "data.yaml").write_text("a: 1\n")
+        (repo / "README.md").write_text("x\n")
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.org"]
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run([*git, "-C", str(repo), "add", "."], check=True)
+        subprocess.run([*git, "-C", str(repo), "commit", "-qm", "x"], check=True)
+        whole = ep.library_files(read_tree(repo, "HEAD"))
+        under_src = ep.library_files(read_tree(repo, "HEAD", "src"))
+        assert whole == under_src
+        assert sorted(whole) == ["alhazen/__init__.py", "alhazen/task/subject_kind.py"]
+        assert ep.run_fields_from_library(whole) == {"subject_kind", "reward"}
+
+    def test_library_files_refuses_a_tree_that_is_not_alhazen(self, tmp_path):
+        repo = tmp_path / "other"
+        repo.mkdir()
+        (repo / "x.py").write_text("")
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.org"]
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run([*git, "-C", str(repo), "add", "."], check=True)
+        subprocess.run([*git, "-C", str(repo), "commit", "-qm", "x"], check=True)
+        with pytest.raises(ep.SourceError, match="not alhazen's source"):
+            ep.library_files(read_tree(repo, "HEAD"))
+
+    def test_installed_library_is_this_alhazen(self):
+        import alhazen
+
+        files, version = ep.installed_library()
+        assert version == alhazen.__version__
+        assert "alhazen/task/subject_kind.py" in files
+        assert "alhazen/experiment_platform/parameters.py" in files
+        assert all(path.startswith("alhazen/") and path.endswith(".py") for path in files)
+        assert ep.run_fields_from_library(files) >= {"subject_kind"}
+
+    def test_pin_matches(self):
+        assert ep.pin_matches("2.16.0", "v2.16.0")
+        assert ep.pin_matches("v2.16.0", "2.16.0")
+        assert not ep.pin_matches("2.16.1", "v2.16.0")
+        assert not ep.pin_matches("2.16.0", None)
+
+
+MESSY_RUN_PY = """
+from pathlib import Path
+from demo.task import DemoTask, OtherTask
+import demo
+HERE = Path(__file__).parent
+KEY = "computed"
+TASKS = {
+    "demo": (DemoTask, HERE / "configs" / "task.yaml"),
+    "other": (OtherTask, None),
+    "dotted": (demo.DemoTask, None),
+    "bare": DemoTask,
+    KEY: (DemoTask, None),
+}
+PARAMETERS = {
+    "Main (human)": ("demo", HERE / "configs" / "task.yaml"),
+    "Main (human)": ("demo", HERE / "configs" / "task-fast.yaml"),
+    "Main  (human)": ("demo", HERE / "configs" / "task-list.yaml"),
+    "Odd": "demo",
+    KEY: ("demo", None),
+}
+LADDERS = {
+    "Missing (monkey)": HERE / "configs" / "training-missing.yaml",
+    "Broken (monkey)": HERE / "configs" / "training-broken.yaml",
+    "Bare (monkey)": HERE / "configs" / "training-bare.yaml",
+    "Bad params (monkey)": HERE / "configs" / "training-badparams.yaml",
+    KEY: HERE / "configs" / "x.yaml",
+}
+"""
+
+
+def messy_project() -> dict:
+    files = project()
+    files["run.py"] = MESSY_RUN_PY
+    files["configs/task.yaml"] = (
+        "subject_kind: human\nweird: .nan\nlookup: configs/table.yaml\ndotted:\n  a.b: 1\n"
+    )
+    files["configs/table.yaml"] = "rows: []\n"
+    files["configs/task-list.yaml"] = "- 1\n- 2\n"
+    files["configs/training-broken.yaml"] = "stages: [\n"
+    files["configs/training-bare.yaml"] = "name: bare\n"
+    files["configs/training-badparams.yaml"] = (
+        "name: b\ntitle: B\ntask: nope\nparams: ../elsewhere/task.yaml\n"
+        "stages:\n  - id: s\n    title: S\n    task: ghost\n    params: absent.yaml\n"
+    )
+    return files
+
+
+class TestMessySource:
+    """Constructs the extractor reports instead of guessing (no experiment code runs)."""
+
+    def entry(self) -> dict:
+        return ep.extract_experiment(
+            "messy", messy_project(), source_commit="c0ffee", docs=DOCS, library_files=LIB
+        )
+
+    def test_registry_warnings(self):
+        warnings = "\n".join(self.entry()["warnings"])
+        for expected in [
+            "TASKS has a non-literal key",
+            "task class is not a plain name",
+            "is not a (class, params) tuple",
+            "PARAMETERS has a non-literal label",
+            "names 'Main (human)' twice",
+            "PARAMETERS['Odd'] is not (task, params)",
+            "LADDERS has a non-literal label",
+        ]:
+            assert expected in warnings, expected
+
+    def test_values_that_need_care(self):
+        entry = self.entry()
+        main = next(s for s in entry["sets"] if s["name"] == "Main (human)")
+        values = {v["key"]: v for v in main["values"]}
+        assert values["weird"]["value"] == "nan"
+        assert values["lookup"]["file"] is True
+        assert main["referencedFiles"] == [{"key": "lookup", "path": "configs/table.yaml"}]
+        assert values["dotted"]["value"] == {"a.b": 1}
+        warnings = "\n".join(entry["warnings"])
+        assert "non-finite number" in warnings
+        assert "has keys containing '.'" in warnings
+        table = next(c for c in entry["otherConfigs"] if c["configPath"] == "configs/table.yaml")
+        assert table["kind"] == "data file named by a parameter value"
+        assert table["referencedBy"] == ["lookup"]
+
+    def test_set_ids_stay_unique_and_bad_files_are_reported(self):
+        entry = self.entry()
+        ids = [s["id"] for s in entry["sets"]]
+        assert len(ids) == len(set(ids)) and "main-human-2" in ids
+        warnings = "\n".join(entry["warnings"])
+        assert "task-list.yaml is not a mapping at the top level" in warnings
+
+    def test_ladder_warnings(self):
+        warnings = "\n".join(self.entry()["warnings"])
+        assert "training-missing.yaml not in the source" in warnings
+        assert "'Broken (monkey)'" in warnings
+        assert "training-bare.yaml lacks name, title or a stages list" in warnings
+        assert "runs 'ghost', not one of TASKS" in warnings
+
+    def test_docs_input_errors(self):
+        with pytest.raises(ep.SourceError, match="not JSON"):
+            ep.extract_experiment("x", project(), source_commit="c", docs={"tasks": "{bad"})
+        with pytest.raises(ep.SourceError, match="must be lists"):
+            ep.extract_experiment("x", project(), source_commit="c", docs={"tasks": {"a": 1}})
+
+    def test_no_sets_is_reported(self):
+        files = project()
+        files["run.py"] = "TASKS = {}\nPARAMETERS = {}\n"
+        entry = ep.extract_experiment("x", files, source_commit="c")
+        assert "run.py declares no PARAMETERS sets" in entry["warnings"]

@@ -1506,7 +1506,10 @@ def library_files(tree: Any) -> dict[str, bytes]:
 def installed_library() -> tuple[dict[str, bytes], str]:
     """The installed alhazen's own Python source (keyed ``"alhazen/...py"``) and its
     version. Use it for an experiment only when ``pin_matches(version, tag)``: another
-    version's defaults are not that experiment's."""
+    version's defaults are not that experiment's. A development checkout carries its last
+    release's version number with newer code, so its guide can differ from the tag's in
+    detail (a field's ``definedIn`` line); prefer ``library_files`` of the tag when the
+    alhazen repository is available."""
     import alhazen.version as version_module
 
     root = Path(version_module.__file__).resolve().parent
