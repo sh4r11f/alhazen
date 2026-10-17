@@ -611,8 +611,10 @@ class TestScaffoldedPackageWorks:
         assert (card["rig"]["name"], card["rig"]["source"]) == ("laptop", "alhazen")
         assert Path(card["rig"]["file"]).name == "rig-laptop.yaml"
 
-        # And a command from before 2.5, naming no task, still runs — the
-        # same session — and says on the console that it is going away.
+        # And a command from before 2.5, naming no task, is refused with a
+        # usage error naming the --task to pass (changed in 3.0: from 2.5 it
+        # ran the same session with a FutureWarning), and starts no session.
+        runs_before = set((root / "data-rehearsal").glob("v0.1.0/sub-sim/ses-*/run-*"))
         unnamed = subprocess.run(
             [
                 sys.executable,
@@ -629,10 +631,13 @@ class TestScaffoldedPackageWorks:
             env=environment,
             timeout=600,
         )
-        assert unnamed.returncode == 0, unnamed.stdout + unnamed.stderr
-        assert "FutureWarning: running run.py without --task is deprecated" in unnamed.stderr
-        assert "This session runs bundled-demo, run.py's one task" in unnamed.stderr
-        assert "running bundled-demo: sub-sim" in unnamed.stdout
+        assert unnamed.returncode == 2, unnamed.stdout + unnamed.stderr
+        assert (
+            "run.py (bundled-demo): error: every session names its task; pass --task "
+            "bundled-demo" in unnamed.stderr
+        )
+        assert "running bundled-demo" not in unnamed.stdout
+        assert set((root / "data-rehearsal").glob("v0.1.0/sub-sim/ses-*/run-*")) == runs_before
 
 
 class TestNextRunNumber:

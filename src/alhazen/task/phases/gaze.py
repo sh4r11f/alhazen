@@ -55,9 +55,9 @@ class AcquireFixation:
     under ``latency_record_key`` (default ``acquire_latency_s``), once, when
     fixation is acquired. A trial that acquires fixation twice — a second
     point, a re-fixation — gives each its own name, for the reason
-    :class:`HoldFixation` gives: a name the record already holds is still
-    overwritten, with a ``FutureWarning`` naming it (since 2.6), and 3.0
-    refuses it. The name is checked as ``HoldFixation``'s is.
+    :class:`HoldFixation` gives: writing a name the record already holds is
+    refused with a ValueError naming it (since 3.0; 2.6 to 2.x overwrote it
+    with a ``FutureWarning``). The name is checked as ``HoldFixation``'s is.
     """
 
     name = "acquire_fixation"
@@ -162,8 +162,9 @@ class HoldFixation:
     would replace the first, and the trials file would never hold the
     foreperiod the subject actually waited. A name the trial's record already holds
     when the hold starts — written by an earlier phase, the condition or
-    ``build_trial`` — is still overwritten, as it always was, with a
-    ``FutureWarning`` naming the column (since 2.6); 3.0 refuses it. A name
+    ``build_trial`` — is refused with a ValueError naming the column, which
+    stops the session there (since 3.0; 2.6 to 2.x overwrote it with a
+    ``FutureWarning``). A name
     that is not a plain identifier, or that is one of the columns alhazen
     writes itself (``core.trial.TRIAL_RECORD_COLUMNS``), is refused here.
     """

@@ -513,13 +513,14 @@ run_experiment(tasks=TASKS, default_rig=..., argv=sys.argv[1:])
 ```
 
 — gets a **Task** menu. The page lists the table's names with the first
-selected (or the one run.py's `default_task=` names, while a run.py still
-passes that argument, deprecated since alhazen 2.5), reads the chosen task's
+selected (or, for a project pinned to alhazen 2.x, the one its run.py's
+`default_task=` names: that argument was deprecated in 2.5 and removed in
+3.0), reads the chosen task's
 parameter choices, preselects that task's parameter file in the Task
 parameters menu when the table names one, sends `--task <name>` right after
 the mode on every launch, and shows the task beside the mode in the history.
 Every session names its task, so no launch leaves `--task` out for run.py to
-fill in: from alhazen 3.0 a command without it is refused. The
+fill in: since alhazen 3.0 a command without it is refused. The
 launcher reads the table from `run.py` itself (the way it finds rigs and
 scripts), so it must be a module-level dict literal with string keys and, for
 the preset, each entry's second element written as `HERE / "configs" / "x.yaml"`

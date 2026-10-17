@@ -172,7 +172,12 @@ shipped — `pause_menu` said "removed in 1.2" from 1.1 through 1.5.
 
 2.0 was the first MAJOR to do this: it removed everything 1.x deprecated. The
 list, each name with its replacement, is under "Removed" in the changelog's
-2.0 section.
+2.0 section. 3.0 did the same for 2.x: a run.py command without `--task`,
+`run_experiment(default_task=...)`, a phase writing a record column the
+trial already holds, and `TrialContext.time_up()` with no `frame_period_s`
+are each refused now, with a message saying what to change. Its changelog
+section lists them under "Removed", and "Upgrading from 2.x" says what an
+experiment or an operator changes.
 
 ## 5. Cutting a release
 

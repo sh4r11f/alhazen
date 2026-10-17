@@ -213,10 +213,10 @@ python run.py --mode training --stage fixate --simulate all --gaze autopilot
 python run.py --mode training --stage fixate --simulate all --gaze autopilot --headless
 
 # play the task yourself: the mouse cursor is your eye, the rest is the rig's
-python run.py --mode test --simulate tracker --gaze mouse
+python run.py --task my-task --mode test --simulate tracker --gaze mouse
 
 # the full session on the real rig, but with the pump logged and not fired
-python run.py --mode run --simulate reward
+python run.py --task my-task --mode run --simulate reward
 ```
 
 `--simulate` takes names separated by commas, or `all`:
@@ -674,14 +674,15 @@ first remedy line saying that no `--rig` was given
 **Every session names its task**, with `--task`, even when the experiment has
 only the one: `python run.py --task my-task --mode demo`. With `task_class=`
 the flag's only choice is the task's `name`. It is required in every mode but
-measure, which checks the machine and runs no task. Until alhazen 3.0 a
-command that leaves it out still runs the task it always ran, and warns with
-a `FutureWarning`, which Python always shows (a `DeprecationWarning` raised
-outside `__main__` is hidden), printed against run.py's line:
+measure, which checks the machine and runs no task, and training, where the
+`--stage` names the task. A command that leaves it out is refused as a usage
+error (exit status 2), before anything loads, naming the `--task` to pass:
 
-> running run.py without --task is deprecated since alhazen 2.5 and will be
-> removed in 3.0; use --task my-task instead. This session runs my-task,
-> run.py's one task; alhazen 3.0 will refuse a command that names no task
+> run.py (my-task): error: every session names its task; pass --task my-task
+> (alhazen 3.0 no longer runs a default task when --task is left out)
+
+From 2.5 to 2.x such a command still ran the task it always ran, with a
+`FutureWarning`; 3.0 removed that ([versioning](versioning.md) §4).
 
 An experiment that ships several tasks declares them once, as a table, and
 alhazen owns the `--task` flag — its choices are the table's keys, and the
@@ -702,12 +703,13 @@ raise SystemExit(
 )
 ```
 
-A command without `--task` runs the first task declared, with the warning
-above, until 3.0. `default_task=` — which named another task for such a
-command — is deprecated since 2.5 and removed in 3.0; while a run.py still
-passes it, it still chooses, warns on every run (a `DeprecationWarning`
-pointing at run.py's line), and still decides which task the workspace's Task
-parameters menu opens on.
+A command without `--task` is refused, listing the declared tasks to choose
+from. `default_task=` — which named the task such a command ran — was
+deprecated in 2.5 and removed in 3.0: a run.py that still passes it is
+refused with a `TypeError` saying to delete it and name the task with
+`--task`. (The workspace still reads it out of the run.py of a project
+pinned to alhazen 2.x, whose own alhazen accepts it, to choose which task
+its Task parameters menu opens on.)
 
 Name each params file as `HERE / "configs" / "task.yaml"` (with
 `HERE = Path(__file__).parent`), like a `default_rig` path: a bare string is resolved

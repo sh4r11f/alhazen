@@ -22,16 +22,15 @@ Two rules close it, and a phase that writes through this module keeps both:
   when the phase writes it was put there earlier in the same attempt: by
   another phase (most often a second instance of the same one), or by the
   trial's own condition or ``build_trial``. Whichever it was, its value is
-  about to be lost. Until 3.0 that is a ``FutureWarning``; 3.0 refuses it.
+  about to be lost, so the write is refused. From 2.6 until 3.0 it was a
+  ``FutureWarning`` and the value was replaced; 3.0 removed that.
 """
 
 from __future__ import annotations
 
 import re
-import warnings
 from typing import Any
 
-from alhazen._deprecation import deprecation_message
 from alhazen.core.trial import TRIAL_RECORD_COLUMNS, TrialContext
 
 # What a column name may be: an ASCII identifier. It becomes a CSV header, a
@@ -94,38 +93,28 @@ def _refuse_framework_column(phase: str, argument: str, given: str, column: str)
 
 
 def record_once(ctx: TrialContext, key: str, value: Any, *, phase: str, argument: str) -> None:
-    """Write ``value`` to ``ctx.record[key]``, warning when ``key`` is
+    """Write ``value`` to ``ctx.record[key]``; ValueError when ``key`` is
     already there.
 
     ``phase`` and ``argument`` name the class writing and the constructor
-    argument that renames its column, so the warning says exactly what to
-    change. The value is still written: replacing it is what this phase has
-    always done, and refusing would break a trial that runs today, which
-    only a MAJOR release may do (docs/versioning.md §1, §4).
+    argument that renames its column, so the refusal says exactly what to
+    change. Nothing is written when it refuses: the value already on the
+    record stays, and the error propagates out of the engine and stops the
+    session, because carrying on would save a row that silently lacks one of
+    the two values.
 
-    A ``FutureWarning``, not a ``DeprecationWarning``, for the reason
-    ``run_experiment``'s missing ``--task`` warning gives: the code that
-    must change is the experiment's ``build_trial``, which lives in the
-    experiment's package, and Python hides a ``DeprecationWarning`` raised
-    anywhere but ``__main__``. Its text is the same on every trial — it
-    names no per-trial value — so Python's default filter prints it once
-    per session rather than once per trial. ``stacklevel=2`` points it at
-    the phase's line that called this, which says which phase it was; the
-    experiment's own line is not on the stack (``build_trial`` returned
+    Removed in 3.0 (docs/versioning.md §4): from 2.6 this wrote the value
+    anyway with a ``FutureWarning``, since refusing a trial that ran was a
+    MAJOR change. The message is the warning's, with the replacement first:
+    the experiment's own line is not on the stack (``build_trial`` returned
     long before the phase runs), so the text names the argument to change.
     """
     if key in ctx.record:
-        warnings.warn(
-            deprecation_message(
-                f"{phase} writing its {key!r} column over a value the trial's record already holds",
-                since="2.6",
-                removed_in="3.0",
-                instead=f"a different {argument} for each {phase} in the trial",
-            )
-            + f". An earlier phase of this trial — most likely another {phase} — or the "
-            f"trial's condition or build_trial wrote {key!r} first, and that value is lost "
-            "from trials.csv; alhazen 3.0 will refuse it",
-            FutureWarning,
-            stacklevel=2,
+        raise ValueError(
+            f"{phase} cannot write its {key!r} column: the trial's record already holds "
+            f"{key!r}. An earlier phase of this trial — most likely another {phase} — or the "
+            f"trial's condition or build_trial wrote it first, and writing it again would "
+            f"lose that value from trials.csv. Give each {phase} in the trial a different "
+            f"{argument}"
         )
     ctx.record[key] = value

@@ -238,8 +238,8 @@ class TrialEngine:
         # FakeDisplay and SimulatedDisplay do; the attribute is optional on
         # the DisplayBackend protocol, read like a phase's `must_be_last`,
         # so a backend written before it existed still satisfies the
-        # protocol. With neither, phases fall back to ctx.dt and warn
-        # (TrialContext.time_up).
+        # protocol. With neither, a timed phase's TrialContext.time_up
+        # refuses to count (3.0; 2.5 to 2.x fell back to ctx.dt and warned).
         self._frame_period_s: float | None = (
             frame_monitor.expected_s
             if frame_monitor is not None

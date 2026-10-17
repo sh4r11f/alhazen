@@ -283,6 +283,80 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   resumes on both sides, and a longer run, an early mark, or a run at either
   end of the recording is refused as before.
 
+### Removed
+
+Everything 2.x deprecated for removal in 3.0 (docs/versioning.md §4). Each
+line is what was removed, how 3.0 refuses it, and what to write instead.
+
+- **A run.py command without `--task`** (deprecated in 2.5). It ran the
+  first task declared (or `default_task=`'s, or the one task of
+  `task_class=`) with a `FutureWarning`; now it is a usage error, exit status
+  2, before anything loads or is written: "run.py (task-a | task-b): error:
+  every session names its task; pass --task with one of task-a, task-b
+  (alhazen 3.0 no longer runs a default task when --task is left out)" — with
+  one task, "pass --task <its name>". Instead: `python run.py --task <name>
+  ...`. Measure mode still needs no `--task` (it runs no task), and training
+  takes its task from `--stage`. The experiment workspace already sends
+  `--task` on every mode launch.
+- **`run_experiment(default_task=...)`** (deprecated in 2.5). Passing it is
+  a `TypeError` raised before argv is read: "run_experiment() no longer takes
+  default_task= (deprecated since alhazen 2.5, removed in 3.0): every command
+  names its task with --task, so there is no default to choose. Delete
+  default_task= from run.py and add --task <name> to every command that
+  started that task without it". Instead: delete the argument. Any other
+  unknown keyword is Python's usual "unexpected keyword argument" error, and
+  a type checker flags `default_task=` at the call. The workspace still reads
+  `default_task=` from the run.py of a project pinned to alhazen 2.x, whose
+  own alhazen accepts it, to choose which task its Task menu opens on.
+- **A phase writing a record column the trial already holds** (deprecated in
+  2.6): `HoldFixation`, `AcquireFixation`, `FrameSequence` and
+  `AdjustmentLoop`, every column each writes. It overwrote the earlier value
+  with a `FutureWarning`; now the write raises `ValueError`, which stops the
+  session at that trial without replacing the earlier value: "HoldFixation cannot write
+  its 'hold_duration_s' column: the trial's record already holds
+  'hold_duration_s'. An earlier phase of this trial — most likely another
+  HoldFixation — or the trial's condition or build_trial wrote it first, and
+  writing it again would lose that value from trials.csv. Give each
+  HoldFixation in the trial a different duration_record_key". Instead: give
+  each such phase its own `duration_record_key`, `latency_record_key`,
+  `value_record_key` or `record_prefix`, as the message names.
+- **`TrialContext.time_up()` on a context with no `frame_period_s`**
+  (deprecated in 2.5). It counted in `ctx.dt`, the length of the last frame,
+  with a `DeprecationWarning`; now it raises `ValueError` ("time_up counts in
+  frames, and this context has no frame_period_s: ... Set
+  ctx.frame_period_s to the frame period in seconds (1 / refresh rate) before
+  stepping it"). The engine sets the period on every trial, from the frame
+  monitor or the display, so only a phase stepped by hand meets this, or an
+  engine built with neither a frame monitor nor a display that reports
+  `frame_period_s`. Instead: set `ctx.frame_period_s` where the test builds
+  its context.
+
+### Upgrading from 2.x
+
+What an experiment or an operator changes when moving to 3.0; none of it
+touches data. The on-disk contracts — `core.rng.STREAMS`, `RESERVED_EVENTS`
+and the run-directory layout, pinned by `tests/unit/test_contracts.py` — are
+unchanged, so a seed draws what it drew and every run recorded under 2.x
+reads as before.
+
+- **Commands:** every `python run.py ...` outside measure and training names
+  its task with `--task <name>`: README quick starts, scripts, notebooks, CI
+  jobs, Makefiles, shell history. A 2.x session that printed "running run.py
+  without --task is deprecated" is one that 3.0 refuses.
+- **run.py:** delete `default_task=` from the `run_experiment(...)` call.
+- **Tasks:** a trial whose phases share a column name — a 2.x session that
+  printed "... writing its '<column>' column over a value the trial's record
+  already holds" — must name each phase's column; 3.0 stops the session at
+  the first trial where the phases collide.
+- **Tests:** a test that steps a phase by hand on a `TrialContext` it built
+  itself sets `ctx.frame_period_s` (for example `1 / 60`) before calling the
+  phase; a test running whole trials through `TrialEngine` with
+  `FakeDisplay` or `SimulatedDisplay`, or through a session, needs nothing.
+  Tests that asserted these `FutureWarning`s or `DeprecationWarning`s assert
+  the refusals instead.
+- **The experiment workspace:** a 3.0 dashboard still launches projects
+  pinned to 2.x as before; each project runs on its own alhazen.
+
 ## 2.16.0 - 2026-10-13
 
 ### Added

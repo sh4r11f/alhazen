@@ -892,12 +892,14 @@ class TestTheFramePeriod:
         assert SimulatedDisplay(120.0, frame_period_s=0.0).frame_period_s == pytest.approx(1 / 120)
         assert SimulatedDisplay(165.0).frame_period_s == pytest.approx(1 / 165)
 
-    def test_with_neither_a_phase_falls_back_to_dt_and_says_so(self) -> None:
+    def test_with_neither_a_timed_phase_is_refused(self) -> None:
+        # Changed in 3.0: this fell back to ctx.dt with a DeprecationWarning
+        # (2.5 to 2.x). Now a timed phase cannot count frames it has no
+        # period for, and says how to give it one.
         rig = Rig(60.0, display=lambda clock: NoPeriodDisplay(clock, 1 / 60))
-        with pytest.warns(DeprecationWarning, match="frame_period_s.*3.0"):
+        with pytest.raises(ValueError, match="this context has no frame_period_s"):
             rig.run([HoldFixation(duration_s=3 / 60, on_break=BROKE), Next()])
         assert rig.ctx.frame_period_s is None
-        assert len(rig.frames_of("fixation")) == 3
 
 
 # ----------------------------------------------------------------------
@@ -963,13 +965,21 @@ class TestTimeUp:
         with pytest.raises(ValueError, match="frame_period_s"):
             bare_context(bad).time_up(0.0, 0.1)
 
-    def test_with_no_frame_period_it_uses_dt_and_warns(self) -> None:
+    def test_with_no_frame_period_it_is_refused_even_with_a_dt(self) -> None:
+        # Changed in 3.0: 2.5 to 2.x counted in ctx.dt here and warned.
         clock = FakeClock()
         ctx = bare_context(None, clock)
         ctx.dt = 1 / 120
         clock.advance(12 / 120)
-        with pytest.warns(DeprecationWarning, match="removed in 3.0"):
-            assert ctx.time_up(0.0, 0.1)
+        with pytest.raises(ValueError) as error:
+            ctx.time_up(0.0, 0.1)
+        assert str(error.value) == (
+            "time_up counts in frames, and this context has no frame_period_s: the engine "
+            "sets it on every trial it runs, so this is a phase stepped by hand. Set "
+            "ctx.frame_period_s to the frame period in seconds (1 / refresh rate) before "
+            "stepping it. alhazen 3.0 removed the fallback to ctx.dt, the length of the "
+            "last frame"
+        )
 
     def test_with_a_frame_period_it_does_not_warn(self) -> None:
         with warnings.catch_warnings():

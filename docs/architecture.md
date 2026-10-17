@@ -494,9 +494,10 @@ time reaches its duration, as it always did.
 expected period — the measured refresh rate, which every session wires — or,
 in an engine built without a monitor (a test), the display's own
 `frame_period_s` (`FakeDisplay` and `SimulatedDisplay` report one). A context
-that has neither — a phase stepped by hand in a test, with no engine —
-falls back to `ctx.dt` and says so with a `DeprecationWarning`; from 3.0 the
-period is required.
+that has neither — a phase stepped by hand in a test, with no engine — is
+refused by `time_up` with a `ValueError` saying to set `ctx.frame_period_s`
+(since 3.0; from 2.5 to 2.x it fell back to `ctx.dt` with a
+`DeprecationWarning`).
 
 **What does not change.** One clock: `time_up` reads `ctx.clock`, the
 session clock. Events stamped on flips: nothing is emitted except after a
@@ -998,9 +999,10 @@ through `task/phases/_record.record_once`. The record is built fresh for
 every attempt (`session/runner.py`), phases run once each and in order, and
 each of these writes a column once: a name already on the record then was
 written earlier in the same attempt — by another phase, or by the
-condition or `build_trial` — and is about to be lost. Since 2.6 that is a
-`FutureWarning` naming the column and the argument that renames it; 3.0
-refuses it. The new names are checked when the phase is built
+condition or `build_trial` — and is about to be lost, so the write is
+refused with a `ValueError` naming the column and the argument that renames
+it, leaving the first value on the record (since 3.0; from 2.6 to 2.x it was
+a `FutureWarning` and the value was replaced). The new names are checked when the phase is built
 (`_record.column_name`, `column_prefix`): an identifier, and none of
 `TRIAL_RECORD_COLUMNS`, most of which the engine writes after the phases
 run, where no check at write time could see the phase's value replaced.
@@ -2371,15 +2373,15 @@ run` always needed `--task`; `run_experiment` now puts `--task` on run.py's
 parser in both forms — the table's keys for `tasks=`, the one task's `name`
 for `task_class=` — and every command the scaffold prints passes it.
 Refusing a command that used to work is a MAJOR change (versioning.md §1,
-§4), so in 2.x a run.py command without `--task` still runs what it ran
-(`default_task=`, else the first declared; the one task) and emits a
-`FutureWarning` naming that task and saying 3.0 refuses it — a
-`FutureWarning`, not a `DeprecationWarning`, because whoever typed the
-command must see it and Python hides a `DeprecationWarning` raised outside
-`__main__`. `default_task=` is deprecated with it. Measure mode runs no task
-and needs none. The workspace sends `--task` on every mode launch: the Task
-menu's choice, or for a one-task project on alhazen 2.5 or later the name
-its parameter schema reports (`x-alhazen-task`, written by
+§4), so from 2.5 to 2.x a run.py command without `--task` still ran what it
+ran (`default_task=`, else the first declared; the one task) with a
+`FutureWarning` naming that task, and `default_task=` was deprecated with it.
+3.0 removed both: the command is a usage error (`parser.error`, exit status
+2) naming the `--task` to pass, before anything loads, and `default_task=`
+is a `TypeError` saying to delete it. Measure mode runs no task, and training
+takes its task from `--stage`; neither needs one named. The workspace sends
+`--task` on every mode launch: the Task menu's choice, or for a one-task
+project on alhazen 2.5 or later the name its parameter schema reports (`x-alhazen-task`, written by
 `cli/workspace_schema.py`), which a launch that cannot read refuses.
 
 ```mermaid
@@ -2387,9 +2389,8 @@ flowchart LR
     CMD["run.py command"] --> HAS{"--task given?"}
     HAS -- "yes" --> RUN["that task runs"]
     HAS -- "no, mode measure" --> MEAS["no task runs;<br/>the experiment's folder only"]
-    HAS -- "no, any other mode" --> OLD{"alhazen"}
-    OLD -- "2.x" --> WARN["FutureWarning naming the task,<br/>then default_task / first / the one task runs"]
-    OLD -- "3.0" --> REFUSE["refused"]
+    HAS -- "no, mode training" --> STAGE["the --stage's task runs"]
+    HAS -- "no, any other mode" --> REFUSE["usage error naming the --task to pass<br/>(2.5–2.x: FutureWarning, then the first task ran)"]
 ```
 
 The acceptance test **installs** the rendered package (`pip --target`, in a

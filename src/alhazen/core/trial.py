@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import math
 import re
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
-from alhazen._deprecation import deprecation_message
 from alhazen.config.models import RewardPulses, whole_frames
 from alhazen.core.clock import Clock
 from alhazen.display.screen import Screen, within_radius
@@ -473,7 +471,8 @@ class TrialContext:
     # engine built without one, from the display's own ``frame_period_s``
     # (FakeDisplay and SimulatedDisplay report one). None only on a context
     # nothing has set it on — a phase stepped by hand in a test, with no
-    # engine — where time_up falls back to ``dt`` and warns (removed in 3.0).
+    # engine — where time_up refuses to count (3.0; 2.5 to 2.x fell back to
+    # ``dt`` with a DeprecationWarning). Set it yourself when stepping by hand.
     frame_period_s: float | None = None
     # What end_undrawn was handed during the current on_frame call, or None.
     # The engine clears it before every on_frame and reads it after: it is
@@ -509,30 +508,21 @@ class TrialContext:
         Raises ValueError for a duration that is not a finite number of
         seconds >= 0, a ``since`` later than now (a time that has not
         happened cannot be what a duration started from), and a
-        ``frame_period_s`` that is not a positive number. With
-        ``frame_period_s`` None, uses ``dt`` — the measured length of the
-        last frame, which a test stepping a clock by hand sets to its step —
-        and raises a DeprecationWarning saying the period is required from
-        3.0.
+        ``frame_period_s`` that is not a positive number, and a context whose
+        ``frame_period_s`` is None: the engine sets it on every trial, so None
+        means a phase stepped by hand, which must set it to the frame period
+        itself. From 2.5 until 3.0 it fell back to ``dt`` — the length of the
+        last frame — with a DeprecationWarning; 3.0 removed the fallback.
         """
         period = self.frame_period_s
         if period is None:
-            warnings.warn(
-                deprecation_message(
-                    "TrialContext.time_up() on a context with no frame_period_s (it falls back "
-                    "to ctx.dt, the length of the last frame)",
-                    since="2.5",
-                    removed_in="3.0",
-                    instead=(
-                        "a context the engine runs, which sets frame_period_s on every trial, or "
-                        "set ctx.frame_period_s to the frame period yourself when stepping a "
-                        "phase by hand"
-                    ),
-                ),
-                DeprecationWarning,
-                stacklevel=2,
+            raise ValueError(
+                "time_up counts in frames, and this context has no frame_period_s: the engine "
+                "sets it on every trial it runs, so this is a phase stepped by hand. Set "
+                "ctx.frame_period_s to the frame period in seconds (1 / refresh rate) before "
+                "stepping it. alhazen 3.0 removed the fallback to ctx.dt, the length of the "
+                "last frame"
             )
-            period = self.dt
         if not (math.isfinite(period) and period > 0):
             raise ValueError(
                 f"time_up counts in frames, and this context's frame_period_s is {period!r}; "

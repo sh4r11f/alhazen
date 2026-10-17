@@ -794,7 +794,7 @@ class TestSessionsStartedByName:
         code = run_experiment(
             task_class=task_in_experiment,
             default_rig="lab",
-            argv=["--mode", "simulate", "--headless"],
+            argv=["--task", "rig-demo", "--mode", "simulate", "--headless"],
         )
         assert code == 0
         args = seen["args"]
@@ -810,7 +810,7 @@ class TestSessionsStartedByName:
             default_rig="alhazen/lab-rehearsal",
             # The shared rehearsal rig turns the live monitor on, whose child
             # process is no part of what this checks.
-            argv=["--mode", "simulate", "--headless", "--no-live-monitor"],
+            argv=["--task", "rig-demo", "--mode", "simulate", "--headless", "--no-live-monitor"],
         )
         assert code == 0, capsys.readouterr().err
         snapshot = next((tmp_path / "data-rehearsal").rglob("config_snapshot.yaml"))

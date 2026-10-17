@@ -259,21 +259,46 @@ class TestAdjustmentLoop:
         assert (result.record["second_value"], result.record["second_turns"]) == (3.0, 1)
         assert "second_s" in result.record
 
-    def test_two_adjustments_under_the_same_names_warn_once_per_column(self):
-        with pytest.warns(FutureWarning) as caught:
-            _harness, result = self.two_adjustments({})
-        messages = [str(w.message) for w in caught if w.category is FutureWarning]
-        # Each column says which argument renames it.
-        assert len(messages) == 3, messages
-        assert messages[0].startswith(
-            "AdjustmentLoop writing its 'adjusted_value' column over a value"
+    def refused_second_adjustment(self, second_names):
+        """two_adjustments, for a second adjustment that is refused: the
+        error, and the record as the refusal left it."""
+        store = {"value": 0.0}
+        first = self.phase(store, on_commit=PhaseAction.ADVANCE)
+        second = self.phase(store, **second_names)
+        inputs = [InputFrame(wheel=1.0), press("space"), InputFrame(wheel=2.0), press("space")]
+        harness = EngineHarness(
+            input_provider=ScriptedInputs(inputs),
+            declared_events=("RESPONSE_CUE", "RESPONSE", "STIM_ON"),
         )
-        assert "use a different value_record_key for each AdjustmentLoop" in messages[0]
-        assert messages[1].startswith("AdjustmentLoop writing its 'adjustment_turns' column")
-        assert messages[2].startswith("AdjustmentLoop writing its 'adjustment_s' column")
-        assert all("use a different record_prefix" in m for m in messages[1:])
-        # Still overwritten, as before 2.6.
-        assert result.record["adjusted_value"] == 3.0
+        ctx = harness.ctx(stimuli={"target": FakeStimulus("target")})
+        with pytest.raises(ValueError) as error:
+            harness.engine.run_trial(ctx, [first, second])
+        return str(error.value), ctx.record
+
+    def test_two_adjustments_under_the_same_names_are_refused_at_the_value(self):
+        # Changed in 3.0: 2.6 to 2.x warned once per column and overwrote
+        # all three. Now the first collision refuses, naming the argument
+        # that renames that column, and the first adjustment's values stay.
+        message, record = self.refused_second_adjustment({})
+        assert message == (
+            "AdjustmentLoop cannot write its 'adjusted_value' column: the trial's record "
+            "already holds 'adjusted_value'. An earlier phase of this trial — most likely "
+            "another AdjustmentLoop — or the trial's condition or build_trial wrote it first, "
+            "and writing it again would lose that value from trials.csv. Give each "
+            "AdjustmentLoop in the trial a different value_record_key"
+        )
+        assert (record["adjusted_value"], record["adjustment_turns"]) == (1.0, 1)
+
+    def test_a_shared_prefix_is_refused_naming_record_prefix(self):
+        # Each column says which argument renames it: with the value under a
+        # name of its own, the turns column is the first collision.
+        message, record = self.refused_second_adjustment(dict(value_record_key="second_value"))
+        assert message.startswith(
+            "AdjustmentLoop cannot write its 'adjustment_turns' column: the trial's record "
+            "already holds 'adjustment_turns'."
+        )
+        assert message.endswith("Give each AdjustmentLoop in the trial a different record_prefix")
+        assert record["adjustment_turns"] == 1
 
     @pytest.mark.parametrize("prefix", ["", "adjust ment", "2nd", None])
     def test_a_prefix_that_cannot_begin_a_column_is_refused_when_built(self, prefix):
@@ -350,19 +375,24 @@ class TestFrameSequence:
             )
         assert (result.record["sequence_frames"], result.record["probe_frames"]) == (5, 3)
 
-    def test_two_sequences_under_one_prefix_warn_naming_the_column(self):
-        with pytest.warns(FutureWarning) as caught:
-            _harness, result = run(
-                [self.timeline_phase(), FrameSequence(FrameTimeline(3)), _EndPhase()], [NOTHING]
-            )
-        (message,) = [str(w.message) for w in caught if w.category is FutureWarning]
-        assert message.startswith(
-            "FrameSequence writing its 'sequence_frames' column over a value the trial's record "
-            "already holds is deprecated since alhazen 2.6"
+    def test_two_sequences_under_one_prefix_are_refused_naming_the_column(self):
+        # Changed in 3.0: 2.6 to 2.x warned and overwrote the first length.
+        harness = EngineHarness(
+            input_provider=ScriptedInputs([NOTHING]),
+            declared_events=("RESPONSE_CUE", "RESPONSE", "STIM_ON"),
         )
-        assert "use a different record_prefix for each FrameSequence in the trial" in message
-        # Still overwritten, as before 2.6.
-        assert result.record["sequence_frames"] == 3
+        ctx = harness.ctx(stimuli={"target": FakeStimulus("target")})
+        with pytest.raises(ValueError) as error:
+            harness.engine.run_trial(
+                ctx, [self.timeline_phase(), FrameSequence(FrameTimeline(3)), _EndPhase()]
+            )
+        message = str(error.value)
+        assert message.startswith(
+            "FrameSequence cannot write its 'sequence_frames' column: the trial's record "
+            "already holds 'sequence_frames'."
+        )
+        assert message.endswith("Give each FrameSequence in the trial a different record_prefix")
+        assert ctx.record["sequence_frames"] == 5
 
     @pytest.mark.parametrize(
         ("prefix", "match"),

@@ -106,8 +106,8 @@ That is a complete session, on the rig's own config, with nobody in the
 chair and no window open — `simulate` stands the rig's devices down and
 `--headless` takes the panel away, so it runs on a laptop with nothing
 attached. `--task saccade-bias` names the task, though the package has only
-the one: every session names its task (a command without it still runs, with
-a warning, until alhazen 3.0 refuses it). Look at what it wrote:
+the one: every session names its task, and since alhazen 3.0 a command
+without it is refused. Look at what it wrote:
 
 ```
 data-rehearsal/v0.1.0/sub-s01/ses-001/run-01_task-saccade-bias/

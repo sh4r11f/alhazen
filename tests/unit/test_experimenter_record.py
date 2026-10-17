@@ -83,6 +83,8 @@ class TestCommandLine:
 
     def test_the_flags_reach_the_session(self, tmp_path, monkeypatch):
         argv = [
+            "--task",
+            "initials-check",
             "--mode",
             "simulate",
             "--headless",
@@ -103,7 +105,9 @@ class TestCommandLine:
 
     def test_an_id_without_a_name_is_a_usage_error(self, tmp_path, monkeypatch, capsys):
         code, seen = self.start(
-            tmp_path, monkeypatch, ["--mode", "simulate", "--experimenter-id", "e_1"]
+            tmp_path,
+            monkeypatch,
+            ["--task", "initials-check", "--mode", "simulate", "--experimenter-id", "e_1"],
         )
         assert code == 2 and seen == {}
         assert "needs --experimenter" in capsys.readouterr().err

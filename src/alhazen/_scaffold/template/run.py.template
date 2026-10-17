@@ -23,9 +23,9 @@ as ``python run.py --task $task_name --mode demo --rig mac`` does for the Mac's
 file here.
 
 Every command names the task, ``--task $task_name``, though this package has
-only the one: every session alhazen starts names its task. Until alhazen 3.0
-a command without it still runs $task_name and warns; 3.0 refuses it.
-(``--mode measure`` checks the machine and runs no task, so it needs none.)
+only the one: every session alhazen starts names its task, and a command
+without it is refused, saying to pass ``--task $task_name``. (``--mode
+measure`` checks the machine and runs no task, so it needs none.)
 
 This exists so the experiment can be started without installing anything.
 Once the package is installed (``pip install -e .``),
