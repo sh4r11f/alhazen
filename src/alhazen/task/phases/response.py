@@ -169,9 +169,9 @@ class AdjustmentLoop:
     frames the wheel moved on — at either, and ``<prefix>_s``, the time to
     the commit, at a commit only. A trial with two adjustments gives each its
     own ``value_record_key`` and ``record_prefix``, for the reason
-    ``HoldFixation`` gives: any of the three columns the record already
-    holds is still overwritten, with a ``FutureWarning`` naming it (since
-    2.6), and 3.0 refuses it. A prefix that is not a plain identifier, or
+    ``HoldFixation`` gives: writing any of the three columns the record
+    already holds is refused with a ValueError naming it (since 3.0; 2.6 to
+    2.x overwrote it with a ``FutureWarning``). A prefix that is not a plain identifier, or
     that makes one of the columns alhazen writes itself, is refused here.
     """
 
