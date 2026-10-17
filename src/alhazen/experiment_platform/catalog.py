@@ -354,7 +354,7 @@ def build_version(
         docs["assumed"] = json.dumps(doc.get("assumed") or [])
         docs["deviations"] = json.dumps(doc.get("deviations") or [])
 
-    parameter_guide = _parameter_guide(exp, tree, doc, docsource, library, warnings)
+    parameter_guide = _parameter_guide(exp, tree, doc, docsource, library, listing, warnings)
     if parameter_guide is not None:
         docs["parameterGuide"] = json.dumps(parameter_guide, ensure_ascii=False)
     guide = _reader_guide(listing, docs, tree, doc_source, doc, overlay, warnings)
@@ -375,6 +375,7 @@ def _parameter_guide(
     doc: Mapping[str, Any],
     docsource: str,
     library: Mapping[str, Any] | None,
+    listing: Mapping[str, Any],
     warnings: list[str],
 ) -> dict[str, Any] | None:
     if "run.py" not in tree.files:
@@ -383,26 +384,21 @@ def _parameter_guide(
     from alhazen.experiment_platform import parameters
 
     try:
-        guide = parameters.extract_experiment(
+        return parameters.build_parameter_guide(
             exp,
             tree.files,
             source_commit=tree.commit,
             docs=dict(doc) if doc else None,
             docs_origin=docsource,
-            library_files=library,
+            library=library,
             source_root=tree.subdir,
+            pinned=listing.get("alhazen") or None,
+            listed_sets=list(listing.get("parameterSets") or []),
+            listed_ladders=list(listing.get("ladders") or []),
         )
     except PlatformError as error:
         warnings.append(f"The parameter guide could not be built: {error}")
         return None
-    tag = alhazen_tag(tree.text("pyproject.toml"))
-    guide["alhazen"] = tag or None
-    if library is None:
-        guide.setdefault("warnings", []).append(
-            f"alhazen {tag or '(unpinned)'} source not available: "
-            "defaults inherited from alhazen are not listed"
-        )
-    return guide
 
 
 def _reader_guide(
@@ -421,23 +417,15 @@ def _reader_guide(
     files = dict(tree.files)
     if doc_source is not tree:
         files.update({p: b for p, b in doc_source.files.items() if p.startswith("docs/")})
-    applied = (
-        overlay
-        if overlay is not None and guides.overlay_applies(overlay, listing["bundle"]["id"])
-        else None
-    )
-    if overlay is not None and applied is None:
-        warnings.append(
-            f"A guide overlay for {overlay.get('bundleId')} was not applied: "
-            "it describes another version"
-        )
     try:
-        return guides.build_guide(
-            dict(listing), dict(docs), files, descriptor=dict(doc), overlay=applied
+        guide = guides.build_guide(
+            dict(listing), dict(docs), files, descriptor=dict(doc), overlay=overlay
         )
     except PlatformError as error:
         warnings.append(f"The task guides could not be resolved for this version: {error}")
         return None
+    warnings.extend(str(w) for w in guide.get("warnings") or [] if "overlay" in str(w))
+    return guide
 
 
 def docs_status(listing: Mapping[str, Any], docs: Mapping[str, Any] | None) -> str:

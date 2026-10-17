@@ -329,8 +329,12 @@ def blobs_from_zip(raw: bytes, max_expanded: int = MAX_ARCHIVE_EXPANDED) -> list
             if path in seen:
                 raise BundleError(f"File {path!r} appears twice in the archive")
             seen.add(path)
-            with archive.open(info) as handle:
-                data = handle.read(max_expanded + 1)
+            # zipfile reads exactly the recorded size and checks the CRC, and the
+            # recorded sizes were bounded above, so this cannot expand without limit.
+            try:
+                data = archive.read(info)
+            except (zipfile.BadZipFile, ValueError, OSError) as error:
+                raise BundleError(f"{path!r} could not be read from the archive") from error
             if len(data) != info.file_size:
                 raise BundleError(f"{path!r} does not match its recorded size")
             mode = info.external_attr >> 16

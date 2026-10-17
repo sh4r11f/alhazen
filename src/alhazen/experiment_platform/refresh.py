@@ -92,16 +92,16 @@ def repo_label_of(repo: Path) -> str:
 
 
 def _overlay_file(path: Path) -> dict[str, Any]:
+    from alhazen.experiment_platform import guides
+
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise InvalidRequest(f"The guide overlay {path.name} could not be read: {error}") from error
-    if not isinstance(value, dict) or not isinstance(value.get("bundleId"), str):
+    overlay = guides.parse_overlay(raw)
+    if not overlay or not isinstance(overlay.get("bundleId"), str):
         raise InvalidRequest(f"The guide overlay {path.name} has no bundleId")
-    if "json" in value and "tasks" not in value:  # the Mana platform stores it as a JSON string
-        inner = json.loads(value["json"])
-        value = {"bundleId": value["bundleId"], **inner}
-    return value
+    return overlay
 
 
 def load_config(path: Path) -> list[SourceSpec]:
@@ -156,26 +156,26 @@ _LIBRARY_CACHE: dict[tuple[str, str], dict[str, bytes] | None] = {}
 
 def alhazen_library(tag: str, alhazen_repo: Path | None) -> dict[str, bytes] | None:
     """alhazen's ``src`` files at ``tag`` ({"alhazen/...py": bytes}): from a git clone of
-    alhazen when one is given, else from the installed alhazen when its version is the
-    tag's. None when neither is available (the parameter guide then says so)."""
+    alhazen when one is given (preferred: exactly the tag), else from the installed alhazen
+    when its version is the tag's. None when neither is available (the parameter guide
+    then says that defaults inherited from alhazen are not listed)."""
     if not tag:
         return None
     key = (str(alhazen_repo or ""), tag)
     if key in _LIBRARY_CACHE:
         return _LIBRARY_CACHE[key]
+    from alhazen.experiment_platform import parameters
+
     found: dict[str, bytes] | None = None
     if alhazen_repo is not None:
         try:
-            tree = sources.read_tree(alhazen_repo, tag, "src")
-            found = {p: b for p, b in tree.files.items() if p.endswith(".py")}
+            found = parameters.library_files(sources.read_tree(alhazen_repo, tag, "src"))
         except PlatformError:
             found = None
     if found is None:
-        from alhazen.experiment_platform import parameters
-
-        installed = parameters.installed_library()
-        if installed is not None and tag.lstrip("v") == installed[0]:
-            found = installed[1]
+        files, version = parameters.installed_library()
+        if parameters.pin_matches(version, tag):
+            found = files
     _LIBRARY_CACHE[key] = found
     return found
 
