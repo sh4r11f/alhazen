@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from pydantic import ValidationError
 
+from alhazen import __version__
 from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.cli.people import Conflict
 from alhazen.cli.workspace import (
@@ -127,7 +128,15 @@ SAVED_PAGE_CSP = (
 def record_holder(directory: Path, *, url: str | None = None) -> None:
     """Record this process as the workspace's holder, with its page's address
     once the server has bound a port (the lock is taken before that)."""
-    record: dict[str, Any] = {"pid": os.getpid(), "started": now()}
+    # `alhazen` and `shutdown` let whoever finds this server (a second
+    # `alhazen dashboard`, a tool that started it in the background) tell which
+    # alhazen it runs and that POST /api/shutdown can stop it.
+    record: dict[str, Any] = {
+        "pid": os.getpid(),
+        "started": now(),
+        "alhazen": __version__,
+        "shutdown": True,
+    }
     if url is not None:
         record["url"] = url
     (directory / HOLDER_RECORD).write_text(json.dumps(record, indent=2), encoding="utf-8")
@@ -155,6 +164,25 @@ def _holder_note(directory: Path) -> str:
     return note
 
 
+def _holder_url(directory: Path) -> str | None:
+    """The page address in the holder's record, or None when there is none
+    (no record, an unreadable one, or a holder still binding its port)."""
+    try:
+        record = json.loads((directory / HOLDER_RECORD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    url = record.get("url") if isinstance(record, dict) else None
+    return url if isinstance(url, str) and url.startswith("http://127.0.0.1:") else None
+
+
+class WorkspaceInUse(ValueError):
+    """Another server holds the workspace; `url` is its page, when known."""
+
+    def __init__(self, message: str, url: str | None) -> None:
+        super().__init__(message)
+        self.url = url
+
+
 @contextmanager
 def workspace_lock(directory: Path) -> Iterator[None]:
     """Hold an OS lock, released even on a crash, before recovering history.
@@ -176,10 +204,11 @@ def workspace_lock(directory: Path) -> Iterator[None]:
 
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise ValueError(
+            raise WorkspaceInUse(
                 f"A dashboard already has this workspace open: {directory}"
                 f"{_holder_note(directory)}, stop that process, or run with --state-dir "
-                "to use another workspace."
+                "to use another workspace.",
+                _holder_url(directory),
             ) from exc
         record_holder(directory)
         try:
@@ -211,7 +240,27 @@ class DashboardServer(ThreadingHTTPServer):
         self.uploads = Uploads(workspace, self.data)
         # The owner's library on a platform (workspace_library.py).
         self.library = Library(workspace)
+        # Set once the page asked to shut down (request_shutdown); a launch
+        # arriving after that is refused rather than started and then stopped.
+        self.shutting_down = False
         super().__init__(("127.0.0.1", port), Handler)
+
+    def request_shutdown(self) -> None:
+        """Stop serving shortly, unless a session is running (Conflict)."""
+        workspace = self.workspace
+        with workspace.lock:
+            if workspace.active:
+                raise Conflict(
+                    "A session is running. Stop it on its Run page first, "
+                    "then shut the dashboard down."
+                )
+            if self.shutting_down:
+                return
+            self.shutting_down = True
+        print("Shut down from the dashboard page.", flush=True)
+        # shutdown() waits for serve_forever to return, so it cannot run on
+        # this handler's thread; the short delay lets the answer go out.
+        threading.Timer(0.2, self.shutdown).start()
 
     @property
     def origin(self) -> str:
@@ -427,11 +476,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Parameter YAML must be text")
                 self._json({"values": parse_parameters(body["text"])})
             elif path == "/api/runs":
+                if self.server.shutting_down:
+                    raise Conflict("The dashboard is shutting down; start it again to run.")
                 self._json(workspace.start(Launch.model_validate(body)), 201)
             elif path == "/api/estimate":
                 self._json(self.server.estimates.estimate(EstimateRequest.model_validate(body)))
             elif path == "/api/stop":
                 workspace.stop(body.get("id", ""))
+                self._json({"ok": True})
+            elif path == "/api/shutdown":
+                # The page's Shut down button: the same stop as Ctrl+C, for a
+                # server started where nobody has its terminal (in the
+                # background, by a tool). Refused while a session runs, so a
+                # click can never end one; the answer goes out first, then the
+                # serve loop ends and _serve's finally releases everything.
+                self.server.request_shutdown()
                 self._json({"ok": True})
             elif path.startswith("/api/manage/"):
                 self._json(self.server.manage.post(path.removeprefix("/api/manage/"), body))
@@ -529,8 +588,17 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(args: argparse.Namespace) -> int:
     directory = Path(args.state_dir) if args.state_dir else Path.home() / ".alhazen" / "dashboard"
-    with workspace_lock(directory.expanduser().resolve()):
-        return _serve(args, directory)
+    try:
+        with workspace_lock(directory.expanduser().resolve()):
+            return _serve(args, directory)
+    except WorkspaceInUse as exc:
+        # Someone asked for the dashboard and one is already serving this
+        # workspace: show them that one (the refusal still says which process
+        # holds it, and the exit code stays 1).
+        if exc.url and not args.no_browser:
+            webbrowser.open(exc.url)
+            print(f"Opened the dashboard that is already running: {exc.url}", flush=True)
+        raise
 
 
 def _serve(args: argparse.Namespace, directory: Path) -> int:
@@ -548,7 +616,9 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     record_holder(workspace.directory, url=server.url)
     print(f"Alhazen dashboard: {server.url}", flush=True)
     print(
-        f"Workspace: {workspace.directory}\nCtrl+C stops the server and any active run.", flush=True
+        f"Workspace: {workspace.directory}\nCtrl+C stops the server and any active run; "
+        "Shut down on the page stops it when no session is running.",
+        flush=True,
     )
     if not args.no_browser:
         threading.Timer(0.25, webbrowser.open, args=(server.url,)).start()

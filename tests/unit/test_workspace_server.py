@@ -79,6 +79,44 @@ class TestServeInProcess:
         assert "http://127.0.0.1:4242/#token=abc" in err
         assert "--state-dir" in err
 
+    def test_a_refused_start_opens_the_running_dashboard(self, tmp_path, monkeypatch, capsys):
+        """Asking for the dashboard while one already serves the workspace
+        shows that one: a second `alhazen dashboard` (typed again, or started
+        in the background by a tool) used to print the refusal and nothing
+        more, so nothing appeared on the screen. The refusal and exit code 1
+        are kept; --no-browser still opens nothing."""
+        opened = []
+        monkeypatch.setattr(dashboard_module.webbrowser, "open", opened.append)
+        state = tmp_path / "state"
+        url = "http://127.0.0.1:4242/#token=abc"
+        with workspace_lock(state):
+            record_holder(state, url=url)
+            assert main(["dashboard", "--state-dir", str(state)]) == 1
+            assert opened == [url]
+            assert main(["dashboard", "--no-browser", "--state-dir", str(state)]) == 1
+            assert opened == [url]
+        captured = capsys.readouterr()
+        assert f"Opened the dashboard that is already running: {url}" in captured.out
+        assert "already has this workspace open" in captured.err
+
+    def test_a_refused_start_without_an_address_opens_nothing(self, tmp_path, monkeypatch):
+        # A holder still binding its port has no address yet; nothing to open.
+        opened = []
+        monkeypatch.setattr(dashboard_module.webbrowser, "open", opened.append)
+        state = tmp_path / "state"
+        with workspace_lock(state):
+            assert main(["dashboard", "--state-dir", str(state)]) == 1
+        assert opened == []
+
+    def test_the_holder_record_names_the_alhazen_and_its_shutdown(self, tmp_path):
+        # What a tool that started the server in the background reads to
+        # tell which alhazen serves and that POST /api/shutdown can stop it.
+        state = tmp_path / "state"
+        with workspace_lock(state):
+            record = json.loads((state / "server.json").read_text(encoding="utf-8"))
+        assert record["alhazen"] == dashboard_module.__version__
+        assert record["shutdown"] is True
+
     def test_a_refusal_with_no_record_still_names_the_directory(self, tmp_path, capsys):
         # A holder from a build before the record existed, or one whose
         # record was removed by hand: the lock alone is still the truth.
@@ -88,6 +126,73 @@ class TestServeInProcess:
             assert main(["dashboard", "--no-browser", "--state-dir", str(state)]) == 1
         err = capsys.readouterr().err
         assert "already has this workspace open" in err and str(state) in err
+
+
+def _post(server: DashboardServer, path: str, body: dict) -> tuple[int, dict]:
+    connection = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+    connection.request(
+        "POST",
+        path,
+        body=json.dumps(body),
+        headers={"X-Alhazen-Token": server.token, "Content-Type": "application/json"},
+    )
+    response = connection.getresponse()
+    answer = (response.status, json.loads(response.read()))
+    connection.close()
+    return answer
+
+
+class TestShutDown:
+    """POST /api/shutdown: the page's Shut down button."""
+
+    @pytest.fixture
+    def server(self, tmp_path):
+        import threading
+
+        workspace = Workspace(tmp_path / "state")
+        server = DashboardServer(workspace, 0)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+        thread.start()
+        yield server, thread
+        if thread.is_alive():
+            server.shutdown()
+        thread.join(10)
+        server.server_close()
+        server.uploads.close()
+        server.library.close()
+        workspace.close()
+
+    def test_it_stops_serving_after_answering(self, server, capsys):
+        server, thread = server
+        assert _post(server, "/api/shutdown", {}) == (200, {"ok": True})
+        thread.join(10)
+        assert not thread.is_alive()
+        assert "Shut down from the dashboard page." in capsys.readouterr().out
+
+    def test_it_is_refused_while_a_session_runs(self, server):
+        """A click must never end a session: the page disables the button,
+        and the server refuses too, for a page whose state is stale."""
+        server, thread = server
+        server.workspace.active = "a-run"
+        status, answer = _post(server, "/api/shutdown", {})
+        assert status == 409 and "session is running" in answer["error"]
+        assert not server.shutting_down
+        server.workspace.active = None
+        assert thread.is_alive()
+
+    def test_a_launch_after_it_is_refused(self, server):
+        server, _ = server
+        server.shutting_down = True
+        status, answer = _post(server, "/api/runs", {})
+        assert status == 409 and "shutting down" in answer["error"]
+
+    def test_it_needs_the_token(self, server):
+        server, thread = server
+        connection = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+        connection.request("POST", "/api/shutdown", body="{}", headers={"Content-Type": "application/json"})
+        assert connection.getresponse().status == 403
+        connection.close()
+        assert thread.is_alive()
 
 
 class TestTheCommand:
@@ -153,5 +258,51 @@ class TestTheCommand:
         finally:
             process.kill()
         assert process.returncode == 0, (process.returncode, output, errors)
+        with workspace_lock(state):
+            pass
+
+    def test_the_command_shut_down_from_the_page_exits_cleanly(self, tmp_path):
+        """The real subprocess stopped by the page's Shut down: exit code 0
+        and the workspace lock free for the next start, as with Ctrl+C."""
+        state = tmp_path / "state"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "alhazen.cli.main",
+                "dashboard",
+                "--no-browser",
+                "--port",
+                "0",
+                "--state-dir",
+                str(state),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        try:
+            assert process.stdout is not None
+            line = process.stdout.readline()
+            assert line.startswith("Alhazen dashboard: "), line
+            url = urlsplit(line.split(": ", 1)[1].strip())
+            token = url.fragment.removeprefix("token=")
+            connection = HTTPConnection("127.0.0.1", url.port, timeout=10)
+            connection.request(
+                "POST",
+                "/api/shutdown",
+                body="{}",
+                headers={"X-Alhazen-Token": token, "Content-Type": "application/json"},
+            )
+            assert connection.getresponse().status == 200
+            connection.close()
+            output, errors = process.communicate(timeout=30)
+        finally:
+            process.kill()
+        assert process.returncode == 0, (process.returncode, output, errors)
+        assert "Shut down from the dashboard page." in output
+        assert not (state / "server.json").exists()
         with workspace_lock(state):
             pass

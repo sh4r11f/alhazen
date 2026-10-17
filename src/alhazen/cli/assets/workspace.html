@@ -136,6 +136,25 @@
         Workspace <span class="slash">/</span> <span id="breadcrumb">Experiments</span>
         <span id="breadcrumb-view"></span>
       </div>
+      <!-- Shut down: stops this server (POST /api/shutdown), the way Ctrl+C
+           does in its terminal, for a dashboard started where nobody has that
+           terminal. Confirmed in place; refused while a session runs
+           (setUpShutdown() in workspace.js). -->
+      <div class="topbar-actions">
+        <button type="button" id="shutdown" class="quiet shutdown-button"
+                aria-expanded="false" aria-controls="shutdown-confirm">Shut down</button>
+        <div id="shutdown-confirm" class="shutdown-popover" role="dialog"
+             aria-labelledby="shutdown-title" hidden>
+          <p id="shutdown-title" class="shutdown-title">Shut down the dashboard?</p>
+          <p id="shutdown-detail">The server stops and this page stops working. Experiments,
+            data and saved sessions are not touched.</p>
+          <p id="shutdown-error" class="shutdown-error" role="alert" hidden></p>
+          <div class="shutdown-actions">
+            <button type="button" id="shutdown-cancel" class="quiet">Keep running</button>
+            <button type="button" id="shutdown-confirmed" class="danger">Shut down</button>
+          </div>
+        </div>
+      </div>
     </header>
 
     <!-- Every failed request lands here (see error() in workspace.js). -->
@@ -630,5 +649,15 @@
     <img id="large-image" alt="">
     <p id="large-caption"></p>
   </dialog>
+  <!-- After Shut down: the server is gone, so the page says so instead of
+       showing connection errors. -->
+  <section id="shutdown-screen" class="shutdown-screen" hidden>
+    <div class="shutdown-card">
+      <h1>The dashboard has shut down</h1>
+      <p>You can close this tab. Experiments, data and saved sessions are where they were.</p>
+      <p>To open it again, run <code>alhazen dashboard</code>, or start it the way you did
+        before.</p>
+    </div>
+  </section>
 </body>
 </html>
