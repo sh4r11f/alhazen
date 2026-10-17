@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -86,11 +87,10 @@ class TestTheCommand:
 class TestTheRunPageStartsFromTheRigThenTheLastChoice:
     def test_the_rig_setting_then_what_was_launched(self, workspace, monkeypatch):  # noqa: F811
         project = _takes_them(workspace, monkeypatch)
-        rig_file = workspace.project(project["id"])["path"] + "/configs/rig-sim.yaml"
-        values = yaml.safe_load(open(rig_file, encoding="utf-8"))
+        rig_file = Path(workspace.project(project["id"])["path"]) / "configs/rig-sim.yaml"
+        values = yaml.safe_load(rig_file.read_text(encoding="utf-8"))
         values.setdefault("live_monitor", {})["camera"] = False
-        with open(rig_file, "w", encoding="utf-8") as stream:
-            yaml.safe_dump(values, stream)
+        rig_file.write_text(yaml.safe_dump(values), encoding="utf-8")
 
         first = workspace.rig(project["id"], "configs/rig-sim.yaml")["live_streams"]
         assert first == {"gaze_traces": True, "camera": False, "remembered": False}

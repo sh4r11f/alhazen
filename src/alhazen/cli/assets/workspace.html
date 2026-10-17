@@ -306,6 +306,22 @@
                 </label>
               </div>
 
+              <!-- How the live monitor's two switchable streams start: the
+                   Trial view's gaze traces and the eye camera image. Off,
+                   the session never produces them, which spares a slow
+                   machine; the monitor's own switches turn them back on.
+                   Shown for a mode with a live monitor, on a rig that has
+                   one, by an alhazen that takes the flags (renderLiveStreams
+                   in workspace.js); starts from this rig's last launch here,
+                   else from its live_monitor settings. -->
+              <div id="live-streams-field" class="live-streams-field" hidden>
+                <span class="field-label" id="live-streams-label">Live monitor</span>
+                <div class="checks" role="group" aria-labelledby="live-streams-label">
+                  <label><input id="launch-gaze-traces" type="checkbox" checked> Gaze traces</label>
+                  <label><input id="launch-eye-camera" type="checkbox" checked> Eye camera</label>
+                </div>
+              </div>
+
               <!-- Movie mode only. -->
               <div id="movie-options">
                 <div class="field-pair">
