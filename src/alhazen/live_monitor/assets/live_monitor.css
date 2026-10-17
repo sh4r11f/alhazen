@@ -1121,9 +1121,15 @@ button.control:focus-visible,
  * one row under the panel names, their title left out like the others'. */
 @media (max-width: 860px) {
   .sidebar > .streams-title { display: none; }
-  .sidebar > .streams { order: 1; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  /* After the panel row and the theme button, which keep their shared line. */
+  .sidebar > .streams { order: 2; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   .sidebar > .streams[hidden] { display: none; }
-  .sidebar > .streams .stream-switch { flex: 1 1 150px; min-height: 34px; padding: 5px 8px 5px 12px; }
+  .sidebar > .streams .stream-switch {
+    flex: 1 1 150px;
+    max-width: 240px;
+    min-height: 34px;
+    padding: 5px 8px 5px 12px;
+  }
   .sidebar > .streams .streams-note { flex: 1 1 100%; }
 }
 @media print { .streams, .streams-title { display: none; } }
