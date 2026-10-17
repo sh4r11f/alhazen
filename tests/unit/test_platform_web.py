@@ -105,6 +105,7 @@ def test_committed_assets_equal_a_fresh_build():
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=300,
         check=False,
     )
