@@ -30,8 +30,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import tomllib
-
 from alhazen.experiment_platform import library
 from alhazen.experiment_platform.library import (
     CopyConflict,
@@ -39,6 +37,11 @@ from alhazen.experiment_platform.library import (
     LibraryError,
     LibrarySource,
 )
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised on the 3.10 CI job
+    import tomli as tomllib
 
 # A copy's environment build is the slow part (PsychoPy and its wheels); past this the
 # job is reported failed and uv is stopped.

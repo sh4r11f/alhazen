@@ -25,6 +25,7 @@ import contextlib
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 import urllib.error
@@ -219,7 +220,7 @@ def _write_private(path: Path, text: str) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            if os.name == "posix":
+            if sys.platform != "win32":
                 os.fchmod(stream.fileno(), 0o600)
             stream.write(text)
             stream.flush()
