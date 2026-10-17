@@ -46,6 +46,7 @@ README_LIMIT = 20000
 OVERRIDABLE = (
     "title",
     "summary",
+    "methodSummary",
     "art",
     "featured",
     "category",
