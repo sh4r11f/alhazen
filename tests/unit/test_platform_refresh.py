@@ -196,3 +196,137 @@ def test_the_command_line_imports_and_checks(tmp_path: Path, repo: Path, capsys)
         alhazen_main(["platform", "import", str(tmp_path / "nothing"), "--store", str(store_dir)])
         == 1
     )
+
+
+def test_a_sources_file_names_experiments_and_collections(
+    tmp_path: Path, repo: Path, store: FileStore
+):
+    collection = tmp_path / "collection"
+    shutil.copytree(
+        repo, collection / "classics" / "demo-1999", ignore=shutil.ignore_patterns(".git")
+    )
+    git(collection, "init", "-q", "-b", "main")
+    git(collection, "add", "-A")
+    git(collection, "commit", "-q", "-m", "collection")
+    overlay = tmp_path / "overlay.json"
+    overlay.write_text(
+        json.dumps({"bundleId": "demo-1999-0000000000", "json": json.dumps({"tasks": []})}),
+        encoding="utf-8",
+    )
+    config = tmp_path / "sources.toml"
+    config.write_text(
+        f'[[experiment]]\nrepo = "{repo.name}"\nref = "main"\nrepo_label = "lab/fixation"\n'
+        '[experiment.overrides]\nart = "dots"\nfeatured = true\nnot_overridable = "x"\n\n'
+        '[[collection]]\nrepo = "collection"\nref = "main"\n'
+        '[collection.overlays]\n"demo-1999" = "overlay.json"\n',
+        encoding="utf-8",
+    )
+    specs = refresh.load_config(config)
+    assert [(s.subdir, s.overrides.get("art")) for s in specs] == [
+        ("", "dots"),
+        ("classics/demo-1999", None),
+    ]
+    assert specs[1].overlay["bundleId"] == "demo-1999-0000000000"
+    results = refresh.refresh(store, specs, LAB)
+    assert {r.exp for r in results} == {"fixation-demo", "demo-1999"}
+    listing = store.listing("lab", "fixation-demo")
+    assert listing["featured"] is True and "not_overridable" not in listing
+    assert store.listing("lab", "demo-1999")["collection"] == "classics"
+    assert refresh.check(store, specs) == []
+    bad = tmp_path / "bad.toml"
+    bad.write_text("[[experiment]]\nref = 'main'\n", encoding="utf-8")
+    with pytest.raises(Exception, match="needs repo"):
+        refresh.load_config(bad)
+
+
+def test_the_command_line_manages_a_server_store(tmp_path: Path, repo: Path, capsys, monkeypatch):
+    import io
+
+    from alhazen.experiment_platform import accounts as accounts_module
+
+    monkeypatch.setattr(accounts_module, "_SCRYPT", {"n": 2**10, "r": 8, "p": 1})
+    store_dir, config = tmp_path / "srv", tmp_path / "platform.toml"
+    assert (
+        alhazen_main(
+            [
+                "platform",
+                "server-init",
+                "--store",
+                str(store_dir),
+                "--config",
+                str(config),
+                "--public-url",
+                "http://127.0.0.1:8771",
+                "--port",
+                "8771",
+            ]
+        )
+        == 0
+    )
+    assert (
+        alhazen_main(
+            [
+                "platform",
+                "server-init",
+                "--store",
+                str(store_dir),
+                "--config",
+                str(config),
+                "--public-url",
+                "http://127.0.0.1:8771",
+            ]
+        )
+        == 1
+    )  # never overwrites a config
+    monkeypatch.setattr("sys.stdin", io.StringIO("a long enough password\n"))
+    assert (
+        alhazen_main(
+            [
+                "platform",
+                "users",
+                "add",
+                "ada",
+                "--name",
+                "Ada",
+                "--config",
+                str(config),
+                "--password-stdin",
+            ]
+        )
+        == 0
+    )
+    assert alhazen_main(["platform", "users", "disable", "ada", "--config", str(config)]) == 0
+    assert alhazen_main(["platform", "users", "list", "--config", str(config)]) == 0
+    assert "disabled" in capsys.readouterr().out
+    assert (
+        alhazen_main(
+            ["platform", "users", "passwd", "nobody", "--config", str(config), "--password-stdin"]
+        )
+        == 1
+    )
+    assert (
+        alhazen_main(
+            [
+                "platform",
+                "refresh",
+                str(repo),
+                "--ref",
+                "main",
+                "--store",
+                str(store_dir),
+                "--publisher",
+                "lab",
+                "--publisher-name",
+                "Lab",
+            ]
+        )
+        == 0
+    )
+    assert (
+        alhazen_main(["platform", "backup", "--store", str(store_dir), str(tmp_path / "copy")]) == 0
+    )
+    copy = FileStore(tmp_path / "copy")
+    assert (
+        copy.listing("lab", "fixation-demo") and (tmp_path / "copy" / "accounts.sqlite3").exists()
+    )
+    assert alhazen_main(["platform"]) == 2

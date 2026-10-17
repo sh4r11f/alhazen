@@ -110,3 +110,18 @@ build into a Mana workspace is a separate, reviewed step; see design.md §8.
   with Mana", "Fork with AI" and running on paired machines need the Mana integration.
 - Removing a copy keeps its stored revisions (a published listing may still name them);
   there is no garbage collection yet.
+
+## Verification (this branch)
+
+- Unit and integration tests: the full suite passes with coverage over the 89% floor (91%).
+  Platform tests include real-socket runs of the local host and of `alhazen platform serve`
+  under waitress with two accounts and a restart.
+- A wheel built from the branch, installed in clean environments outside the checkout: the
+  core install has no waitress and runs import, check, local, fork, revisions and publishing;
+  the `platform` extra runs the server with two accounts (sign-in, CSRF, throttling, no
+  cross-user access by page or by API).
+- Offline: the local host imported, served and forked with every non-loopback connection
+  blocked inside the interpreter, and the browser made no request outside the loopback
+  origin.
+- Not covered here: Windows and macOS hosts (CI covers them for the tests), a real reverse
+  proxy with TLS, and a container image (none is provided; the wheel is the deliverable).
