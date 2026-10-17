@@ -25,7 +25,11 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.1.0 - 2026-10-17
+
+3.1 adds the Experiment Platform: a catalogue and methods reader for alhazen
+experiments that runs on one machine (`alhazen platform local`), on a lab
+server (`alhazen platform serve`, the `platform` extra) or in Mana.
 
 ### Added
 - **The Experiment Platform** (`alhazen.experiment_platform`, `alhazen platform ...`),
