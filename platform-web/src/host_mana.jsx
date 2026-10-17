@@ -41,9 +41,9 @@ function runPrompt({ fork, forkId, jobId, kitPath, minePath, machine }) {
     '1. Load the kit in Python:\n```python\n' + kitLoader(kitPath) + '\n```',
     '2. Mana Terminal must be installed in this Mana (`/workspace/mana_terminal.py`). If it is not, call `hubkit.set_job("' + forkId + '", "' + jobId + '", {"status": "failed", "summary": "Mana Terminal is not installed. Install it from the marketplace, pair your machine, then run again."})` and stop.',
     '3. `from mana_terminal import terms` (add /workspace to sys.path). If no window is open, set the job to status "waiting" with summary "Open a terminal on your machine and type mana, then press Run again." and stop.',
-    '4. `res = hubkit.run_on_machine("' + forkId + '", machine=' + (machine ? JSON.stringify(machine) : 'None') + ', psychopy=True, log=print)`. Each step that changes my machine is approved by me in the terminal; a refusal (TermDenied) is final: set status "stopped" and do not retry.',
+    '4. `res = hubkit.run_on_machine("' + forkId + '", machine=' + (machine ? JSON.stringify(machine) : 'None') + ', psychopy=True, log=print)`. Each step that changes my machine is approved by me in the terminal; a refusal (TermDenied) is final: set status "stopped" and do not retry. The kit checks the disk first: if it raises hubkit.CopyHasData, nothing was changed; set the job to status "waiting" with its message as the summary, ask me whether to update the files (the saved sessions stay) or run the folder as it is, and call run_on_machine again with replace=True or keep=True accordingly.',
     '5. If a step fails, read the error and the dashboard log, fix what can be fixed on the machine through the terminal (I approve each change), and retry that step. Do not edit the experiment\'s source here.',
-    '6. Finish with `hubkit.set_job("' + forkId + '", "' + jobId + '", {"status": "done", "summary": "<one plain sentence>", "url": res["url"], "dir": res["dir"], "machine": <window label>})`, or status "failed" with what went wrong.',
+    '6. Finish with `hubkit.set_job("' + forkId + '", "' + jobId + '", {"status": "done", "summary": "<one plain sentence>", "url": res["url"], "dir": res["dir"], "machine": <window label>})`, or status "failed" with what went wrong. Mention in the summary when res["disk"]["action"] is "unchanged" (already there) or when res["library"] is not ok.',
     'Nothing here writes to GitHub or to the shared hub.',
   ].join('\n');
 }
@@ -212,8 +212,20 @@ function UserDiv() {
       await FS.update(FS.ref(FS.db, MINE + '/forks/' + fork.id), { published: null, updatedAt: Date.now() });
     },
 
+    // Remove a copy from the library in one atomic update of the viewer's own workspace: the copy
+    // (revisions and job records live inside it), its revision files no other copy names, and the
+    // docs snapshot of its origin version when no other copy uses it (removalPlan). Read fresh, so
+    // a copy made in another tab a moment ago keeps what it names. Published listings keep their
+    // own files under hub/bundles; nothing on a machine is touched.
     async removeFork(fork) {
-      await FS.remove(FS.ref(FS.db, MINE + '/forks/' + fork.id));
+      const forks = (await get(MINE + '/forks')) || {};
+      if (!forks[fork.id]) return;
+      const all = Object.entries(forks).filter(([k, v]) => k !== 'metadata' && v && typeof v === 'object').map(([id, v]) => ({ ...v, id }));
+      const plan = removalPlan({ ...forks[fork.id], id: fork.id }, all);
+      const upd = { ['forks/' + fork.id]: null };
+      for (const b of plan.bundles) upd['bundles/' + b] = null;
+      if (plan.docsKey) upd['docs/' + plan.docsKey] = null;
+      await FS.update(FS.ref(FS.db, MINE), upd);
     },
 
     // [2026-10-15] Switch chats through the shell's own route event (same fix as Agent Hub). Pushing ?chatId=

@@ -1185,6 +1185,28 @@ class TestHTTP:
         assert call(f"/api/config?project={key}&path=configs/task.yaml")[0] == 200
         assert call(f"/api/config?project={key}&path=../../secret.yaml")[0] == 400
 
+    def test_the_library_routes(self, http, workspace):
+        """Without a connection the library is simply absent; with one that cannot be
+        reached, refreshing says why (502, the platform's failure, not the page's);
+        a download needs a copy id."""
+        call, _ = http
+        assert json.loads(call("/api/library")[2]) == {"configured": False, "items": []}
+        assert call("/workspace_library.js")[0] == 200 and call("/workspace_library.css")[0] == 200
+        assert call("/api/library/download", {"id": 3})[0] == 400
+        from alhazen.experiment_platform import library
+
+        library.save_source(
+            workspace.directory,
+            library.LibrarySource(
+                url="http://127.0.0.1:9", token="t", copies=workspace.directory / "c"
+            ),
+        )
+        status, _, body = call("/api/library/refresh", {})
+        assert status == 502 and "cannot be reached" in json.loads(body)["error"]
+        assert "cannot be reached" in json.loads(call("/api/library")[2])["error"]
+        status, _, body = call("/api/library/download", {"id": "nope"})
+        assert status == 502 and "not in the library" in json.loads(body)["error"]
+
     def test_the_page_font_and_favicon_are_served_from_the_package(self, http):
         """The workspace ships its own font (the page may load nothing from
         outside, and a rig may have no internet) and its logo as the icon."""

@@ -2286,7 +2286,8 @@ function renderNav() {
   }
   navOpened = p ? p.id : null;
   const listed = state.projects.filter((x) => !x.archived);
-  $('nav-experiment').hidden = listed.length === 0;
+  // The library's copies (workspace_library.js) share the section.
+  $('nav-experiment').hidden = listed.length === 0 && !$('library-nav')?.hasChildNodes();
   // A redraw replaces the sidebar's links and buttons; the one that had
   // keyboard focus gets it back, so a poll never drops the reader's place.
   const focused = document.activeElement?.dataset?.navKey;
@@ -2296,6 +2297,7 @@ function renderNav() {
     const again = $('experiment-nav').querySelector(`[data-nav-key="${attributeValue(focused)}"]`);
     again?.focus();
   }
+  window.WorkspaceLibrary?.redraw?.();
 }
 
 /** A value for an attribute selector: quotes and backslashes escaped. */

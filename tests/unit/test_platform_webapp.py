@@ -143,7 +143,11 @@ class TestLocalHost:
             query=f"token={TOKEN}",
         )
         assert archive.status == 200 and archive.headers["content-type"] == "application/zip"
-        assert api(local, "DELETE", f"/api/forks/{fork_id}").status == 200
+        removed = api(local, "DELETE", f"/api/forks/{fork_id}")
+        assert removed.status == 200
+        # Both revisions (the forked version and the upload) were this copy's alone.
+        assert len(removed.json()["removed"]["bundles"]) == 2
+        assert api(local, "GET", "/api/forks").json()["forks"] == {}
 
     def test_errors_map_to_statuses_without_leaking_paths(self, local: PlatformApp, tmp_path: Path):
         missing = api(local, "GET", "/api/catalogue/lab/nothing/docs")

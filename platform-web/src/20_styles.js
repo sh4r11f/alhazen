@@ -393,5 +393,17 @@ const CSS = `
  .eh-exp-document .eh-set-links{grid-template-columns:minmax(0,1fr)}
 }
 
+/* Library rows: the open area and a Remove action, without nesting buttons. */
+.eh-mine-row{padding:0 12px 0 0;gap:4px}
+.eh-row-open{flex:1;min-width:0;display:flex;align-items:center;gap:14px;padding:14px 6px 14px 18px;background:none;border:0;text-align:left;color:inherit;border-radius:0}
+.eh-mine-row:hover{background:var(--hover-bg)}
+.eh-row-remove{flex:none;color:var(--muted)}
+.eh-row-remove:hover{color:var(--accent-ink)}
+.eh-remove-plan h3{font-size:14px;font-weight:800;margin:16px 0 6px}
+.eh-remove-plan ul{margin:0;padding-left:20px;color:var(--ink)}
+.eh-remove-plan li{margin:3px 0}
+.eh-remove-warn{margin:14px 0 0;padding:10px 12px;border-radius:10px;background:var(--warn-bg);color:var(--warn-ink);font-size:14px}
+@container (max-width:560px){.eh-mine-row .row-art{display:none}.eh-row-open{padding-left:14px}}
+
 @media (prefers-reduced-motion: reduce){.eh *{transition:none!important;animation:none!important}}
 `;
