@@ -25,7 +25,12 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.2.0 - 2026-10-17
+
+3.2 connects the dashboard to its owner's Experiment Platform library (copies listed in
+the sidebar, downloaded only on request after a disk check), adds Remove from library on
+the platform, lets the operator switch off the live monitor's gaze traces and eye camera,
+and stops the live monitor outliving a killed session.
 
 ### Added
 
