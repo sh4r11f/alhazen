@@ -99,8 +99,9 @@ def record_once(ctx: TrialContext, key: str, value: Any, *, phase: str, argument
     ``phase`` and ``argument`` name the class writing and the constructor
     argument that renames its column, so the refusal says exactly what to
     change. Nothing is written when it refuses: the value already on the
-    record stays, and the error ends the trial, because carrying on would
-    save a row that silently lacks one of the two values.
+    record stays, and the error propagates out of the engine and stops the
+    session, because carrying on would save a row that silently lacks one of
+    the two values.
 
     Removed in 3.0 (docs/versioning.md §4): from 2.6 this wrote the value
     anyway with a ``FutureWarning``, since refusing a trial that ran was a

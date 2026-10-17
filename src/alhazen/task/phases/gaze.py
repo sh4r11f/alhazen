@@ -162,8 +162,9 @@ class HoldFixation:
     would replace the first, and the trials file would never hold the
     foreperiod the subject actually waited. A name the trial's record already holds
     when the hold starts — written by an earlier phase, the condition or
-    ``build_trial`` — is refused with a ValueError naming the column, and the
-    trial ends (since 3.0; 2.6 to 2.x overwrote it with a ``FutureWarning``). A name
+    ``build_trial`` — is refused with a ValueError naming the column, which
+    stops the session there (since 3.0; 2.6 to 2.x overwrote it with a
+    ``FutureWarning``). A name
     that is not a plain identifier, or that is one of the columns alhazen
     writes itself (``core.trial.TRIAL_RECORD_COLUMNS``), is refused here.
     """
