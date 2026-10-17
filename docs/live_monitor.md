@@ -97,9 +97,19 @@ What a button does depends on what the session is doing:
 
 | Status | Buttons that act |
 | --- | --- |
+| waiting (the instructions screen) | Resume (= Space: start), Quit (cancel) |
+| waiting (the calibration request before trial 1) | Calibrate (= Enter/C), Reuse calibration (= R) and Accept calibration (= A) when the request offers them, Quit |
 | running (a trial or the gap between trials) | Pause, Skip trial, Reward, Quit, stage keys |
 | paused | Resume, Calibrate, Validate, Drift correct, Reward, Quit, stage keys |
-| calibrating (a procedure is running), starting, ended | none |
+| calibrating (a procedure's walk) | Resume (= Space: start at the guide, accept the target), Back (= Backspace), Pause (stop the walk) |
+| starting, ended | none |
+
+A screen that blocks the session (the instructions, the calibration request,
+a procedure's walk) says beforehand what it answers to
+(`OperatorCommands.offer`), so the page enables exactly those buttons, and
+reads the page's commands between its own key reads, one per read, as a key.
+**Reuse calibration**, **Accept calibration** and **Back** are listed only
+while a screen offers them.
 
 The three eye-tracker procedures (**Calibrate**, **Validate**, **Drift
 correct**) work only while the task is paused, on every rig (it is not a rig
@@ -168,9 +178,25 @@ live monitor on a second computer (the experiment workspace's Live monitor
 tab, or the URL from the session log) or press P/Space at the rig.
 
 While a calibration, validation or drift correction runs, the status reads
-**calibrating** and the buttons are off. A walk whose rig advances targets by
-hand (`calibration_advance: manual`) still takes SPACE at each target from the
-rig's keyboard. See [eye-tracker.md](eye-tracker.md).
+**calibrating**. **Resume** is the walk's SPACE (it starts the walk from the
+guide and accepts the target on screen; in auto advance it takes the fixation
+window as it stands), **Back** its BACKSPACE, and **Pause** stops the walk: the
+previous calibration (or gaze model) is kept and the session goes back to the
+menu the procedure was started from (the pause menu, or the calibration
+request before trial 1). The rig's keys still work alongside. A calibration
+the tracker runs on its own screen (the EyeLink's setup screen) does not read
+the page: its buttons stay off with that reason, and its keys are the rig's.
+See [eye-tracker.md](eye-tracker.md).
+
+**Quitting asks twice.** At the rig, ESC (or Q) on the pause menu, ESC at the
+instructions screen and ESC or Q at the calibration request put up *QUIT THE
+SESSION?* on the subject's screen: a second ESC quits, any other key goes back
+(keys inside the first 0.3 s are dropped, so a held or double-pressed ESC
+cannot answer it). The page says the question is up. The answer is a
+`QUIT_CONFIRMATION` event (`where`, `quit`, `key`). **Quit** on the page asks
+in the page and is not asked again at the rig. Ctrl-C during a trial still
+quits at once. An unattended run (simulate, `--auto`) has no quit key and is
+never asked.
 
 ### The procedure guide
 
@@ -987,6 +1013,22 @@ page loaded, frame intervals were 0 and 1 dropped of 2,940 frames with the
 feed against 0 and 0 of 2,892 without, 99th percentile 8.44 to 8.54 ms
 against 8.41 to 8.47 ms. The live monitor starts the channel's feeder thread
 when it starts, outside any trial.
+
+### A procedure
+
+While a calibration, validation or drift correction runs, the Trial view shows
+the procedure instead of the last trial: its target positions in dva, the one
+on the subject's screen filled (markers are not to scale), the head saying
+which target it is on, the camera box live, and, during a validation or drift
+correction, the gaze measured through the current calibration, as a trial's
+(a calibration has no gaze model yet, and says so). The picture is published
+on the trial channel at the start, at each new target and at the end
+(`session/procedure_control.py`). A tracker that lays out its own calibration
+targets (the EyeLink) is shown without them.
+
+While the pause menu is up, a banner over the picture says so (and, before
+trial 1, that the session is waiting, with what it waits for), so the picture
+of the last trial is never read as a live one.
 
 ### The camera
 

@@ -606,7 +606,7 @@ describe('the Trial view banner', () => {
   it('says the pause menu is up, a screen is waiting, or the session is quitting', () => {
     const trialBanner = loadLiveMonitor().get('trialBanner');
     assert.equal(trialBanner({ status: 'paused', message: 'Paused — browser controls are enabled.' }),
-      'Paused: the pause menu is on the subject’s screen. Paused — browser controls are enabled.');
+      'Paused: the pause menu is on the subject’s screen. Browser controls are enabled.');
     assert.equal(trialBanner({ status: 'waiting', message: 'Resume starts.' }),
       'Waiting before the first trial. Resume starts.');
     assert.equal(trialBanner({ status: 'running', message: 'x' }), '');

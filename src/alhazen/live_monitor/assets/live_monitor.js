@@ -3528,8 +3528,8 @@ function trialNote(view) {
     if (!p.targets_known) {
       parts.push('This tracker lays out its calibration targets itself; their positions are not known here.');
     } else {
-      parts.push('The ' + String(p.title || 'procedure').toLowerCase() +
-        '’s target positions; the filled one is on the subject’s screen. Markers are not to scale.');
+      parts.push('The ' + String(p.title || 'procedure').toLowerCase() + '’s target positions' +
+        (p.ended ? '.' : '; the filled one is on the subject’s screen.') + ' Markers are not to scale.');
     }
     if (!view.gaze) parts.push('No gaze is shown while the gaze model is being fitted.');
     if (!p.reads_page && !p.ended) parts.push('Its keys are at the rig: this tracker’s calibration does not read the live monitor.');
@@ -3619,6 +3619,10 @@ function gazeStatus(view, own, current) {
     if (!own.length) return 'Waiting for gaze samples…';
     if (!current) return 'No gaze sample: a blink, or the eye is lost.';
     return 'Gaze ' + minus(current[0].toFixed(1)) + '°, ' + minus(current[1].toFixed(1)) + '°';
+  }
+  if (procedure && (status === 'paused' || status === 'calibrating')) {
+    const whose = String(procedure.title || 'procedure').toLowerCase();
+    return own.length ? 'Paused. The trail is the ' + whose + '’s.' : 'Paused.';
   }
   if (status === 'paused' || status === 'calibrating') {
     /* A pause keyed between trials takes effect on the next trial's first
@@ -3798,7 +3802,9 @@ function takeProcedureView(previous, view) {
  *  words, so the picture of the last trial is never taken for a live one. */
 function trialBanner(current) {
   if (!current) return '';
-  const message = current.message ? ' ' + current.message : '';
+  /* The pause's notice leads with "Paused —"; the banner already says it. */
+  const rest = String(current.message || '').replace(/^Paused\s*[—-]\s*/, '');
+  const message = rest ? ' ' + rest[0].toUpperCase() + rest.slice(1) : '';
   if (current.status === 'paused') return 'Paused: the pause menu is on the subject’s screen.' + message;
   if (current.status === 'waiting') return 'Waiting before the first trial.' + message;
   if (current.status === 'stopping') return 'Quitting.' + message;
