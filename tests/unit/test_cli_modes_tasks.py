@@ -8,12 +8,13 @@ flag: its choices are the table's keys, the chosen task's params file stands
 in for `--params`, and a run.py that says two contradictory things about
 which task to run is refused at import, not mid-session.
 
-Since 2.5 every session names its task (the owner's rule, 2026-10-02), with
-one task (`task_class=`) as with several: `--task` is on the parser in both
-forms. A command without it is deprecated, not refused — refusing it is a
-MAJOR change (docs/versioning.md §1, §4) — so it still runs what it ran and
-says so in a FutureWarning naming the task; `default_task=` is deprecated
-with it. Measure mode runs no task and needs none named.
+Every session names its task (the owner's rule, 2026-10-02), with one task
+(`task_class=`) as with several: `--task` is on the parser in both forms.
+From 2.5 a command without it was deprecated — it ran the first task with a
+FutureWarning — and `default_task=` with it; 3.0 removed both
+(docs/versioning.md §4): the command is a usage error naming the --task to
+pass, and `default_task=` is a TypeError saying what to do. Measure mode
+runs no task and needs none named; training's stage names its own.
 """
 
 from __future__ import annotations
@@ -74,23 +75,14 @@ class TestChoosingATask:
         assert seen["task_class"] is TaskB
         assert seen["args"].params == "configs/b.yaml"
 
-    def test_without_task_the_first_declared_runs(self, tmp_path, monkeypatch):
-        # Changed in 2.5: this still runs the first declared task, as it
-        # always did, but a command naming no task is now deprecated and says
-        # so (TestEverySessionNamesItsTask has the message itself).
-        with pytest.warns(FutureWarning, match="without --task"):
+    def test_without_task_nothing_runs(self, tmp_path, monkeypatch, capsys):
+        # Changed in 3.0: this ran the first declared task (with a
+        # FutureWarning from 2.5); now it is a usage error and nothing is
+        # dispatched (TestEverySessionNamesItsTask has the message itself).
+        with pytest.raises(SystemExit) as exit_info:
             _, seen = run(tmp_path, monkeypatch, [], tasks=TASKS)
-        assert seen["task_class"] is TaskA and seen["args"].params == "configs/a.yaml"
-
-    def test_default_task_names_another_default(self, tmp_path, monkeypatch):
-        # Changed in 2.5: default_task= still chooses until 3.0, and warns
-        # that it is going; the command, naming no task, warns as well.
-        with (
-            pytest.warns(DeprecationWarning, match="'default_task' argument is deprecated"),
-            pytest.warns(FutureWarning, match="runs task-b"),
-        ):
-            _, seen = run(tmp_path, monkeypatch, [], tasks=TASKS, default_task="task-b")
-        assert seen["task_class"] is TaskB
+        assert exit_info.value.code == 2
+        assert "--task" in capsys.readouterr().err
 
     def test_an_explicit_params_file_still_wins(self, tmp_path, monkeypatch):
         _, seen = run(
@@ -142,18 +134,15 @@ class TestARunPyThatContradictsItself:
         with pytest.raises(ValueError, match="declares no task"):
             run_experiment(tasks={}, default_rig=rig_file(tmp_path), argv=[])
 
-    def test_a_default_that_is_not_declared(self, tmp_path):
-        # Changed in 2.5: default_task= is deprecated, so passing it warns
-        # before the check refuses it; the refusal is unchanged.
-        with (
-            pytest.warns(DeprecationWarning, match="'default_task'"),
-            pytest.raises(
-                ValueError,
-                match="default_task 'task-c' is not one of the declared tasks: task-a, task-b",
-            ),
-        ):
+    def test_a_default_task_of_any_kind_is_refused(self, tmp_path):
+        # Changed in 3.0: default_task= was removed, so even one naming no
+        # declared task is refused for being passed at all, before argv.
+        with pytest.raises(TypeError, match="no longer takes default_task="):
             run_experiment(
-                tasks=TASKS, default_task="task-c", default_rig=rig_file(tmp_path), argv=[]
+                tasks=TASKS,
+                default_task="task-c",  # type: ignore[arg-type]
+                default_rig=rig_file(tmp_path),
+                argv=[],
             )
 
 
@@ -166,57 +155,40 @@ class OneTask(Task):
     params_model = ParamsA
 
 
-def unnamed_warnings(record) -> list[str]:
-    """The FutureWarnings a command without --task raised, as text."""
-    return [str(w.message) for w in record if issubclass(w.category, FutureWarning)]
+def refusal(capsys) -> str:
+    """The usage error a command without --task got, on one line."""
+    return " ".join(capsys.readouterr().err.split())
 
 
 class TestEverySessionNamesItsTask:
-    """Since 2.5, a command naming no task is deprecated: it runs the task it
-    always ran and says which, in a warning whoever typed it will see. 3.0
-    refuses it."""
+    """A command naming no task is refused as a usage error, before anything
+    is loaded, saying which --task to pass. From 2.5 to 2.x it ran the task
+    it always ran with a FutureWarning; 3.0 removed that."""
 
-    def test_the_warning_names_the_task_it_runs_and_that_3_0_refuses(self, tmp_path, monkeypatch):
-        with pytest.warns(FutureWarning) as record:
-            _, seen = run(tmp_path, monkeypatch, [], tasks=TASKS)
-        assert unnamed_warnings(record) == [
-            "running run.py without --task is deprecated since alhazen 2.5 and will be "
-            "removed in 3.0; use --task task-a instead. This session runs task-a, the first "
-            "task run.py declares; alhazen 3.0 will refuse a command that names no task"
-        ]
-        # The task it always ran, and the namespace says so, as it did when
-        # --task defaulted to it (a params hook reading args.task sees it).
-        assert seen["task_class"] is TaskA and seen["args"].task == "task-a"
-
-    def test_with_a_default_task_it_names_that_one_and_why(self, tmp_path, monkeypatch):
-        with pytest.warns(DeprecationWarning), pytest.warns(FutureWarning) as record:
-            _, seen = run(tmp_path, monkeypatch, [], tasks=TASKS, default_task="task-b")
-        (message,) = unnamed_warnings(record)
-        assert "use --task task-b instead" in message
-        assert "This session runs task-b, run.py's default_task;" in message
-        assert seen["task_class"] is TaskB and seen["args"].params == "configs/b.yaml"
-
-    def test_the_warning_points_at_run_pys_own_line(self, tmp_path, monkeypatch):
-        """At the call to run_experiment, not inside alhazen: the warning
-        machinery prints that line, and it is run.py the reader recognises
-        (here the `run` helper in this file stands in for run.py)."""
-        with pytest.warns(FutureWarning) as record:
+    def test_the_refusal_lists_the_tasks_to_choose_from(self, tmp_path, monkeypatch, capsys):
+        with pytest.raises(SystemExit) as exit_info:
             run(tmp_path, monkeypatch, [], tasks=TASKS)
-        (warning,) = [w for w in record if issubclass(w.category, FutureWarning)]
-        assert warning.filename == __file__
+        # argparse's own status for a usage error, as for a misspelt task.
+        assert exit_info.value.code == 2
+        assert (
+            "run.py (task-a | task-b): error: every session names its task; pass --task with "
+            "one of task-a, task-b (alhazen 3.0 no longer runs a default task when --task is "
+            "left out)"
+        ) in refusal(capsys)
 
-    def test_it_is_a_warning_python_shows_by_default(self, tmp_path, monkeypatch):
-        """Under Python's default filters a DeprecationWarning raised outside
-        __main__ is dropped, which is how a deprecation goes unseen until the
-        release that removes it. This one is shown: with those filters in
-        place, it still arrives."""
-        with warnings.catch_warnings(record=True) as record:
-            warnings.resetwarnings()
-            warnings.simplefilter("default")
-            # Python's own default for code outside __main__.
-            warnings.filterwarnings("ignore", category=DeprecationWarning)
-            run(tmp_path, monkeypatch, [], tasks=TASKS)
-        assert len(unnamed_warnings(record)) == 1
+    def test_nothing_is_dispatched(self, tmp_path, monkeypatch):
+        """Refused before the session is built: no first task runs in the
+        place of the one the operator forgot to name."""
+        seen: dict = {}
+
+        def spy(args, *, task_class, params_hook):
+            seen.update(args=args)
+            return 0
+
+        monkeypatch.setattr(sys.modules["alhazen.cli.main"], "_run_session", spy)
+        with pytest.raises(SystemExit):
+            run_experiment(default_rig=rig_file(tmp_path), argv=["--mode", "test"], tasks=TASKS)
+        assert seen == {}
 
     @pytest.mark.parametrize(
         "kwargs", [{"tasks": TASKS}, {"task_class": OneTask}], ids=["tasks", "task_class"]
@@ -241,47 +213,64 @@ class TestEverySessionNamesItsTask:
         assert code == 0
         assert seen["task_class"] is (TaskA if "tasks" in kwargs else OneTask)
 
+    @pytest.mark.parametrize(
+        "kwargs", [{"tasks": TASKS}, {"task_class": OneTask}], ids=["tasks", "task_class"]
+    )
+    def test_training_mode_is_not_refused_here(self, tmp_path, monkeypatch, kwargs):
+        """Training runs the stage --stage names, which names its own task;
+        a training command with no --stage is the dispatch's to refuse
+        (_settle_training_stage), with the message about --stage."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            code, seen = run(tmp_path, monkeypatch, ["--mode", "training"], **kwargs)
+        assert code == 0
+        assert seen["args"].task == ("task-a" if "tasks" in kwargs else "the-one")
+
     @pytest.mark.parametrize("mode", ["run", "test", "simulate", "demo", "movie"])
-    def test_every_other_mode_warns_without_one(self, tmp_path, monkeypatch, mode):
-        with pytest.warns(FutureWarning, match="without --task"):
+    def test_every_other_mode_refuses_without_one(self, tmp_path, monkeypatch, capsys, mode):
+        with pytest.raises(SystemExit) as exit_info:
             run(tmp_path, monkeypatch, ["--mode", mode], tasks=TASKS)
+        assert exit_info.value.code == 2
+        assert "every session names its task" in refusal(capsys)
 
     def test_help_and_description_promise_no_default(self, tmp_path, capsys):
         with pytest.raises(SystemExit):
             run_experiment(default_rig=rig_file(tmp_path), argv=["--help"], tasks=TASKS)
         out = " ".join(capsys.readouterr().out.split())
-        # It used to say "(default: task-a)" and "without it, task-a."
+        # It used to say "(default: task-a)" and "without it, task-a.", and
+        # from 2.5 "until alhazen 3.0 a command without it runs task-a".
         assert "(default: task-a)" not in out and "without it, task-a" not in out
+        assert "until alhazen 3.0" not in out
         assert "--task names the one to run, and is required" in out
-        assert "required in every mode but measure" in out
-        assert "until alhazen 3.0 a command without it runs task-a, with a warning" in out
+        assert "required in every mode but measure and training" in out
 
 
-class TestDefaultTaskIsDeprecated:
-    def test_it_warns_even_when_the_command_names_a_task(self, tmp_path, monkeypatch):
-        """run.py's own line is what must change, so it warns on every run,
-        pointing at that line, whatever the command said."""
-        with pytest.warns(DeprecationWarning) as record:
-            _, seen = run(
-                tmp_path, monkeypatch, ["--task", "task-a"], tasks=TASKS, default_task="task-b"
-            )
-        (warning,) = [w for w in record if issubclass(w.category, DeprecationWarning)]
-        assert str(warning.message) == (
-            "the 'default_task' argument is deprecated since alhazen 2.5 and will be removed "
-            "in 3.0; use --task on every command line instead"
+class TestDefaultTaskIsRemoved:
+    """Deprecated in 2.5, removed in 3.0: refused whenever it is passed,
+    with what to do instead, since run.py's own line is what must change."""
+
+    @pytest.mark.parametrize(
+        ("kwargs", "argv"),
+        [({"tasks": TASKS}, ["--task", "task-a"]), ({"task_class": OneTask}, ["--task", "the-one"])],
+        ids=["tasks", "task_class"],
+    )
+    def test_it_is_refused_whatever_the_command_says(self, tmp_path, monkeypatch, kwargs, argv):
+        with pytest.raises(TypeError) as error:
+            run(tmp_path, monkeypatch, argv, default_task="task-b", **kwargs)
+        assert str(error.value) == (
+            "run_experiment() no longer takes default_task= (deprecated since alhazen 2.5, "
+            "removed in 3.0): every command names its task with --task, so there is no "
+            "default to choose. Delete default_task= from run.py and add --task <name> to "
+            "every command that started that task without it"
         )
-        assert warning.filename == __file__
-        # The command's task still wins over it.
-        assert seen["task_class"] is TaskA
 
-    def test_it_warns_beside_task_class_too(self, tmp_path, monkeypatch):
-        with pytest.warns(DeprecationWarning, match="'default_task'"):
-            run(
-                tmp_path,
-                monkeypatch,
-                ["--task", "the-one"],
-                task_class=OneTask,
-                default_task="the-one",
+    def test_another_unknown_keyword_is_pythons_usual_error(self, tmp_path):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'default_tasks'"):
+            run_experiment(
+                tasks=TASKS,
+                default_rig=rig_file(tmp_path),
+                argv=["--task", "task-a"],
+                default_tasks="task-a",  # type: ignore[arg-type]
             )
 
 
@@ -293,15 +282,15 @@ class TestOneTaskTakesTaskToo:
         code, seen = run(tmp_path, monkeypatch, ["--task", "the-one"], task_class=OneTask)
         assert code == 0 and seen["task_class"] is OneTask
 
-    def test_without_it_the_task_runs_and_the_warning_says_so(self, tmp_path, monkeypatch):
-        with pytest.warns(FutureWarning) as record:
-            _, seen = run(tmp_path, monkeypatch, [], task_class=OneTask)
-        assert unnamed_warnings(record) == [
-            "running run.py without --task is deprecated since alhazen 2.5 and will be "
-            "removed in 3.0; use --task the-one instead. This session runs the-one, run.py's "
-            "one task; alhazen 3.0 will refuse a command that names no task"
-        ]
-        assert seen["task_class"] is OneTask and seen["args"].task == "the-one"
+    def test_without_it_the_refusal_names_the_one_task(self, tmp_path, monkeypatch, capsys):
+        # Changed in 3.0: this ran the one task with a FutureWarning.
+        with pytest.raises(SystemExit) as exit_info:
+            run(tmp_path, monkeypatch, [], task_class=OneTask)
+        assert exit_info.value.code == 2
+        assert (
+            "run.py (the-one): error: every session names its task; pass --task the-one "
+            "(alhazen 3.0 no longer runs a default task when --task is left out)"
+        ) in refusal(capsys)
 
     def test_another_name_is_refused_with_the_one(self, tmp_path, monkeypatch, capsys):
         with pytest.raises(SystemExit) as exit_info:
@@ -315,6 +304,6 @@ class TestOneTaskTakesTaskToo:
             run_experiment(task_class=OneTask, default_rig=rig_file(tmp_path), argv=["--help"])
         out = " ".join(capsys.readouterr().out.split())
         assert "--task {the-one}" in out
-        assert "the task to run, the-one — required in every mode but measure" in out
+        assert "the task to run, the-one — required in every mode but measure and training" in out
         # The description is still the task's own docstring.
         assert "The one task of a run.py that declares it with task_class=." in out

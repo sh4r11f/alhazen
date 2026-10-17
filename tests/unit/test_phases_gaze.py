@@ -116,19 +116,25 @@ class TestAcquireFixation:
         # Already inside the window when the second point came on.
         assert result.record["refixation_latency_s"] == pytest.approx(0.0)
 
-    def test_two_acquisitions_under_one_name_warn_naming_the_column(self):
-        with pytest.warns(FutureWarning) as caught:
-            _harness, result = run([self.phase(), self.phase(), _EndPhase()], [AWAY, IN_FIX])
-        assert [str(w.message) for w in caught if w.category is FutureWarning] == [
-            "AcquireFixation writing its 'acquire_latency_s' column over a value the trial's "
-            "record already holds is deprecated since alhazen 2.6 and will be removed in 3.0; "
-            "use a different latency_record_key for each AcquireFixation in the trial instead. "
-            "An earlier phase of this trial — most likely another AcquireFixation — or the "
-            "trial's condition or build_trial wrote 'acquire_latency_s' first, and that value "
-            "is lost from trials.csv; alhazen 3.0 will refuse it"
-        ]
-        # Still overwritten, as before 2.6: the second acquisition's zero.
-        assert result.record["acquire_latency_s"] == pytest.approx(0.0)
+    def test_two_acquisitions_under_one_name_are_refused_naming_the_column(self):
+        # Changed in 3.0: 2.6 to 2.x overwrote the first latency with a
+        # FutureWarning. Now the second acquisition refuses, and the first
+        # latency is still the one on the record.
+        harness = EngineHarness(
+            input_provider=ScriptedInputs([AWAY, IN_FIX]),
+            declared_events=("FIX_ON", "FIX_ACQUIRED", "STIM_ON"),
+        )
+        ctx = harness.ctx(stimuli={"fixation": FakeStimulus("fix")}, regions={"fixation": FIX})
+        with pytest.raises(ValueError) as error:
+            harness.engine.run_trial(ctx, [self.phase(), self.phase(), _EndPhase()])
+        assert str(error.value) == (
+            "AcquireFixation cannot write its 'acquire_latency_s' column: the trial's record "
+            "already holds 'acquire_latency_s'. An earlier phase of this trial — most likely "
+            "another AcquireFixation — or the trial's condition or build_trial wrote it first, "
+            "and writing it again would lose that value from trials.csv. Give each "
+            "AcquireFixation in the trial a different latency_record_key"
+        )
+        assert ctx.record["acquire_latency_s"] == pytest.approx(FRAME_S)
 
     @pytest.mark.parametrize("name", ["", "latency ms", "1st", "outcome"])
     def test_a_name_that_cannot_be_its_column_is_refused_when_built(self, name):
@@ -181,16 +187,15 @@ class TestHoldFixationRecordsUnderItsOwnName:
     foreperiod the subject waited. Each hold now names its column, and a
     hold about to replace a value already on the record says so."""
 
-    # What an experimenter reads on the console, pinned whole: it must name
-    # the column and say what to change, and a reworded message that lost
-    # either would still pass a test that matched a fragment.
+    # What an experimenter reads, pinned whole: it must name the column and
+    # say what to change, and a reworded message that lost either would
+    # still pass a test that matched a fragment.
     COLLISION = (
-        "HoldFixation writing its 'hold_duration_s' column over a value the trial's record "
-        "already holds is deprecated since alhazen 2.6 and will be removed in 3.0; use a "
-        "different duration_record_key for each HoldFixation in the trial instead. An earlier "
-        "phase of this trial — most likely another HoldFixation — or the trial's condition or "
-        "build_trial wrote 'hold_duration_s' first, and that value is lost from trials.csv; "
-        "alhazen 3.0 will refuse it"
+        "HoldFixation cannot write its 'hold_duration_s' column: the trial's record already "
+        "holds 'hold_duration_s'. An earlier phase of this trial — most likely another "
+        "HoldFixation — or the trial's condition or build_trial wrote it first, and writing "
+        "it again would lose that value from trials.csv. Give each HoldFixation in the trial "
+        "a different duration_record_key"
     )
 
     def foreperiod(self, **kwargs):
@@ -209,8 +214,8 @@ class TestHoldFixationRecordsUnderItsOwnName:
         assert "hold_duration_s" not in result.record
 
     def test_two_holds_with_names_of_their_own_record_both_and_say_nothing(self):
-        # A FutureWarning raised as an error fails the trial, so a run that
-        # completes is one that did not warn.
+        # A collision raises (and a stray FutureWarning raised as an error
+        # would too), so a run that completes is one that collided nowhere.
         with warnings.catch_warnings():
             warnings.simplefilter("error", FutureWarning)
             _harness, result = run(
@@ -226,19 +231,21 @@ class TestHoldFixationRecordsUnderItsOwnName:
         assert 3 * FRAME_S <= result.record["hold_duration_s"] <= 5 * FRAME_S
         assert result.record["baseline_hold_s"] == pytest.approx(2 * FRAME_S)
 
-    def test_two_holds_under_one_name_warn_naming_the_column(self):
-        with pytest.warns(FutureWarning) as caught:
-            _harness, result = run([self.foreperiod(), self.baseline(), _EndPhase()], [IN_FIX])
-        collisions = [w for w in caught if issubclass(w.category, FutureWarning)]
-        # Once, from the second hold: the first found the column empty.
-        assert [str(w.message) for w in collisions] == [self.COLLISION]
-        # Pointed at the phase's own line, which says which phase wrote it;
-        # the experiment's build_trial is not on the stack by then.
-        assert collisions[0].filename.endswith("gaze.py")
-        # Deprecated, not refused: the trial runs as it did before 2.6, the
-        # second hold's value replacing the first.
-        assert result.outcome is _DONE
-        assert result.record["hold_duration_s"] == pytest.approx(2 * FRAME_S)
+    def test_two_holds_under_one_name_are_refused_naming_the_column(self):
+        # Changed in 3.0: 2.6 to 2.x warned and let the second hold's value
+        # replace the first. Now the second hold refuses, from its own line
+        # (the experiment's build_trial is not on the stack by then), and
+        # the foreperiod the subject waited is still the value on the record.
+        harness = EngineHarness(input_provider=ScriptedInputs([IN_FIX]))
+        ctx = harness.ctx(
+            stimuli={"fixation": FakeStimulus("fix"), "target": FakeStimulus("target")},
+            regions={"fixation": FIX},
+        )
+        with pytest.raises(ValueError) as error:
+            harness.engine.run_trial(ctx, [self.foreperiod(), self.baseline(), _EndPhase()])
+        assert str(error.value) == self.COLLISION
+        assert any(str(entry.path).endswith("gaze.py") for entry in error.traceback)
+        assert 3 * FRAME_S <= ctx.record["hold_duration_s"] <= 5 * FRAME_S
 
     def test_a_column_the_trials_setup_wrote_is_not_overwritten_in_silence_either(self):
         # The record a phase sees also carries the condition and whatever
@@ -250,9 +257,9 @@ class TestHoldFixationRecordsUnderItsOwnName:
             regions={"fixation": FIX},
             record={"hold_duration_s": 0.25},
         )
-        with pytest.warns(FutureWarning, match="'hold_duration_s' column over a value"):
-            result = harness.engine.run_trial(ctx, [self.baseline(), _EndPhase()])
-        assert result.record["hold_duration_s"] == pytest.approx(2 * FRAME_S)
+        with pytest.raises(ValueError, match="cannot write its 'hold_duration_s' column"):
+            harness.engine.run_trial(ctx, [self.baseline(), _EndPhase()])
+        assert ctx.record["hold_duration_s"] == pytest.approx(0.25)
 
     def test_one_hold_per_trial_never_warns_on_any_trial(self):
         # Every experiment but kde-vergence runs one hold per trial, many of
