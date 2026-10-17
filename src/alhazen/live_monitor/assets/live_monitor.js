@@ -2041,8 +2041,10 @@ function drawCameraStream(legendHost, host, data) {
 }
 
 /**
- * A row per tracker setting the panel offers (the iris size): its label, a −
- * and a + that step it, the value itself to type into, and its unit. Live only
+ * A row per tracker setting the panel offers (iris size, IR intensity, pupil
+ * threshold): its label, a − and a + that step it, the value itself to type
+ * into, and its unit. A setting whose 0 has a name (the pupil threshold's
+ * automatic) gets a button for it, and its 0 shows as that name. Live only
  * while the session is paused or a procedure runs, the two states in which the
  * server passes a setting on; the saved copy shows it inert.
  */
@@ -2056,13 +2058,25 @@ function drawTrackerControls(host, data) {
     const input = htmlEl('input', null, null, row);
     const up = htmlEl('button', null, '+', row);
     htmlEl('span', null, control.unit, row);
+    let auto = null;
+    if (control.zero_label) {
+      auto = htmlEl('button', 'tracker-control-auto', control.zero_label, row);
+      auto.type = 'button';
+      auto.title = control.label + ': let the tracker choose (' + control.zero_label + ')';
+      auto.classList.toggle('active', control.value === 0);
+      auto.onclick = () => { if (live) sendTrackerSetting(control, 0); };
+      /* 0 is the named mode; the box stays empty instead of showing a bare 0. */
+      if (control.value === 0) input.placeholder = control.zero_label;
+    }
+    if (control.value === null || control.value === undefined) input.placeholder = 'device';
     down.type = 'button';
     up.type = 'button';
     input.type = 'number';
     input.min = control.min;
     input.max = control.max;
     input.step = control.step;
-    input.value = control.value === null || control.value === undefined ? '' : control.value;
+    input.value = control.value === null || control.value === undefined ||
+      (control.zero_label && control.value === 0) ? '' : control.value;
     input.dataset.setting = control.setting;
     const step = (delta) => {
       if (!live) return;
@@ -2090,7 +2104,7 @@ function drawTrackerControls(host, data) {
     wire(down, -control.step);
     wire(up, control.step);
     input.onchange = () => sendTrackerSetting(control, Number(input.value));
-    [down, input, up].forEach((element) => { element.disabled = !live; });
+    [down, input, up, auto].forEach((element) => { if (element) element.disabled = !live; });
   });
 }
 
@@ -2100,7 +2114,7 @@ function drawTrackerControls(host, data) {
 async function sendTrackerSetting(control, value) {
   if (!Number.isInteger(value) || value < control.min || value > control.max) {
     byId('notice').textContent = control.label + ' must be a whole number from ' +
-      control.min + ' to ' + control.max + ' ' + control.unit + '.';
+      control.min + ' to ' + control.max + (control.unit ? ' ' + control.unit : '') + '.';
     return;
   }
   try {
@@ -2109,8 +2123,9 @@ async function sendTrackerSetting(control, value) {
       headers: { 'Content-Type': 'application/json', 'X-Alhazen-Token': token },
       body: JSON.stringify({ setting: control.setting, value: value, request_id: crypto.randomUUID() }),
     });
+    const shown = value === 0 && control.zero_label ? control.zero_label : (value + ' ' + control.unit).trim();
     byId('notice').textContent = response.ok
-      ? control.label + ': ' + value + ' ' + control.unit + ' sent to the tracker…'
+      ? control.label + ': ' + shown + ' sent to the tracker…'
       : control.label + ' not changed: ' + await response.text();
   } catch (error) {
     console.error('tracker setting failed', error);

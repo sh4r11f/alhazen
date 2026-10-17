@@ -90,6 +90,7 @@ devices: {}
   #   eye: left               # or right, or average (needs both eyes tracked)
   #   calibration_type: HV9   # HV5, HV9 or HV13
   #   # led_intensity: 6      # 1-8; omit to keep what VPixx's own tools set
+  #   # pupil_threshold: 0    # 1-255 fixed pupil grey level, 0 = automatic
   #
   # No tracker at all: leave eyetracker out. Test mode then takes the mouse
   # cursor as gaze, and simulate mode brings its own.

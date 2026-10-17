@@ -265,6 +265,31 @@ def per_eye(*, right: tuple[float, float], left: tuple[float, float]) -> list[fl
     return [*right, *left]
 
 
+class FakeDllFunction:
+    """A ctypes export: callable, with argtypes/restype the caller sets."""
+
+    def __init__(self, function: Callable[..., Any]) -> None:
+        self._function = function
+        self.argtypes: Any = None
+        self.restype: Any = None
+
+    def __call__(self, *args: Any) -> Any:
+        return self._function(*args)
+
+
+class FakeDll:
+    """``ctypes.CDLL`` by name: a missing export raises AttributeError, as ctypes does."""
+
+    def __init__(self, exports: dict[str, Callable[..., Any]]) -> None:
+        self.exports = {name: FakeDllFunction(f) for name, f in exports.items()}
+
+    def __getitem__(self, name: str) -> FakeDllFunction:
+        try:
+            return self.exports[name]
+        except KeyError:
+            raise AttributeError(f"function '{name}' not found") from None
+
+
 class FakeLibdpx:
     """Stand-in for pypixxlib's ``_libdpx``: the free functions connect() uses
     to bring the tracker up, and libdpx's sticky error flag.
@@ -316,6 +341,22 @@ class FakeLibdpx:
         # test lowers the cap to mimic a device that clamps what it cannot hold.
         self.iris_size = 90
         self.iris_register_max = 10_000
+        # The illuminator register, read and written through the free
+        # functions (the live monitor's IR intensity), and its own cap.
+        self.led_level = 6
+        self.led_register_max = 8
+        # The fixed pupil threshold: pypixxlib 1.9 does not wrap it, so the
+        # backend reaches it through DPxDll, like the real library's exports.
+        # None is automatic; a test empties `exports` to mimic an older DLL.
+        self.pupil_threshold: int | None = None
+        self.pupil_register_max = 255
+        self.DPxDll = FakeDll(
+            {
+                "TPxSetFixedPupilThreshold": self._set_fixed_pupil_threshold,
+                "TPxGetFixedPupilThreshold": lambda: self.pupil_threshold or 0,
+                "TPxDisableFixedPupilThreshold": self._disable_fixed_pupil_threshold,
+            }
+        )
         # The camera image TPxGetImagePtr hands back: 8-bit grey, row-major.
         # None is the library's NULL pointer (no image available).
         self.image: np.ndarray | None = np.full((24, 32), 200, dtype=np.uint8)
@@ -374,6 +415,18 @@ class FakeLibdpx:
 
     def TPxSetIrisExpectedSize(self, size: int) -> None:  # noqa: N802 - vendor's name
         self.iris_size = min(int(size), self.iris_register_max)
+
+    def TPxGetLEDIntensity(self) -> int:  # noqa: N802 - vendor's name
+        return self.led_level
+
+    def TPxSetLEDIntensity(self, level: int) -> None:  # noqa: N802 - vendor's name
+        self.led_level = min(int(level), self.led_register_max)
+
+    def _set_fixed_pupil_threshold(self, value: int) -> None:
+        self.pupil_threshold = min(int(value), self.pupil_register_max)
+
+    def _disable_fixed_pupil_threshold(self) -> None:
+        self.pupil_threshold = None
 
     def TPxSetBuff(self, base: int, size: int) -> None:  # noqa: N802 - vendor's name
         self.buffer_base = base

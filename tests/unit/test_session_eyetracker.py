@@ -1262,3 +1262,82 @@ class TestIrisSizeFromTheLiveMonitor:
             }
         ]
         assert {"label": "iris size", "value": "90 px"} in data["stats"]
+
+
+class AllSettingsTracker(IrisTracker):
+    """The TRACKPixx3's three camera-panel settings."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock)
+        self.led = 6
+        self.threshold: int | None = None
+
+    def led_intensity(self) -> int:
+        return self.led
+
+    def set_led_intensity(self, level: int) -> int:
+        self.led = level
+        return level
+
+    def pupil_threshold(self) -> int | None:
+        return self.threshold
+
+    def set_pupil_threshold(self, value: int) -> int:
+        self.threshold = value
+        return value
+
+
+class TestIrAndPupilThresholdFromTheLiveMonitor:
+    """IR intensity and the pupil threshold change like the iris size: applied,
+    logged, recorded, and offered on the camera panel."""
+
+    def test_the_ir_intensity_is_applied_and_recorded(self, session, caplog) -> None:
+        s = session(AllSettingsTracker)
+        s.monitor.settings_source = lambda: [("led_intensity", 3)]
+        with caplog.at_level(logging.INFO, logger="alhazen.session.eyetracker"):
+            messages = s.monitor.service_live_monitor()
+        assert messages == ["IR intensity set to 3 (was 6)."]
+        assert s.tracker.led == 3
+        assert s.events == [
+            ("TRACKER_SETTING", {"setting": "led_intensity", "value": 3, "previous": 6})
+        ]
+        assert "eye tracker's IR intensity changed from 6 to 3" in caplog.text
+
+    def test_a_pupil_threshold_and_a_return_to_automatic(self, session) -> None:
+        s = session(AllSettingsTracker)
+        s.monitor.settings_source = lambda: [("pupil_threshold", 60), ("pupil_threshold", 0)]
+        assert s.monitor.service_live_monitor() == [
+            "Black threshold set to 60 (was unknown).",
+            "Black threshold set to auto (was 60).",
+        ]
+        assert s.tracker.threshold == 0
+        assert s.events == [
+            ("TRACKER_SETTING", {"setting": "pupil_threshold", "value": 60, "previous": None}),
+            ("TRACKER_SETTING", {"setting": "pupil_threshold", "value": 0, "previous": 60}),
+        ]
+
+    def test_the_panel_offers_all_three_in_order(self, session) -> None:
+        s = session(AllSettingsTracker)
+        s.tracker.threshold = 0
+        data = s.panel("Camera", camera=True)["data"]
+        assert [c["setting"] for c in data["controls"]] == [
+            "iris_size_px",
+            "led_intensity",
+            "pupil_threshold",
+        ]
+        threshold = data["controls"][2]
+        assert (threshold["min"], threshold["max"], threshold["zero_label"]) == (0, 255, "auto")
+        assert {"label": "IR intensity", "value": "6"} in data["stats"]
+        assert {"label": "black threshold", "value": "auto"} in data["stats"]
+
+    def test_a_tracker_with_only_the_iris_size_offers_only_that(self, session) -> None:
+        s = session(IrisTracker)
+        assert (
+            s.monitor.change_setting(
+                __import__("alhazen.session.eyetracker", fromlist=["x"]).SETTINGS_BY_NAME[
+                    "led_intensity"
+                ],
+                3,
+            )
+            == "This eye tracker has no IR intensity setting; nothing changed."
+        )

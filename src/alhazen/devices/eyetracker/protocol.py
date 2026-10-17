@@ -36,6 +36,11 @@ today, and must go on doing so without growing methods it has no use for.
   TRACKPixx3). The setter returns what the device holds afterwards; it raises
   ``ValueError`` for a size outside the range and ``TrackerError`` when the
   device refuses it or holds something else.
+- ``led_intensity() -> int`` and ``set_led_intensity(level: int) -> int``: the
+  infrared illuminator level (TRACKPixx3, 1-8), with the same contract.
+- ``pupil_threshold() -> int | None`` and ``set_pupil_threshold(value: int)
+  -> int``: the fixed grey level under which the image may be pupil, 0 for
+  automatic. The getter says what this tracker set, None when it set none.
 - ``set_progress_hook(hook: ProgressHook | None)``: a callable the backend
   calls from inside its blocking ``calibrate()`` with ``(stage, detail)`` —
   ``("calibrating", "target 3 of 9 · eyes: both tracked")`` — so the

@@ -38,9 +38,15 @@ import base64
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
-from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
+from alhazen.config.models import (
+    IRIS_SIZE_RANGE_PX,
+    LED_INTENSITY_RANGE,
+    PUPIL_THRESHOLD_RANGE,
+    EyeTrackerConfig,
+)
 from alhazen.core.clock import Clock
 from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
 from alhazen.devices.eyetracker.guide import TARGET_COUNTS
@@ -113,11 +119,82 @@ CameraSwitch = Callable[[], bool]
 # What the Camera panel and the Trial view say while the eye camera is off.
 CAMERA_OFF = "Eye camera is off. Turn it on with Eye camera in the live monitor's View controls."
 
-# The tracker setting the live monitor can change, by the name the page sends:
-# the TRACKPixx3's expected iris size (devices/eyetracker/viewpixx.py).
+# The tracker settings the live monitor can change, by the name the page sends
+# (all TRACKPixx3 settings, devices/eyetracker/viewpixx.py).
 IRIS_SIZE_SETTING = "iris_size_px"
 # How far the camera panel's − and + move it, in camera px.
 IRIS_SIZE_STEP_PX = 2
+LED_INTENSITY_SETTING = "led_intensity"
+PUPIL_THRESHOLD_SETTING = "pupil_threshold"
+
+
+@dataclass(frozen=True)
+class TrackerSetting:
+    """One setting the camera panel offers: what the page sends and shows,
+    the tracker methods behind it (``getter``/``setter``, protocol.py), and how
+    the log and the page word a change."""
+
+    name: str
+    label: str
+    unit: str
+    bounds: tuple[int, int]
+    step: int
+    getter: str
+    setter: str
+    noun: str  # in the log: "eye tracker's <noun> changed from ..."
+    log_unit: str = ""
+    zero_means: str | None = None  # what a value of 0 is called, if not a number
+
+    @property
+    def lower(self) -> str:
+        """The label inside a sentence: lowercase, but an acronym stays as it is."""
+        first = self.label.split()[0]
+        return self.label if first.isupper() else self.label.lower()
+
+    def show(self, value: int | None) -> str:
+        """A value as the page and the messages write it."""
+        if value is None:
+            return "unknown"
+        if value == 0 and self.zero_means is not None:
+            return self.zero_means
+        return f"{value} {self.unit}".strip()
+
+
+TRACKER_SETTINGS = (
+    TrackerSetting(
+        IRIS_SIZE_SETTING,
+        "Iris size",
+        "px",
+        IRIS_SIZE_RANGE_PX,
+        IRIS_SIZE_STEP_PX,
+        "iris_size",
+        "set_iris_size",
+        "expected iris size",
+        " camera px",
+    ),
+    TrackerSetting(
+        LED_INTENSITY_SETTING,
+        "IR intensity",
+        "",
+        LED_INTENSITY_RANGE,
+        1,
+        "led_intensity",
+        "set_led_intensity",
+        "IR intensity",
+    ),
+    TrackerSetting(
+        PUPIL_THRESHOLD_SETTING,
+        "Black threshold",
+        "",
+        PUPIL_THRESHOLD_RANGE,
+        1,
+        "pupil_threshold",
+        "set_pupil_threshold",
+        "black threshold",
+        zero_means="auto",
+    ),
+)
+SETTINGS_BY_NAME = {setting.name: setting for setting in TRACKER_SETTINGS}
 
 
 def eye_stat(status: str) -> dict[str, Any]:
@@ -236,9 +313,11 @@ class EyeTrackerMonitor:
         self._sent_frame: CameraFrame | None = None
         # Set by the runner with the camera sink: the settings the page sent.
         self.settings_source: SettingsSource | None = None
-        # The expected iris size the device holds, as last read or set; None
-        # until it has been read (the device is only asked between trials).
-        self.iris_size_px: int | None = None
+        # Each tracker setting's value as last read or set, by setting name;
+        # absent until read (the device is only asked between trials). The
+        # pupil threshold reads as None until a value is set: the device
+        # cannot say whether it is automatic.
+        self.setting_values: dict[str, int | None] = {}
         # Called with every calibration the tracker reports as taken, from
         # whichever procedure ran it (the request before trial 1, the pause
         # menu, the live monitor): the builder records it in the rig's
@@ -666,24 +745,29 @@ class EyeTrackerMonitor:
                 alert = eye_alert(line)
                 if alert is not None:
                     data["alert"] = alert
-        if self.has_iris_size:
+        controls = []
+        for setting in self.available_settings():
             # Read once, between trials, and kept: only this session changes it.
-            if live and self.iris_size_px is None:
-                self._read_iris_size()
-            if self.iris_size_px is not None:
-                data["stats"].append({"label": "iris size", "value": f"{self.iris_size_px} px"})
-            low, high = IRIS_SIZE_RANGE_PX
-            data["controls"] = [
-                {
-                    "setting": IRIS_SIZE_SETTING,
-                    "label": "Iris size",
-                    "unit": "px",
-                    "value": self.iris_size_px,
-                    "min": low,
-                    "max": high,
-                    "step": IRIS_SIZE_STEP_PX,
-                }
-            ]
+            if live and setting.name not in self.setting_values:
+                self._read_setting(setting)
+            value = self.setting_values.get(setting.name)
+            if value is not None:
+                data["stats"].append({"label": setting.lower, "value": setting.show(value)})
+            low, high = setting.bounds
+            control: dict[str, Any] = {
+                "setting": setting.name,
+                "label": setting.label,
+                "unit": setting.unit,
+                "value": value,
+                "min": low,
+                "max": high,
+                "step": setting.step,
+            }
+            if setting.zero_means is not None:
+                control["zero_label"] = setting.zero_means
+            controls.append(control)
+        if controls:
+            data["controls"] = controls
         # When the image is live, in the tracker's words if it has its own
         # (the EyeLink's comes only from its camera setup screen).
         own = getattr(self._tracker, "camera_live_when", None)
@@ -704,10 +788,23 @@ class EyeTrackerMonitor:
         data["note"] = note
         return data
 
+    def available_settings(self) -> list[TrackerSetting]:
+        """The settings this tracker can both read and set, in panel order."""
+        return [
+            setting
+            for setting in TRACKER_SETTINGS
+            if hasattr(self._tracker, setting.getter) and hasattr(self._tracker, setting.setter)
+        ]
+
     @property
     def has_iris_size(self) -> bool:
         """Whether the tracker lets the session read and set its expected iris size."""
-        return hasattr(self._tracker, "iris_size") and hasattr(self._tracker, "set_iris_size")
+        return SETTINGS_BY_NAME[IRIS_SIZE_SETTING] in self.available_settings()
+
+    @property
+    def iris_size_px(self) -> int | None:
+        """The expected iris size as last read or set; None until read."""
+        return self.setting_values.get(IRIS_SIZE_SETTING)
 
     def service_live_monitor(self) -> list[str]:
         """What the live monitor needs from the tracker between its other work:
@@ -719,50 +816,64 @@ class EyeTrackerMonitor:
         return messages
 
     def _apply_setting(self, name: str, value: object) -> str:
-        if name == IRIS_SIZE_SETTING:
-            return self.set_iris_size(value)
+        setting = SETTINGS_BY_NAME.get(name)
+        if setting is not None:
+            return self.change_setting(setting, value)
         log.error(
             "the live monitor sent tracker setting %r, which this session does not have", name
         )
         return f"No tracker setting called {name!r}; nothing changed."
 
     def set_iris_size(self, px: object) -> str:
-        """Change the tracker's expected iris size; returns the line to show.
+        """Change the tracker's expected iris size; returns the line to show."""
+        return self.change_setting(SETTINGS_BY_NAME[IRIS_SIZE_SETTING], px)
+
+    def change_setting(self, setting: TrackerSetting, value: object) -> str:
+        """Change one tracker setting; returns the line to show.
 
         Every change is logged and recorded as a TRACKER_SETTING event with
-        the value before it, because from this moment on the device fits
-        pupils differently. A change the tracker refuses is logged as an error
-        and said on the page, and nothing is recorded, since nothing changed.
+        the value before it, because from this moment on the device measures
+        differently. A change the tracker refuses is logged as an error and
+        said on the page, and nothing is recorded, since nothing changed.
         """
-        if not self.has_iris_size:
-            log.error("an iris size change was asked for, but this eye tracker has no such setting")
-            return "This eye tracker has no iris size setting; nothing changed."
-        previous = self.iris_size_px if self.iris_size_px is not None else self._read_iris_size()
+        noun = setting.lower
+        if setting not in self.available_settings():
+            log.error("a %s change was asked for, but this eye tracker has no such setting", noun)
+            return f"This eye tracker has no {noun} setting; nothing changed."
+        if setting.name in self.setting_values:
+            previous = self.setting_values[setting.name]
+        else:
+            previous = self._read_setting(setting)
         try:
-            held = int(self._tracker.set_iris_size(px))  # type: ignore[attr-defined]
+            held = int(getattr(self._tracker, setting.setter)(value))
         except (ValueError, TrackerError) as e:
-            log.error("iris size not changed: %s", e)
-            return f"Iris size not changed: {e}"
-        self.iris_size_px = held
+            log.error("%s not changed: %s", noun, e)
+            return f"{setting.label} not changed: {e}"
+        self.setting_values[setting.name] = held
         log.info(
-            "eye tracker's expected iris size changed from %s to %d camera px",
+            "eye tracker's %s changed from %s to %s%s",
+            setting.noun,
             previous if previous is not None else "an unread value",
-            held,
+            setting.show(held) if setting.zero_means and held == 0 else held,
+            setting.log_unit,
         )
         self._emit(
-            "TRACKER_SETTING", {"setting": IRIS_SIZE_SETTING, "value": held, "previous": previous}
+            "TRACKER_SETTING", {"setting": setting.name, "value": held, "previous": previous}
         )
-        was = f"{previous} px" if previous is not None else "unknown"
-        return f"Iris size set to {held} px (was {was})."
+        return f"{setting.label} set to {setting.show(held)} (was {setting.show(previous)})."
 
-    def _read_iris_size(self) -> int | None:
-        """Ask the tracker for its expected iris size and keep it; None, with a
-        warning, when it cannot say."""
+    def _read_setting(self, setting: TrackerSetting) -> int | None:
+        """Ask the tracker for a setting and keep it; None, with a warning,
+        when it cannot say (or, for the pupil threshold, has set none)."""
         try:
-            self.iris_size_px = int(self._tracker.iris_size())  # type: ignore[attr-defined]
+            raw = getattr(self._tracker, setting.getter)()
         except TrackerError as e:
-            log.warning("iris size not read: %s", e)
-        return self.iris_size_px
+            log.warning("%s not read: %s", setting.lower, e)
+            return self.setting_values.get(setting.name)
+        value = None if raw is None else int(raw)
+        if value is not None or setting.name == PUPIL_THRESHOLD_SETTING:
+            self.setting_values[setting.name] = value
+        return value
 
     def stream_camera(self) -> None:
         """Send the live monitor a fresh camera frame, if one is due.

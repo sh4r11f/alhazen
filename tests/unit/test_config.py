@@ -284,6 +284,17 @@ class TestDeviceModels:
         with pytest.raises(ValueError, match="ignores iris_size_px"):
             EyeTrackerConfig(backend="eyelink", iris_size_px=100)
 
+    def test_the_pupil_threshold_is_a_viewpixx_grey_level_or_automatic(self):
+        assert EyeTrackerConfig(backend="viewpixx").pupil_threshold is None
+        assert EyeTrackerConfig(backend="viewpixx", pupil_threshold=0).pupil_threshold == 0
+        assert EyeTrackerConfig(backend="viewpixx", pupil_threshold=255).pupil_threshold == 255
+        with pytest.raises(ValueError, match="pupil_threshold"):
+            EyeTrackerConfig(backend="viewpixx", pupil_threshold=256)
+        with pytest.raises(ValueError, match="pupil_threshold"):
+            EyeTrackerConfig(backend="viewpixx", pupil_threshold=-1)
+        with pytest.raises(ValueError, match="ignores pupil_threshold"):
+            EyeTrackerConfig(backend="eyelink", pupil_threshold=60)
+
     def test_the_eye_a_binocular_tracker_reports_is_stated_not_guessed(self):
         assert EyeTrackerConfig(backend="viewpixx").eye == "left"
         assert EyeTrackerConfig(backend="viewpixx", eye="average").eye == "average"

@@ -2333,6 +2333,93 @@ class TestIrisSize:
         assert "expected iris size is 88 camera px, as the device holds it" in caplog.text
 
 
+class TestIrIntensity:
+    """The infrared illuminator level, read and set from the live monitor."""
+
+    def test_the_device_value_is_read(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.led_level = 3
+        assert tracker.led_intensity() == 3
+
+    def test_a_new_level_is_written_and_read_back(self, fake_pypixxlib):
+        tracker = connected()
+        updates = fake_pypixxlib.libdpx.cache_updates
+        assert tracker.set_led_intensity(2) == 2
+        assert fake_pypixxlib.libdpx.led_level == 2
+        assert fake_pypixxlib.libdpx.cache_updates > updates
+
+    @pytest.mark.parametrize("value", [0, 9, True, 2.5, "3"])
+    def test_a_level_outside_the_range_never_reaches_the_device(self, fake_pypixxlib, value):
+        tracker = connected()
+        before = fake_pypixxlib.libdpx.led_level
+        with pytest.raises(ValueError, match="IR intensity must be a whole number"):
+            tracker.set_led_intensity(value)
+        assert fake_pypixxlib.libdpx.led_level == before
+
+    def test_a_device_that_holds_another_level_is_an_error(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.led_register_max = 5
+        with pytest.raises(TrackerError, match="it holds 5"):
+            tracker.set_led_intensity(7)
+
+    def test_a_device_fault_is_an_error(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.error = "DPX_ERR_USB"
+        with pytest.raises(TrackerError, match="refused IR intensity 4"):
+            tracker.set_led_intensity(4)
+
+
+class TestPupilThreshold:
+    """The fixed pupil threshold (LabMaestro's pupil black level threshold),
+    reached through the DLL because pypixxlib 1.9 does not wrap it."""
+
+    def test_nothing_is_set_until_asked(self, fake_pypixxlib):
+        tracker = connected()
+        assert tracker.pupil_threshold() is None
+        assert fake_pypixxlib.libdpx.pupil_threshold is None
+
+    def test_a_fixed_value_is_written_through_the_dll_and_read_back(self, fake_pypixxlib):
+        tracker = connected()
+        assert tracker.set_pupil_threshold(60) == 60
+        assert fake_pypixxlib.libdpx.pupil_threshold == 60
+        assert tracker.pupil_threshold() == 60
+        setter = fake_pypixxlib.libdpx.DPxDll.exports["TPxSetFixedPupilThreshold"]
+        assert setter.argtypes == [ctypes.c_uint]
+
+    def test_zero_returns_to_automatic(self, fake_pypixxlib):
+        tracker = connected()
+        tracker.set_pupil_threshold(60)
+        assert tracker.set_pupil_threshold(0) == 0
+        assert fake_pypixxlib.libdpx.pupil_threshold is None
+        assert tracker.pupil_threshold() == 0
+
+    @pytest.mark.parametrize("value", [-1, 256, True, 10.5, "60"])
+    def test_a_value_outside_the_range_never_reaches_the_device(self, fake_pypixxlib, value):
+        tracker = connected()
+        with pytest.raises(ValueError, match="pupil threshold must be a whole number"):
+            tracker.set_pupil_threshold(value)
+        assert fake_pypixxlib.libdpx.pupil_threshold is None
+
+    def test_a_device_that_holds_another_value_is_an_error(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.pupil_register_max = 100
+        with pytest.raises(TrackerError, match="it holds 100"):
+            tracker.set_pupil_threshold(150)
+        assert tracker.pupil_threshold() is None
+
+    def test_a_library_without_the_export_says_to_update(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.DPxDll.exports.clear()
+        with pytest.raises(TrackerError, match="no TPxSetFixedPupilThreshold; update VPixx"):
+            tracker.set_pupil_threshold(60)
+
+    def test_configure_applies_the_rig_value_and_logs_it(self, fake_pypixxlib, caplog):
+        with caplog.at_level(logging.INFO, logger="alhazen.devices.eyetracker.viewpixx"):
+            connected(pupil_threshold=70)
+        assert fake_pypixxlib.libdpx.pupil_threshold == 70
+        assert "pupil threshold set to 70 (rig config)" in caplog.text
+
+
 class TestCalibrationPlot:
     """Each target's fitted gaze per eye after a calibration: the plot
     LabMaestro shows, from the raw vectors the device measured and the

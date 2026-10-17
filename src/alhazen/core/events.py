@@ -79,6 +79,7 @@ RESERVED_EVENTS = frozenset(
         # ``previous`` in the payload. On the record because a setting such as
         # the TRACKPixx3's expected iris size changes what the tracker measures
         # from that moment on, and an analysis has to be able to see where.
+        # Settings: iris_size_px, led_intensity, pupil_threshold (0 = automatic).
         "TRACKER_SETTING",
         # A command from the live monitor's buttons, as the session took it
         # off the queue (session/operator_commands.py): ``name``,
