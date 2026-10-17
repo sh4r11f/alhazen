@@ -1551,6 +1551,11 @@ async function loadRig() {
   const streams = data.live_streams || { gaze_traces: true, camera: true };
   $('launch-gaze-traces').checked = streams.gaze_traces !== false;
   $('launch-eye-camera').checked = streams.camera !== false;
+  // Why a remembered choice was not used (an unreadable memory): said under
+  // the switches, which then start from the rig.
+  $('live-streams-help').textContent = streams.problem
+    ? 'Started from the rig: ' + streams.problem + '.' : '';
+  $('live-streams-help').hidden = !streams.problem;
   renderLiveStreams();
   // The display backend, for the launch footer's PsychoPy warning. A rig
   // that does not say gets the model's default (DisplayConfig.backend).

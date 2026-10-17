@@ -2466,41 +2466,51 @@ class Workspace:
     def _live_stream_key(self, key: str, spec: str) -> str:
         return f"{key}|{spec}"
 
-    def _remembered_live_streams(self) -> dict[str, Any]:
-        """Every rig's last Live monitor choice (LIVE_STREAMS_FILE). A file
-        that cannot be read is said in the log and taken as empty: losing a
-        remembered switch costs a click, and must not stop a launch."""
+    def _remembered_live_streams(self) -> tuple[dict[str, Any], str | None]:
+        """Every rig's last Live monitor choice (LIVE_STREAMS_FILE), and why
+        it could not be read (None when it could, or there is none yet). A
+        file that cannot be read is not a reason to refuse the rig: the
+        problem goes to the Run page beside the switches (``problem`` in
+        ``_live_stream_defaults``), which then start from the rig."""
         path = self.directory / LIVE_STREAMS_FILE
         if not path.is_file():
-            return {}
+            return {}, None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            log.warning("live monitor switches not remembered: cannot read %s: %s", path, e)
-            return {}
-        return data if isinstance(data, dict) else {}
+            return {}, f"the remembered choices in {path} cannot be read ({e})"
+        if not isinstance(data, dict):
+            return {}, f"the remembered choices in {path} are not a JSON object"
+        return data, None
 
     def _live_stream_defaults(
         self, key: str, spec: str, values: Mapping[str, Any]
     ) -> dict[str, Any]:
-        """The Run page's starting position for the two switches."""
-        remembered = self._remembered_live_streams().get(self._live_stream_key(key, spec))
-        if isinstance(remembered, dict):
+        """The Run page's starting position for the two switches: the last
+        choice launched with this rig here, else the rig's own settings, with
+        ``problem`` saying why a remembered choice was not used."""
+        remembered, problem = self._remembered_live_streams()
+        entry = remembered.get(self._live_stream_key(key, spec))
+        if entry is not None:
             try:
-                choice = LiveStreams.model_validate(remembered)
-            except ValueError:
-                log.warning("ignoring a malformed remembered live monitor choice for %s", spec)
+                choice = LiveStreams.model_validate(entry)
+            except ValueError as e:
+                problem = f"the remembered choice for this rig is not valid ({e})"
             else:
-                return {**choice.model_dump(), "remembered": True}
+                return {**choice.model_dump(), "remembered": True, "problem": None}
         monitor = values.get("live_monitor") or {}
         return {
             "gaze_traces": monitor.get("gaze_traces", True) is not False,
             "camera": monitor.get("camera", True) is not False,
             "remembered": False,
+            "problem": problem,
         }
 
     def _remember_live_streams(self, key: str, spec: str, choice: LiveStreams) -> None:
-        remembered = self._remembered_live_streams()
+        """Keep a launch's switches for this rig. A memory that could not be
+        read is replaced: what it held was already unusable, and the Run page
+        has said so."""
+        remembered, _problem = self._remembered_live_streams()
         remembered[self._live_stream_key(key, spec)] = choice.model_dump()
         replace_atomically(
             self.directory / LIVE_STREAMS_FILE, json.dumps(remembered, indent=2, sort_keys=True)

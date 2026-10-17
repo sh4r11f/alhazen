@@ -167,6 +167,27 @@ describe('the live stream switches', () => {
     assert.equal(button(page, 'camera').disabled, true);
   });
 
+  it('says when the switches cannot be read, and keeps both streams running', async () => {
+    const open = {};
+    const page = loadLiveMonitor({
+      staticState: null,
+      search: '?token=abc',
+      fetch: (url, init) => {
+        if (url.startsWith('/api/state')) return response({ json: { ...SAVED_STATE, revision: 1, status: 'running' } });
+        if (url.startsWith('/api/streams')) return response({ status: 500 });
+        if (url.startsWith('/api/trial')) return abortablePoll(open, 'trial')(init);
+        if (url.startsWith('/api/gaze')) return abortablePoll(open, 'gaze')(init);
+        if (url.startsWith('/api/camera')) return abortablePoll(open, 'camera')(init);
+        throw new Error('unexpected fetch ' + url);
+      },
+    });
+    await settle();
+    await settle();
+    assert.equal(page.byId('streams-note').textContent, 'Live stream switches not read: the server answered 500');
+    assert.equal(open.gaze, 1);
+    assert.equal(open.camera, 1);
+  });
+
   it('hides the switches on the saved copy, which has no session to switch', () => {
     const page = loadLiveMonitor();
     assert.equal(page.byId('streams').hasAttribute('hidden'), true);

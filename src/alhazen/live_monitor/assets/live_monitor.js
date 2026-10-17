@@ -3805,16 +3805,24 @@ function applyStreams(next) {
 async function syncStreams() {
   if (streamsSyncing) return;
   streamsSyncing = true;
+  let answer = null;
+  let problem = '';
   try {
     const response = await fetch('/api/streams?token=' + encodeURIComponent(token));
-    if (!response.ok) throw new Error('the server answered ' + response.status);
-    applyStreams(await response.json());
+    if (response.ok) answer = await response.json();
+    else problem = 'the server answered ' + response.status;
   } catch (error) {
+    /* A network failure (the session ended, the server is gone): said in
+     * the console and under the switches below. */
     console.error('stream switches not read', error);
-    STREAM_NAMES.forEach((name) => { if (streams[name]) startStream(name); });
+    problem = error.message;
   } finally {
     streamsSyncing = false;
   }
+  const note = byId('streams-note');
+  if (note) note.textContent = problem ? 'Live stream switches not read: ' + problem : '';
+  if (answer) applyStreams(answer);
+  else STREAM_NAMES.forEach((name) => { if (streams[name]) startStream(name); });
 }
 
 /** Whether this rig has the stream at all, as far as the running trial says;

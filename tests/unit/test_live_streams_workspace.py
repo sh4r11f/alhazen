@@ -93,7 +93,7 @@ class TestTheRunPageStartsFromTheRigThenTheLastChoice:
         rig_file.write_text(yaml.safe_dump(values), encoding="utf-8")
 
         first = workspace.rig(project["id"], "configs/rig-sim.yaml")["live_streams"]
-        assert first == {"gaze_traces": True, "camera": False, "remembered": False}
+        assert first == {"gaze_traces": True, "camera": False, "remembered": False, "problem": None}
 
         run = workspace.start(
             request_for(
@@ -107,7 +107,7 @@ class TestTheRunPageStartsFromTheRigThenTheLastChoice:
         )
         finish(workspace, run)
         again = workspace.rig(project["id"], "configs/rig-sim.yaml")["live_streams"]
-        assert again == {"gaze_traces": False, "camera": True, "remembered": True}
+        assert again == {"gaze_traces": False, "camera": True, "remembered": True, "problem": None}
         # In the workspace's own state, never in the experiment's files.
         stored = json.loads((workspace.directory / LIVE_STREAMS_FILE).read_text())
         assert stored == {
@@ -117,12 +117,16 @@ class TestTheRunPageStartsFromTheRigThenTheLastChoice:
         other = workspace.rig(project["id"], "configs/rigs/rig-lab.yaml")["live_streams"]
         assert other["remembered"] is False
 
-    def test_an_unreadable_memory_falls_back_to_the_rig(self, workspace, caplog):  # noqa: F811
+    def test_an_unreadable_memory_starts_from_the_rig_and_says_why(self, workspace):  # noqa: F811
         (workspace.directory / LIVE_STREAMS_FILE).write_text("{not json")
         key = workspace.projects[0]["id"]
         streams = workspace.rig(key, "configs/rig-sim.yaml")["live_streams"]
-        assert streams == {"gaze_traces": True, "camera": True, "remembered": False}
-        assert "cannot read" in caplog.text
+        assert (streams["gaze_traces"], streams["camera"], streams["remembered"]) == (
+            True,
+            True,
+            False,
+        )
+        assert "cannot be read" in streams["problem"]
 
     def test_the_project_says_whether_its_alhazen_takes_them(self, workspace, monkeypatch):  # noqa: F811
         key = workspace.projects[0]["id"]
