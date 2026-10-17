@@ -451,7 +451,7 @@ class TestTheModeEndToEnd:
         code = run_experiment(
             task_class=RecordableTask,
             default_rig=self.rig_yaml(tmp_path),
-            argv=["--mode", "movie", "--out", str(out)],
+            argv=["--task", "recordable", "--mode", "movie", "--out", str(out)],
         )
         assert code == 0
         assert (out / "main.mp4").exists()
@@ -464,7 +464,7 @@ class TestTheModeEndToEnd:
         code = run_experiment(
             task_class=RecordableTask,
             default_rig=self.rig_yaml(tmp_path),
-            argv=["--mode", "movie", "--out", str(out), "--sheet"],
+            argv=["--task", "recordable", "--mode", "movie", "--out", str(out), "--sheet"],
         )
         assert code == 0
         assert (out / "all-clips.mp4").exists()
@@ -475,7 +475,7 @@ class TestTheModeEndToEnd:
         code = run_experiment(
             task_class=SilentTask,
             default_rig=self.rig_yaml(tmp_path),
-            argv=["--mode", "movie"],
+            argv=["--task", "silent", "--mode", "movie"],
         )
         assert code == 2
         err = capsys.readouterr().err
@@ -487,7 +487,7 @@ class TestTheModeEndToEnd:
         code = run_experiment(
             task_class=RecordableTask,
             default_rig=self.rig_yaml(tmp_path),
-            argv=["--mode", "movie", "--clip", "nope"],
+            argv=["--task", "recordable", "--mode", "movie", "--clip", "nope"],
         )
         assert code == 1
         assert "CANNOT RECORD" in capsys.readouterr().err
@@ -499,7 +499,7 @@ class TestTheModeEndToEnd:
         run_experiment(
             task_class=RecordableTask,
             default_rig=self.rig_yaml(tmp_path),
-            argv=["--mode", "movie", "--out", str(out), "--scale", "0.5"],
+            argv=["--task", "recordable", "--mode", "movie", "--out", str(out), "--scale", "0.5"],
         )
         assert read_back(out / "main.mp4")[0].shape[:2] == (12, 16)
 
@@ -526,7 +526,7 @@ class TestTheModeEndToEnd:
             run_experiment(
                 task_class=HalfBuiltTask,
                 default_rig=self.rig_yaml(tmp_path),
-                argv=["--mode", "movie", "--out", str(tmp_path / "movies")],
+                argv=["--task", "half-built", "--mode", "movie", "--out", str(tmp_path / "movies")],
             )
         # And the truncated file went with the error.
         assert not (tmp_path / "movies" / "half.mp4").exists()

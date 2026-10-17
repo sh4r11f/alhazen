@@ -369,7 +369,7 @@ class TestEveryEntryPointShowsThem:
         code = run_experiment(
             task_class=TalkingTask,
             default_rig=rig_file(tmp_path),
-            argv=["--sub", "s01", "--ses", "1", "--initials", "SO"],
+            argv=["--task", "talking-task", "--sub", "s01", "--ses", "1", "--initials", "SO"],
         )
 
         assert code == 0, capsys.readouterr().err
@@ -382,7 +382,7 @@ class TestEveryEntryPointShowsThem:
             task_class=TalkingTask,
             default_rig=rig_file(tmp_path),
             instructions=lambda: "run.py's own words.",
-            argv=["--sub", "s01", "--ses", "1", "--initials", "SO"],
+            argv=["--task", "talking-task", "--sub", "s01", "--ses", "1", "--initials", "SO"],
         )
 
         assert code == 0, capsys.readouterr().err
@@ -769,7 +769,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
         code = run_experiment(
             task_class=task_with_file(declared),
             default_rig=rig_file(tmp_path),
-            argv=["--sub", "s01", "--ses", "1", "--initials", "SO"],
+            argv=["--task", "file-task", "--sub", "s01", "--ses", "1", "--initials", "SO"],
         )
 
         assert code == 0, capsys.readouterr().err
@@ -784,7 +784,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
             task_class=task_with_file(declared),
             default_rig=rig_file(tmp_path),
             default_params=run_py_default,
-            argv=["--sub", "s01", "--ses", "1", "--initials", "SO"],
+            argv=["--task", "file-task", "--sub", "s01", "--ses", "1", "--initials", "SO"],
         )
 
         assert code == 0, capsys.readouterr().err
@@ -1029,7 +1029,18 @@ class TestTheTasksParamsHook:
             task_class=StatefulTask,
             default_rig=rig_file(tmp_path),
             params_hook=run_py_hook,
-            argv=["--mode", "test", "--sub", "m01", "--ses", "4", "--initials", "MO"],
+            argv=[
+                "--task",
+                "stateful-task",
+                "--mode",
+                "test",
+                "--sub",
+                "m01",
+                "--ses",
+                "4",
+                "--initials",
+                "MO",
+            ],
         )
 
         assert code == 0
@@ -1044,7 +1055,18 @@ class TestTheTasksParamsHook:
         code = run_experiment(
             task_class=StatefulTask,
             default_rig=rig_file(tmp_path),
-            argv=["--mode", "test", "--sub", "m01", "--ses", "4", "--initials", "MO"],
+            argv=[
+                "--task",
+                "stateful-task",
+                "--mode",
+                "test",
+                "--sub",
+                "m01",
+                "--ses",
+                "4",
+                "--initials",
+                "MO",
+            ],
         )
 
         assert code == 0

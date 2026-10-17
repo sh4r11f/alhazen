@@ -109,7 +109,9 @@ class TestPromptsNeedATerminal:
             params_model = PromptParams
 
         code = run_experiment(
-            task_class=PromptTask, default_rig=rig_file(tmp_path), argv=["--mode", "test"]
+            task_class=PromptTask,
+            default_rig=rig_file(tmp_path),
+            argv=["--task", "prompt-check", "--mode", "test"],
         )
         assert code == 2
         err = capsys.readouterr().err
@@ -200,7 +202,15 @@ class TestABadCurriculumIsInvalid:
         code = run_experiment(
             task_class=CurriculumTask,
             default_rig=rig_file(tmp_path),
-            argv=["--mode", "simulate", "--headless", "--curriculum", str(missing)],
+            argv=[
+                "--task",
+                "curriculum-check",
+                "--mode",
+                "simulate",
+                "--headless",
+                "--curriculum",
+                str(missing),
+            ],
         )
 
         assert code == 1
@@ -245,7 +255,18 @@ class TestARefusalFromWhatIsOnDiskIsReported:
         code = run_experiment(
             task_class=DiskTask,
             default_rig=rig_file(tmp_path),
-            argv=["--mode", "run", "--sub", "01", "--ses", "1", "--initials", "HD"],
+            argv=[
+                "--task",
+                "disk-check",
+                "--mode",
+                "run",
+                "--sub",
+                "01",
+                "--ses",
+                "1",
+                "--initials",
+                "HD",
+            ],
         )
 
         assert code == 1
@@ -326,7 +347,19 @@ class TestParamsHook:
         code = run_experiment(
             task_class=HookTask,
             default_rig=rig_file(tmp_path),
-            argv=["--mode", "test", "--sub", "t01", "--ses", "4", "--initials", "TT", *argv_extra],
+            argv=[
+                "--task",
+                "hook-check",
+                "--mode",
+                "test",
+                "--sub",
+                "t01",
+                "--ses",
+                "4",
+                "--initials",
+                "TT",
+                *argv_extra,
+            ],
             params_hook=hook,
         )
         return code, seen
@@ -439,7 +472,18 @@ class TestInitials:
 
     @pytest.mark.parametrize("mode", ["run", "test"])
     def test_they_reach_the_session_uppercase(self, tmp_path, monkeypatch, mode):
-        argv = ["--mode", mode, "--sub", "01", "--ses", "1", "--initials", "hd"]
+        argv = [
+            "--task",
+            "initials-check",
+            "--mode",
+            mode,
+            "--sub",
+            "01",
+            "--ses",
+            "1",
+            "--initials",
+            "hd",
+        ]
         code, seen = self.start(tmp_path, argv, monkeypatch)
 
         assert code == 1  # the stop above
@@ -447,7 +491,18 @@ class TestInitials:
 
     @pytest.mark.parametrize("mode", ["run", "test", "simulate", "demo", "measure"])
     def test_ones_that_break_the_rule_are_refused_in_every_mode(self, tmp_path, capsys, mode):
-        argv = ["--mode", mode, "--sub", "01", "--ses", "1", "--initials", "H1"]
+        argv = [
+            "--task",
+            "initials-check",
+            "--mode",
+            mode,
+            "--sub",
+            "01",
+            "--ses",
+            "1",
+            "--initials",
+            "H1",
+        ]
         code, _ = self.start(tmp_path, argv)
 
         assert code == 2
@@ -457,14 +512,18 @@ class TestInitials:
 
     @pytest.mark.parametrize("mode", ["run", "test"])
     def test_missing_ones_are_refused_without_a_terminal(self, tmp_path, capsys, mode):
-        code, _ = self.start(tmp_path, ["--mode", mode, "--sub", "01", "--ses", "1"])
+        code, _ = self.start(
+            tmp_path, ["--task", "initials-check", "--mode", mode, "--sub", "01", "--ses", "1"]
+        )
 
         assert code == 2
         err = capsys.readouterr().err
         assert "--initials required: stdin is not a terminal" in err
 
     def test_simulate_needs_none(self, tmp_path, monkeypatch):
-        code, seen = self.start(tmp_path, ["--mode", "simulate", "--headless"], monkeypatch)
+        code, seen = self.start(
+            tmp_path, ["--task", "initials-check", "--mode", "simulate", "--headless"], monkeypatch
+        )
 
         assert code == 1  # reached the builder
         assert seen["initials"] is None and seen["subject"] == "sim"
@@ -522,14 +581,21 @@ class TestTheCommandIsHandedDown:
     def test_run_py_hands_down_its_program_and_the_arguments_it_parsed(self, tmp_path, monkeypatch):
         import sys
 
-        argv = ["--mode", "simulate", "--headless", "--seed", "3"]
+        argv = ["--task", "initials-check", "--mode", "simulate", "--headless", "--seed", "3"]
         seen = self.start(tmp_path, monkeypatch, argv)
         assert seen["command"] == [sys.argv[0], *argv]
 
     def test_with_no_argv_given_it_is_the_processs_own(self, tmp_path, monkeypatch):
         import sys
 
-        started = [str(tmp_path / "run.py"), "--mode", "simulate", "--headless"]
+        started = [
+            str(tmp_path / "run.py"),
+            "--task",
+            "initials-check",
+            "--mode",
+            "simulate",
+            "--headless",
+        ]
         monkeypatch.setattr(sys, "argv", started)
         seen = self.start(tmp_path, monkeypatch, None)
         assert seen["command"] == started
@@ -609,7 +675,7 @@ class TestAWindowThatCannotOpenIsReportedNotTracedBack:
         code = run_experiment(
             task_class=self._task_class(),
             default_rig=rig_file(tmp_path, backend="psychopy"),
-            argv=["--mode", "demo"],
+            argv=["--task", "window-check", "--mode", "demo"],
         )
         assert code == 1
         self._expect_the_message(capsys, "CANNOT DEMO")
@@ -628,7 +694,8 @@ class TestAWindowThatCannotOpenIsReportedNotTracedBack:
         code = run_experiment(
             task_class=self._task_class(),
             default_rig=rig_file(tmp_path, backend="psychopy"),
-            argv=["--mode", "test", "--sub", "01", "--ses", "1", "--initials", "HD"],
+            argv=["--task", "window-check", "--mode", "test", "--sub", "01", "--ses", "1"]
+            + ["--initials", "HD"],
         )
         assert code == 1
         self._expect_the_message(capsys, "CANNOT RUN")
