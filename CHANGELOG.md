@@ -29,10 +29,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
-- **IR intensity and pupil threshold on the live monitor's camera panel** (TRACKPixx3), under
+- **IR intensity and black threshold on the live monitor's camera panel** (TRACKPixx3), under
   Iris size, with the same − / + / typed value, applied while paused or calibrating, read back
-  from the device and recorded as TRACKER_SETTING events. IR intensity is 1-8. The pupil
-  threshold is LabMaestro's pupil black level threshold: a fixed grey level 1-255 or **auto**
+  from the device and recorded as TRACKER_SETTING events. IR intensity is 1-8. The black
+  threshold (`pupil_threshold`) is LabMaestro's pupil black level threshold: a fixed grey level 1-255 or **auto**
   (0, the device's default); pypixxlib 1.9 has no wrapper for it, so alhazen calls libdpx's
   exports through the library pypixxlib loaded. A new `eyetracker.pupil_threshold` rig field
   sets it at the start of a session.

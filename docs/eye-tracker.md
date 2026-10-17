@@ -309,7 +309,7 @@ The **Eye tracker** section of the panels holds:
     reflections appear on the eye (glasses, hard contact lenses) or the
     corneal reflection smears; the tracker needs little light. The session
     reads the device back. `eyetracker.led_intensity` sets it at the start.
-  - **Pupil threshold**, LabMaestro's *pupil black level threshold*: the
+  - **Black threshold** (`pupil_threshold`), LabMaestro's *pupil black level threshold*: the
     grey level under which the camera image may be pupil. **auto** (0) lets
     the tracker choose, which is the device's default. Raise it when the
     pupil is lost because it looks too light (light irises, a reflective

@@ -184,13 +184,13 @@ TRACKER_SETTINGS = (
     ),
     TrackerSetting(
         PUPIL_THRESHOLD_SETTING,
-        "Pupil threshold",
+        "Black threshold",
         "",
         PUPIL_THRESHOLD_RANGE,
         1,
         "pupil_threshold",
         "set_pupil_threshold",
-        "pupil threshold",
+        "black threshold",
         zero_means="auto",
     ),
 )

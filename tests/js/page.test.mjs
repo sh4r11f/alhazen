@@ -539,7 +539,7 @@ describe('tracker settings with a named zero (the pupil threshold)', () => {
     data: {
       ...CAMERA_PANEL.data,
       controls: [
-        { setting: 'pupil_threshold', label: 'Pupil threshold', unit: '', min: 0, max: 255, step: 1, value: value, zero_label: 'auto' },
+        { setting: 'pupil_threshold', label: 'Black threshold', unit: '', min: 0, max: 255, step: 1, value: value, zero_label: 'auto' },
       ],
     },
   });
@@ -558,7 +558,7 @@ describe('tracker settings with a named zero (the pupil threshold)', () => {
     button(live_monitor, 'auto').click();
     await settle();
     assert.deepEqual(sent.map((body) => [body.setting, body.value]), [['pupil_threshold', 0]]);
-    assert.equal(live_monitor.byId('notice').textContent, 'Pupil threshold: auto sent to the tracker…');
+    assert.equal(live_monitor.byId('notice').textContent, 'Black threshold: auto sent to the tracker…');
   });
 
   it('show automatic as an empty box marked auto, and step up from it to 1', async () => {

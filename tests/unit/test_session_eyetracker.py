@@ -1307,8 +1307,8 @@ class TestIrAndPupilThresholdFromTheLiveMonitor:
         s = session(AllSettingsTracker)
         s.monitor.settings_source = lambda: [("pupil_threshold", 60), ("pupil_threshold", 0)]
         assert s.monitor.service_live_monitor() == [
-            "Pupil threshold set to 60 (was unknown).",
-            "Pupil threshold set to auto (was 60).",
+            "Black threshold set to 60 (was unknown).",
+            "Black threshold set to auto (was 60).",
         ]
         assert s.tracker.threshold == 0
         assert s.events == [
@@ -1328,7 +1328,7 @@ class TestIrAndPupilThresholdFromTheLiveMonitor:
         threshold = data["controls"][2]
         assert (threshold["min"], threshold["max"], threshold["zero_label"]) == (0, 255, "auto")
         assert {"label": "IR intensity", "value": "6"} in data["stats"]
-        assert {"label": "pupil threshold", "value": "auto"} in data["stats"]
+        assert {"label": "black threshold", "value": "auto"} in data["stats"]
 
     def test_a_tracker_with_only_the_iris_size_offers_only_that(self, session) -> None:
         s = session(IrisTracker)
