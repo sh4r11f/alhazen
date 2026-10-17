@@ -551,7 +551,7 @@ class TestABlockingScreensOffer:
             Offer(
                 status,
                 {name: f"{name} taken" for name in names},
-                {name: "space" for name in names},
+                dict.fromkeys(names, "space"),
                 "the instructions screen",
                 **extra,
             )
