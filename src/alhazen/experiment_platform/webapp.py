@@ -52,6 +52,18 @@ _STATUS = {
 }
 
 StartResponse = Callable[..., Any]
+# Explicit, so the same file is served with the same type on every OS (mimetypes reads
+# the system's tables, which differ).
+_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+    ".txt": "text/plain; charset=utf-8",
+    ".png": "image/png",
+}
 
 
 class Gate(Protocol):
@@ -265,11 +277,8 @@ class PlatformApp:
         etag = '"' + hashlib.sha256(data).hexdigest()[:20] + '"'
         if request.header("If-None-Match") == etag:
             return 304, [("ETag", etag), ("Cache-Control", "no-cache")], b""
-        kind = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        if name.endswith(".woff2"):
-            kind = "font/woff2"
-        if kind.startswith("text/") or kind == "application/javascript":
-            kind += "; charset=utf-8"
+        suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        kind = _TYPES.get(suffix, "application/octet-stream")
         return 200, [("Content-Type", kind), ("ETag", etag), ("Cache-Control", "no-cache")], data
 
     # ------------------------------------------------------------------ API
