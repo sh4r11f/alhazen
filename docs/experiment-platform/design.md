@@ -34,9 +34,10 @@ presentation stays on the rig, inside the alhazen session.
 - Module: `src/alhazen/experiment_platform/`. Layer: its own line directly below
   `alhazen.cli`, above `alhazen.modes`. It imports nothing from modes, session, devices,
   display or stimuli; the catalogue reads experiment source as text (AST and safe YAML).
-- Core install (`pip install alhazen-vision`): catalogue build, refresh, the CLI and the
+- Core install (the `alhazen-vision` wheel without extras; on a package index only after a
+  release, see operations.md): catalogue build, refresh, the CLI and the
   **local** host work with the core dependencies only (stdlib HTTP server, PyYAML).
-- Extra `platform` (`pip install "alhazen-vision[platform]"`): adds `waitress`, the WSGI
+- Extra `platform` (`alhazen-vision[platform]`): adds `waitress`, the WSGI
   server used by the self-hosted host. Password hashing is stdlib `hashlib.scrypt`; the
   accounts database is stdlib `sqlite3`. A rig install never pulls a web server.
 - Web assets are compiled into the wheel (`experiment_platform/web/`), including React and
@@ -109,7 +110,8 @@ copied at fork time; a fork's documentation never changes by itself.
    drawings for this version), `stale` (a document bound to another version: the reader
    refuses it and says so), `missing`.
    `alhazen platform check` exits non-zero when any listing is `stale` or `missing`, and
-   when a source is newer than its listing; it is the release/CI gate for a catalogue.
+   when a source is newer than its listing; it is meant as the release/CI gate for a
+    catalogue (no CI workflow runs it yet).
 
 ## 5. Service and authorization
 
@@ -188,17 +190,24 @@ Mana" by download / upload of a revision and show the exact commands to run a co
 
 `platform-web/build.mjs` produces (1) `src/alhazen/experiment_platform/web/platform.js`
 for the standalone hosts and (2) `--mana <file>`: the Mana `user_div` code (the same source
-plus the Mana host adapter, no imports), so the repository is the canonical source of the
-Mana app. `--check` rebuilds and fails if the committed bundle differs.
+plus the Mana host adapter, no imports), so the repository can be the canonical source of
+the Mana app once that export is installed there (not done yet: the live app still runs its
+own deployed code). `--check` rebuilds and fails if the committed bundle differs; it runs
+locally and in the Python tests when Node is present, not in a CI job.
 
 ## 8. Mana integration
 
 Mana keeps its storage layout (`hub/published`, `hub/bundles`, `hub/docs`, viewers'
 `alhazen-experiment-platform-mine`). The Mana host adapter in `platform-web/src/host_mana.jsx`
-maps the host interface onto it. The Mana catalogue refresh imports
-`alhazen.experiment_platform.catalog` from an installed wheel of this branch and writes the
-same records to Firebase; it is a Mana-side script, not part of the repository. Installing
-the exported `user_div` into the live app is a separate, approved step.
+maps the host interface onto it. The intended Mana catalogue refresh imports
+`alhazen.experiment_platform.catalog` from an installed wheel and writes the same records to
+Firebase, as a Mana-side script outside the repository. Status: only a read-only dry run
+exists (it matches the live records for 18/18 listings' parameter guides and 16/18 reader
+guides and bundles; amodal-averaging and mbri differ because portable bundles keep small
+binaries). The live Mana app and its refresh have not been migrated. Installing the exported
+`user_div` and switching the refresh are separate, approved steps. AI generation ("Change
+with Mana", "Fork with AI", "New experiment with Mana") and execution on paired machines
+exist only in the Mana host.
 
 ## 9. Decisions and their price
 

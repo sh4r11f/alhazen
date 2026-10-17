@@ -33,6 +33,18 @@ target-only calibration screens. It also removes what 2.x deprecated (see
 Removed below).
 
 ### Added
+- **The Experiment Platform** (`alhazen.experiment_platform`, `alhazen platform ...`),
+  unreleased: a catalogue of alhazen experiments with methods bound to an exact source
+  version (stimulus schematics, duration-aware timelines, parameter guides read from the
+  source as text), private copies changed as revisions, and sharing versions back. Hosts:
+  `alhazen platform local` (one person, loopback only, no account, works offline, core
+  install) and `alhazen platform serve` (a lab server with accounts; the new `platform`
+  extra adds only waitress). A Mana export is built from the same web source but is not yet
+  installed in the live Mana app; AI generation and running on paired machines remain
+  Mana-only, and on the standalone hosts changing and running a copy are manual.
+  `alhazen platform refresh` builds catalogue versions from git at exact commits without
+  running experiment code; versions and copies are immutable, and `alhazen platform check`
+  fails on stale or missing documentation. See docs/experiment-platform/.
 - The mouse stand-in (`eyetracker.backend: mouse_sim`) takes
   `eyetracker.calibration_target` and walks its calibration as the
   TRACKPixx3 does: the guide's wait, then the rig's target (standard, chosen
