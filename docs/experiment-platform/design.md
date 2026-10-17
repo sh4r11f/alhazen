@@ -198,24 +198,23 @@ Mana" by download / upload of a revision and show the exact commands to run a co
 
 `platform-web/build.mjs` produces (1) `src/alhazen/experiment_platform/web/platform.js`
 for the standalone hosts and (2) `--mana <file>`: the Mana `user_div` code (the same source
-plus the Mana host adapter, no imports), so the repository can be the canonical source of
-the Mana app once that export is installed there (not done yet: the live app still runs its
-own deployed code). `--check` rebuilds and fails if the committed bundle differs; it runs
-locally and in the Python tests when Node is present, not in a CI job.
+plus the Mana host adapter, no imports), so the repository is the canonical source of the
+Mana app; installing an export into a Mana workspace is a separate, reviewed step.
+`--check` rebuilds and fails if the committed bundle differs; it runs locally and in the
+Python tests when Node is present, not in a CI job.
 
 ## 8. Mana integration
 
 Mana keeps its storage layout (`hub/published`, `hub/bundles`, `hub/docs`, viewers'
 `alhazen-experiment-platform-mine`). The Mana host adapter in `platform-web/src/host_mana.jsx`
-maps the host interface onto it. The intended Mana catalogue refresh imports
-`alhazen.experiment_platform.catalog` from an installed wheel and writes the same records to
-Firebase, as a Mana-side script outside the repository. Status: only a read-only dry run
-exists (it matches the live records for 18/18 listings' parameter guides and 16/18 reader
-guides and bundles; amodal-averaging and mbri differ because portable bundles keep small
-binaries). The live Mana app and its refresh have not been migrated. Installing the exported
-`user_div` and switching the refresh are separate, approved steps. AI generation ("Change
-with Mana", "Fork with AI", "New experiment with Mana") and execution on paired machines
-exist only in the Mana host.
+maps the host interface onto it. The Mana catalogue refresh imports
+`alhazen.experiment_platform.catalog` from an installed alhazen and writes the same records
+to Firebase, as a Mana-side script outside the repository. A guide overlay authored for one
+bundle is never applied to another (amodal-averaging and mbri bundles built with the
+portable builder keep small binaries, so their ids differ from text-only bundles and their
+overlays must be re-bound after review). AI generation ("Change with Mana", "Fork with
+AI", "New experiment with Mana") and execution on paired machines exist only in the Mana
+host.
 
 ## 9. Decisions and their price
 

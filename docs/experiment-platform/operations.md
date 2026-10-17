@@ -1,16 +1,35 @@
 # Alhazen Experiment Platform: operations
 
 How to install, run, refresh, back up and upgrade the platform. The design is in
-[design.md](design.md). The platform is unreleased: it exists on this branch only, so it
-is installed from a build of the branch, not from a package index. "Verification" at the
-end lists exactly which commands were run and where.
+[design.md](design.md). The platform ships with alhazen from release 3.1.0, as the
+`alhazen platform` command and the optional `platform` extra. "Verification" at the end
+lists what was run and where.
 
 ## Install
 
-### Now: build from this branch (tested)
+alhazen is not published on PyPI yet (docs/versioning.md says why), so `pip install
+alhazen-vision` from the package index does not give you this. Install from a release tag
+of the repository instead.
 
-From a checkout of this branch, build a wheel with [uv](https://docs.astral.sh/uv/) and
-install that exact file into a fresh environment outside the checkout:
+### From a release tag
+
+```
+uv tool install "alhazen-vision @ git+https://github.com/sh4r11f/alhazen@v3.1.0"
+uv tool install "alhazen-vision[platform] @ git+https://github.com/sh4r11f/alhazen@v3.1.0"
+```
+
+The first is the core install: the local host and every catalogue command. The second
+adds the `platform` extra (one pure-Python dependency, waitress) for the self-hosted
+server; install one or the other. `pip install "alhazen-vision[platform] @
+git+https://github.com/sh4r11f/alhazen@v3.1.0"` into a virtual environment works the same
+way. A rig keeps its usual install (an experiment pins alhazen by tag) and never needs the
+extra.
+
+### From a checkout
+
+From a checkout of the repository (any branch), build a wheel with
+[uv](https://docs.astral.sh/uv/) and install that exact file into a fresh environment
+outside the checkout:
 
 ```
 uv build --wheel -o dist/                              # in the checkout
@@ -19,35 +38,15 @@ VIRTUAL_ENV=~/alhazen-platform-env uv pip install dist/alhazen_vision-*.whl
 VIRTUAL_ENV=~/alhazen-platform-env uv pip install "$(ls dist/alhazen_vision-*.whl)[platform]"
 ```
 
-The third line is the core install: the local host and every catalogue command. The
-fourth adds the `platform` extra (one pure-Python dependency, waitress) for the
-self-hosted server; install one or the other. Then run
-`~/alhazen-platform-env/bin/alhazen platform ...`. This is what was verified (Linux,
-Python 3.11): the core install contains no waitress, and the extra adds it. A rig keeps its
-usual install and never needs the extra.
+Then run `~/alhazen-platform-env/bin/alhazen platform ...`. The web app is built and
+committed under `src/alhazen/experiment_platform/web/`, so installing needs no Node;
+rebuilding it from `platform-web/src` does (see `platform-web/README.md`).
 
-The web app is already built and committed under
-`src/alhazen/experiment_platform/web/`, so installing needs no Node. Rebuilding it from
-`platform-web/src` does: see `platform-web/README.md`.
+## What the platform does and does not do
 
-### After a release (not yet possible)
-
-Once a release containing the platform is published, the same two installs come from the
-package index:
-
-```
-pip install alhazen-vision                  # AFTER release: core, local host
-pip install "alhazen-vision[platform]"      # AFTER release: self-hosted server
-```
-
-Until then these install a published alhazen that has no `alhazen platform` command.
-
-## What the platform does and does not do yet
-
-- The repository code is ready to be the canonical source, but the live Mana app has not
-  been switched to it: Mana still runs its own deployed code and its own catalogue refresh.
-  The export (`node platform-web/build.mjs --mana`) and a dry-run comparison with the live
-  catalogue exist; installing them in Mana is a separate, reviewed step.
+- The Mana app is built from this repository's web source (`node platform-web/build.mjs
+  --mana`) and installed into a Mana workspace as a separate, reviewed step. Mana keeps its
+  own storage, identity, chats and Mana Terminal, and its own catalogue refresh script.
 - AI generation and machine execution are Mana-host features: "Change with Mana", "Fork
   with AI", "New experiment with Mana", My machines and running through Mana Terminal.
   The standalone local and server hosts do not offer them and say so in the page.
@@ -156,10 +155,10 @@ build into a Mana workspace is a separate, reviewed step; see design.md §8.
 - Removing a copy keeps its stored revisions (a published listing may still name them);
   there is no garbage collection yet.
 
-## Verification (this branch)
+## Verification
 
-Run on Linux (Python 3.11) in a sandbox, from a wheel of this branch installed outside the
-checkout, unless noted.
+Run on Linux (Python 3.11) in a sandbox, from a wheel built from the source installed
+outside the checkout, unless noted.
 
 - Commands run from the installed wheel: `import` (a repository; `--folder`,
   `--all-folders`, `--ref`, `--docs-ref`, `--overrides`, `--alhazen-repo`), `refresh`
@@ -176,10 +175,9 @@ checkout, unless noted.
   blocked inside the interpreter. A network namespace was not available.
 - Tests: the full suite passed locally on Linux with coverage over the 89% floor (91%),
   including real-socket runs of the local host and of `serve` under waitress.
-- CI: the platform tests are written to run in the existing GitHub Actions matrix (Linux,
-  macOS, Windows), but this branch has not been pushed, so that matrix has not run on it;
-  macOS and Windows are untested. The existing Node job runs only `tests/js`. There is no
-  CI job for `platform-web` (its Node tests and `build.mjs --check` were run locally, and
-  the Python test that compares the build skips when Node is absent, as it is in the
-  Python matrix).
+- CI: the platform tests run in the existing GitHub Actions matrix (Linux, macOS,
+  Windows); the results for the change that added the platform are on its pull request.
+  The existing Node job runs only `tests/js`. There is no CI job for `platform-web` (its
+  Node tests and `build.mjs --check` run locally, and the Python test that compares the
+  build skips when Node is absent, as it is in the Python matrix).
 - Not covered: a real reverse proxy with TLS, and a container image (none is provided).
