@@ -1,0 +1,128 @@
+/* Alhazen experiment workspace — the library (workspace_library.js): the
+ * owner's copies on a platform, in the sidebar below the registered
+ * experiments and as a section of the Experiments page. Loaded before
+ * workspace_split.css and written in its language (Manrope, warm paper,
+ * oxblood accent, hairlines): nothing here restyles what Split draws.
+ */
+
+/* ---- sidebar --------------------------------------------------------- */
+.library-nav { display: flex; flex-direction: column; gap: 2px; }
+.library-nav:empty { display: none; }
+.library-nav-head {
+  margin: 14px 0 4px;
+  padding: 12px 10px 0;
+  border-top: 1px solid var(--rail-line, var(--line));
+}
+.library-nav-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.library-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 8px;
+}
+.library-nav-row:hover { background: var(--surface-2); }
+.library-nav-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.library-nav-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.library-nav-state { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.library-nav-action {
+  flex: none;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+.library-nav-error { margin: 2px 10px 6px; font-size: 13px; color: var(--bad-ink); }
+
+/* States: words carry the meaning; colour only repeats it. */
+.ls-busy { color: var(--accent); }
+.ls-ok { color: var(--ok-ink); }
+.ls-warn, .ls-ask { color: var(--accent); }
+.ls-bad { color: var(--bad-ink); }
+
+/* The rail collapses to icons between 861 and 1499 px and becomes a band
+ * below 860 px (workspace_split.css): the library lives on the
+ * Experiments page there, as the other experiments' groups do. */
+@media (min-width: 861px) and (max-width: 1499px) {
+  .sidebar-inner:not(:hover):not(:focus-within) .library-nav { display: none; }
+}
+@media (max-width: 860px) {
+  .library-nav { display: none; }
+}
+
+/* ---- Experiments page ------------------------------------------------ */
+.library-home { margin: 34px 0 40px; }
+.library-home[hidden] { display: none; }
+.library-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.library-head h2 { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
+.library-source { margin: 4px 0 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.library-error, .library-empty { margin: 14px 0 0; font-size: 14.5px; }
+.library-error { color: var(--bad-ink); }
+.library-empty { color: var(--muted); }
+.library-list { display: flex; flex-direction: column; }
+.library-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 20px;
+  align-items: center;
+  padding: 16px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.library-title { font-size: 16px; font-weight: 750; color: var(--ink); }
+.library-sub, .library-disk { margin-top: 2px; font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
+.library-disk { color: var(--ink); opacity: .85; }
+.library-note { margin-top: 6px; font-size: 14px; }
+.library-side { display: flex; align-items: center; gap: 14px; justify-content: flex-end; flex-wrap: wrap; }
+.library-state { font-size: 14px; font-weight: 700; white-space: nowrap; }
+.library-actions { display: flex; gap: 8px; }
+.library-actions a.library-open {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+.library-actions a.library-open:hover { background: var(--surface-2); }
+.library-question {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.library-question-text { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+.library-question-detail { margin: 6px 0 12px; color: var(--muted); font-size: 14px; }
+.library-question-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+@media (max-width: 640px) {
+  .library-row { grid-template-columns: minmax(0, 1fr); }
+  .library-side { justify-content: space-between; }
+  .library-head { align-items: flex-start; flex-direction: column; }
+}

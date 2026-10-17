@@ -34,9 +34,11 @@ from alhazen.cli.workspace import (
 )
 from alhazen.cli.workspace_data import DataView
 from alhazen.cli.workspace_estimate import DurationEstimator, EstimateRequest
+from alhazen.cli.workspace_library import Library
 from alhazen.cli.workspace_manage import Management
 from alhazen.cli.workspace_upload import Uploads
 from alhazen.errors import AlhazenError
+from alhazen.experiment_platform.library import LibraryError
 
 ASSETS = Path(__file__).with_name("assets")
 # The page's own files, by URL: (file under ASSETS, content type). Served to
@@ -86,6 +88,10 @@ PAGE_ASSETS = {
     # the batch on Data and History (workspace_upload.py serves the routes).
     "/workspace_upload.js": ("workspace_upload.js", "text/javascript; charset=utf-8"),
     "/workspace_upload.css": ("workspace_upload.css", "text/css; charset=utf-8"),
+    # The library: the owner's copies on a platform, downloaded on demand
+    # (workspace_library.py serves /api/library).
+    "/workspace_library.js": ("workspace_library.js", "text/javascript; charset=utf-8"),
+    "/workspace_library.css": ("workspace_library.css", "text/css; charset=utf-8"),
 }
 # Written beside the lock by the server that holds it: its process id, when it
 # took the workspace and, once bound, the address of its page. The lock alone
@@ -203,6 +209,8 @@ class DashboardServer(ThreadingHTTPServer):
         self.estimates = DurationEstimator(workspace)
         # Uploads of saved sessions to the archive (workspace_upload.py).
         self.uploads = Uploads(workspace, self.data)
+        # The owner's library on a platform (workspace_library.py).
+        self.library = Library(workspace)
         super().__init__(("127.0.0.1", port), Handler)
 
     @property
@@ -345,6 +353,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.server.manage.get(path.removeprefix("/api/manage/"), query))
             elif path.startswith("/api/upload/"):
                 self._json(self.server.uploads.get(path.removeprefix("/api/upload/"), query))
+            elif path == "/api/library":
+                self._json(self.server.library.get())
             elif path == "/data/download":
                 # Any file of a session folder, as a download: never shown
                 # in the page's origin (attachment, sandboxing CSP).
@@ -376,7 +386,7 @@ class Handler(BaseHTTPRequestHandler):
             self._refuse(403, exc)
         except FileNotFoundError as exc:
             self._refuse(404, exc)
-        except (ValueError, OSError, AlhazenError) as exc:
+        except (ValueError, OSError, AlhazenError, LibraryError) as exc:
             self._refuse(400, exc)
 
     def _body(self) -> dict[str, Any]:
@@ -427,6 +437,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.server.manage.post(path.removeprefix("/api/manage/"), body))
             elif path.startswith("/api/upload/"):
                 self._json(self.server.uploads.post(path.removeprefix("/api/upload/"), body))
+            elif path == "/api/library/refresh":
+                self._json(self.server.library.refresh())
+            elif path == "/api/library/download":
+                if not isinstance(body.get("id"), str) or not isinstance(
+                    body.get("replace", False), bool
+                ):
+                    raise ValueError("A copy id and a yes/no replace are expected")
+                self._json(
+                    self.server.library.download(body["id"], body.get("replace", False)), 202
+                )
             else:
                 self._json({"error": "Not found"}, 404)
         except ConnectionError:
@@ -452,6 +472,9 @@ class Handler(BaseHTTPRequestHandler):
             # A write made against a record or file that changed meanwhile:
             # nothing was saved, and the client is told to reload.
             self._refuse(409, exc)
+        except LibraryError as exc:
+            # The platform behind the library refused or could not be reached.
+            self._refuse(502, exc)
         except (ValueError, OSError, AlhazenError, ValidationError) as exc:
             self._refuse(400, exc)
 
@@ -540,5 +563,6 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     finally:
         server.server_close()
         server.uploads.close()
+        server.library.close()
         workspace.close()
     return 0

@@ -122,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     from alhazen.experiment_platform.cli import add_parser as add_platform_parser
 
     add_platform_parser(sub)
+    # `alhazen library ...`: where the dashboard reads its owner's library
+    # (alhazen.cli.workspace_library).
+    from alhazen.cli.workspace_library import add_parser as add_library_parser
+
+    add_library_parser(sub)
     calibrate = sub.add_parser("calibrate", help="check a monitor's geometry and gamma")
     calibrate_sub = calibrate.add_subparsers(dest="calibration")
     ruler = calibrate_sub.add_parser(
@@ -1910,6 +1915,12 @@ def _with_explicit_flags(args: argparse.Namespace) -> argparse.Namespace:
 
 # Looked up by name at call time for `run` and `sim-sorter`, whose handlers
 # take other arguments; the rest are the functions themselves.
+def _library(args: argparse.Namespace) -> int:
+    from alhazen.cli.workspace_library import run
+
+    return run(args)
+
+
 def _platform(args: argparse.Namespace) -> int:
     from alhazen.experiment_platform.cli import run
 
@@ -1919,6 +1930,7 @@ def _platform(args: argparse.Namespace) -> int:
 _COMMANDS: dict[str, Handler] = {
     "dashboard": _dashboard,
     "platform": lambda args, parser: _platform(args),
+    "library": lambda args, parser: _library(args),
     "validate": _validate,
     "rigs": _rigs,
     "preview": _preview,

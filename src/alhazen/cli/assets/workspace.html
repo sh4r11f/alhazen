@@ -61,6 +61,11 @@
        Data pages (several sessions). -->
   <link rel="stylesheet" href="/workspace_upload.css">
   <script src="/workspace_upload.js" defer></script>
+  <!-- The library: the owner's copies on a platform, downloaded on demand
+       (window.WorkspaceLibrary; workspace.js starts it and it draws
+       #library-nav and #library-home). -->
+  <link rel="stylesheet" href="/workspace_library.css">
+  <script src="/workspace_library.js" defer></script>
   <!-- Split (2026-10-09): the design layer over every stylesheet above, so
        it loads last: the collapsible icon rail, the Run page's two panes
        (settings | instrument) and the type that replaces the mono labels. -->
@@ -103,6 +108,9 @@
       <a id="nav-running" class="nav-running" hidden></a>
       <section id="nav-experiment" class="nav-experiment" aria-label="Experiments" hidden>
         <div id="experiment-nav" class="nav-groups"></div>
+        <!-- Copies in the owner's library that are not registered here:
+             workspace_library.js draws them, each with Download or Set up. -->
+        <div id="library-nav" class="library-nav"></div>
       </section>
       <div class="sidebar-bottom">
         <!-- Colour theme: follow the system (the default), or always light
@@ -148,6 +156,8 @@
         <button class="primary" id="empty-add">Register an experiment</button>
       </section>
       <div id="home-list" class="home-list"></div>
+      <!-- The library (workspace_library.js), when one is connected. -->
+      <section id="library-home" class="library-home" aria-label="Library" hidden></section>
     </section>
 
     <!-- The selected experiment's heading, above both of its views: its

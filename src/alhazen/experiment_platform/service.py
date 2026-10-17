@@ -537,7 +537,11 @@ class PlatformService:
 
 def _fork_bundles(fork: Mapping[str, Any]) -> set[str]:
     """Every bundle a copy names: its head and each revision's."""
-    named = {str(r.get("bundle")) for r in (fork.get("revisions") or {}).values() if isinstance(r, dict) and r.get("bundle")}
+    named = {
+        str(r.get("bundle"))
+        for r in (fork.get("revisions") or {}).values()
+        if isinstance(r, dict) and r.get("bundle")
+    }
     head = (fork.get("head") or {}).get("id") if isinstance(fork.get("head"), dict) else None
     if head:
         named.add(str(head))
