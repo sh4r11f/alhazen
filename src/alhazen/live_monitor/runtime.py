@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
-from alhazen.config.models import IRIS_SIZE_RANGE_PX
+from alhazen.config.models import IRIS_SIZE_RANGE_PX, LiveMonitorConfig
 from alhazen.errors import SessionError
 from alhazen.live_monitor.controls import KNOWN_COMMANDS, status_refusal
 from alhazen.live_monitor.heatmap import check_heatmap
@@ -156,19 +156,13 @@ def _published_controls(state: Mapping[str, Any]) -> _Controls:
 class LiveMonitorController:
     """Parent-side lifecycle and IPC facade."""
 
-    def __init__(
-        self,
-        *,
-        port: int = 0,
-        auto_open: bool = True,
-        gaze_traces: bool = True,
-        camera: bool = True,
-    ) -> None:
+    def __init__(self, *, port: int = 0, auto_open: bool = True) -> None:
         ctx = mp.get_context("spawn")
         # The operator's stream switches (STREAMS, in that order), shared with
-        # the server child, which sets them; see the block above STREAMS.
-        # Started from the rig's live_monitor.gaze_traces and .camera.
-        self._streams: Any = ctx.RawArray(ctypes.c_bool, [bool(gaze_traces), bool(camera)])
+        # the server child, which sets them; see the block above STREAMS. Both
+        # on until set_stream says otherwise (the rig's live_monitor.gaze_traces
+        # and .camera, before start()).
+        self._streams: Any = ctx.RawArray(ctypes.c_bool, [True] * len(STREAMS))
         self._updates: Any = ctx.Queue(maxsize=1)
         # The camera's own one-slot queue, beside the state's: a frame reaches
         # the page without a state publish, and a newer frame replaces one the
@@ -275,6 +269,14 @@ class LiveMonitorController:
     def camera_on(self) -> bool:
         """Whether the eye camera is on: frames are read and sent only then."""
         return bool(self._streams[1])
+
+    def set_stream(self, name: str, on: bool) -> None:
+        """Switch one stream (STREAMS) on or off from the session's side: how
+        the session starts it, from the rig. The page switches it through
+        the server; whichever wrote last holds."""
+        if name not in STREAMS:
+            raise ValueError(f"unknown live monitor stream {name!r}; expected one of {STREAMS}")
+        self._streams[STREAMS.index(name)] = bool(on)
 
     def streams(self) -> dict[str, bool]:
         """Both switches by name (STREAMS), as every state publish carries them."""
@@ -517,6 +519,18 @@ class LiveMonitorController:
         if process.is_alive():
             process.terminate()
             process.join(timeout_s)
+
+
+def start_live_streams(controller: Any, cfg: LiveMonitorConfig) -> None:
+    """Set the live monitor's two switchable streams as the rig starts them
+    (live_monitor.gaze_traces, .camera), before its server starts. Looked up
+    like publish_trial: a stand-in controller without switches is left as it
+    is, streaming whatever it streams."""
+    set_stream = getattr(controller, "set_stream", None)
+    if set_stream is None:
+        return
+    set_stream(GAZE_TRACES, cfg.gaze_traces)
+    set_stream(EYE_CAMERA, cfg.camera)
 
 
 class _State:

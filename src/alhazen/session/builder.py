@@ -65,7 +65,7 @@ from alhazen.display.screen import Screen
 from alhazen.display.simulated import SimulatedDisplay
 from alhazen.errors import ConfigError
 from alhazen.live_monitor.gaze import GazeFeed
-from alhazen.live_monitor.runtime import LiveMonitorController
+from alhazen.live_monitor.runtime import LiveMonitorController, start_live_streams
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import TrialSource
 from alhazen.paradigms.config import validate_after_break_paths
@@ -719,10 +719,7 @@ def build_session(
         on_failure.callback(_release_on_abort, "remove the unused run folder", paths.discard_unused)
         live_monitor_controller = (
             LiveMonitorController(
-                port=rig_cfg.live_monitor.port,
-                auto_open=rig_cfg.live_monitor.auto_open,
-                gaze_traces=rig_cfg.live_monitor.gaze_traces,
-                camera=rig_cfg.live_monitor.camera,
+                port=rig_cfg.live_monitor.port, auto_open=rig_cfg.live_monitor.auto_open
             )
             if rig_cfg.live_monitor.enabled
             else None
@@ -735,6 +732,7 @@ def build_session(
             on_failure.callback(
                 _release_on_abort, "stop the live monitor server", live_monitor_controller.stop
             )
+            start_live_streams(live_monitor_controller, rig_cfg.live_monitor)
             live_monitor_controller.start()
 
         display: DisplayBackend

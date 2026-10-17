@@ -16,6 +16,10 @@ before a launch, what an older one will not record.
 - ``params-source``: ``--params-source``, the params file as it was chosen
   (the Task parameters entry's file) for a session that runs a copy of it,
   which a task reads with ``alhazen.task.params_source(args)``.
+- ``live-streams``: ``--gaze-traces``/``--no-gaze-traces`` and
+  ``--eye-camera``/``--no-eye-camera``, how the live monitor's two
+  switchable streams start (the rig's ``live_monitor.gaze_traces`` and
+  ``.camera`` otherwise).
 - ``training-mode``: ``--mode training`` with ``--ladder``/``--stage``, a
   stage of a training ladder run.py registers (``LADDERS``), filed under the
   stage's training root (alhazen.training.ladder); test and simulate take
@@ -31,6 +35,7 @@ CAPABILITIES: frozenset[str] = frozenset(
     {
         "duration-estimate",
         "experimenter",
+        "live-streams",
         "params-source",
         "subject-demographics",
         "training-mode",

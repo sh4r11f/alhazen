@@ -40,7 +40,11 @@ from alhazen.config.models import RigConfig
 from alhazen.core.clock import Clock
 from alhazen.devices.eyetracker.protocol import CameraFrame
 from alhazen.display.screen import Screen
-from alhazen.live_monitor.runtime import LiveMonitorController, live_monitor_state
+from alhazen.live_monitor.runtime import (
+    LiveMonitorController,
+    live_monitor_state,
+    start_live_streams,
+)
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.modes.measure_jobs import MeasurementJob
 from alhazen.session.eyetracker import PROCEDURE_STATUS, SECTION, EyeTrackerMonitor, eye_markers
@@ -169,6 +173,9 @@ class MeasureLiveView:
         )
         monitor.publisher = self._on_procedure
         monitor.camera_sink = self._send_frame
+        # The operator's eye camera switch (the page's View controls), looked
+        # up like the session's: a stand-in controller has none.
+        monitor.camera_enabled = getattr(self._controller, "camera_on", None)
         monitor.settings_source = self._controller.poll_settings
         self._monitor = monitor
         self._publish(self._note)
@@ -346,6 +353,7 @@ def open_live_view(
     controller = LiveMonitorController(
         port=cfg.port, auto_open=cfg.auto_open if open_browser is None else open_browser
     )
+    start_live_streams(controller, cfg)
     controller.start()
     view = MeasureLiveView(controller, rig, subject=subject, clock=clock)
     view.note("starting: the eye tracker opens with the first measurement that uses it")
