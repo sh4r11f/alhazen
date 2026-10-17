@@ -18,6 +18,22 @@ while the running dashboard carries on as if nothing happened. Started with
 `python -m`, the dashboard holds only `python.exe`, which a reinstall never
 touches.
 
+**One server per workspace.** Starting `alhazen dashboard` while another
+already serves the same workspace (`--state-dir`) does not start a second one:
+it prints which process holds the workspace, opens that dashboard's page in the
+browser (unless `--no-browser`), and exits with code 1.
+
+**Stopping it.** Ctrl+C in its terminal stops the server and any active run.
+**Shut down**, at the right of the page's top bar, does the same for a server
+started where nobody has its terminal (in the background, or by a tool): after
+an in-place confirmation the server answers, stops serving and releases the
+workspace, and the page says it has shut down. It is refused while a session
+is running, so a click never ends one; stop the session on its Run page first.
+The workspace's `server.json` names the holder's `pid`, its page `url`, the
+`alhazen` version it runs, and `shutdown: true` when it accepts
+`POST /api/shutdown` (with the page token), so a tool that started it can stop
+it the same way.
+
 ## Your library
 
 A dashboard can list the experiments in your library on an Experiment Platform (your copies,

@@ -25,6 +25,20 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+- **Dashboard: Shut down.** A Shut down button at the right of the top bar stops the
+  server (`POST /api/shutdown`, token required) after an in-place confirmation, for a
+  dashboard started in the background where nobody has its terminal. Refused while a
+  session runs; a launch arriving during shutdown is refused. The page then shows that
+  the dashboard has shut down instead of connection errors.
+- **Dashboard: a refused start opens the running one.** `alhazen dashboard` on a
+  workspace another server holds now opens that server's page in the browser (unless
+  `--no-browser`); the refusal message and exit code 1 are unchanged.
+- **`server.json` names the alhazen.** The holder record also carries `alhazen` (the
+  version serving) and `shutdown: true`, so a tool can tell which alhazen a running
+  dashboard is and stop it.
+
 ## 3.4.1 - 2026-10-17
 
 - **The Trial view fits the window.** The live monitor draws the trial (and

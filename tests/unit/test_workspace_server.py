@@ -189,7 +189,9 @@ class TestShutDown:
     def test_it_needs_the_token(self, server):
         server, thread = server
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
-        connection.request("POST", "/api/shutdown", body="{}", headers={"Content-Type": "application/json"})
+        connection.request(
+            "POST", "/api/shutdown", body="{}", headers={"Content-Type": "application/json"}
+        )
         assert connection.getresponse().status == 403
         connection.close()
         assert thread.is_alive()
