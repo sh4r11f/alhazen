@@ -72,6 +72,14 @@ analysis = ["scipy>=1.10"]
 # alhazen.devices.spikes imports it lazily and raises a SpikeSourceError
 # naming this extra if it is missing.
 zmq = ["pyzmq>=25"]
+# The Experiment Platform's self-hosted server (alhazen.experiment_platform.server):
+# waitress serves the platform's WSGI application to a lab's network. Everything
+# else the platform needs is already here: the catalogue build and refresh, the
+# local single-user host (stdlib http.server on loopback, like `alhazen
+# dashboard`), password hashing (stdlib hashlib.scrypt) and the accounts database
+# (stdlib sqlite3). A rig never needs this extra. 3.0.1 is the first release with
+# the fixes for CVE-2024-49768 and CVE-2024-49769.
+platform = ["waitress>=3.0.1"]
 # The documentation site. Not needed to use alhazen, only to build its docs.
 docs = [
   "mkdocs-material>=9.5",
@@ -93,6 +101,9 @@ dev = [
   # sorter and no probe — a PUB socket in the test process is a complete
   # far end — so the real transport is tested rather than skipped.
   "alhazen-vision[zmq]",
+  # The platform server's tests run the real waitress server on a loopback
+  # port, so the multi-user host is tested as it is deployed.
+  "alhazen-vision[platform]",
   # scripts/release_check.py reads pyproject.toml. tomllib is stdlib from
   # 3.11; this is the backport for the 3.10 job.
   "tomli>=2.0; python_version < '3.11'",
@@ -151,6 +162,11 @@ alhazen = [
   # with them offline. tests/unit/test_calibration_targets.py checks a built
   # wheel carries every file the manifest names.
   "calibration_images/*",
+  # The Experiment Platform's compiled web app (platform-web/ builds it; React,
+  # the reader, the Manrope font and their licences), served by both standalone
+  # hosts with nothing fetched at run time.
+  "experiment_platform/web/*",
+  "experiment_platform/web/fonts/*",
 ]
 
 [project.urls]
@@ -320,6 +336,10 @@ type = "layers"
 # nothing above config, and stay mutually independent of core.
 layers = [
   "alhazen.cli",
+  # The Experiment Platform: the catalogue, its refresh and its hosts. cli adapts
+  # it (`alhazen platform ...`); it never imports cli, and it imports nothing that
+  # runs or presents an experiment (it reads experiment source as text).
+  "alhazen.experiment_platform",
   "alhazen.modes",
   "alhazen.session | alhazen.testing | alhazen.analysis",
   "alhazen.training",
