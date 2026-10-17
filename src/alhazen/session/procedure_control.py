@@ -35,7 +35,6 @@ publishes, only on one at its start, one per new target and one at its end.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Collection
 from typing import Any
 
@@ -54,8 +53,6 @@ from alhazen.display.screen import Screen
 from alhazen.live_monitor.gaze import GazeFeed, GazeSink, GazeSwitch
 from alhazen.session.operator_commands import Offer, OperatorCommands
 from alhazen.session.procedure_guide import Kind
-
-log = logging.getLogger(__name__)
 
 # The status a procedure publishes under (session/eyetracker.py PROCEDURE_STATUS).
 STATUS = "calibrating"
@@ -265,12 +262,7 @@ class ProcedureControl:
         if key == self._last:
             return
         self._last = key
-        try:
-            self._publish_view(self.view(step, n, line, ended=ended))
-        except ValueError as error:
-            # A picture that cannot be built (a target off any finite
-            # screen) must never stop a calibration; said once per publish.
-            log.warning("Trial view: the %s picture was not drawn: %s", self._kind, error)
+        self._publish_view(self.view(step, n, line, ended=ended))
 
     def view(
         self, step: int | None, n: int | None, line: str, *, ended: bool = False
