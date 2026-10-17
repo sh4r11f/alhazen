@@ -145,6 +145,12 @@ class TrackerSetting:
     log_unit: str = ""
     zero_means: str | None = None  # what a value of 0 is called, if not a number
 
+    @property
+    def lower(self) -> str:
+        """The label inside a sentence: lowercase, but an acronym stays as it is."""
+        first = self.label.split()[0]
+        return self.label if first.isupper() else self.label.lower()
+
     def show(self, value: int | None) -> str:
         """A value as the page and the messages write it."""
         if value is None:
@@ -746,7 +752,7 @@ class EyeTrackerMonitor:
                 self._read_setting(setting)
             value = self.setting_values.get(setting.name)
             if value is not None:
-                data["stats"].append({"label": setting.label.lower(), "value": setting.show(value)})
+                data["stats"].append({"label": setting.lower, "value": setting.show(value)})
             low, high = setting.bounds
             control: dict[str, Any] = {
                 "setting": setting.name,
@@ -830,7 +836,7 @@ class EyeTrackerMonitor:
         differently. A change the tracker refuses is logged as an error and
         said on the page, and nothing is recorded, since nothing changed.
         """
-        noun = setting.label.lower()
+        noun = setting.lower
         if setting not in self.available_settings():
             log.error("a %s change was asked for, but this eye tracker has no such setting", noun)
             return f"This eye tracker has no {noun} setting; nothing changed."
@@ -862,7 +868,7 @@ class EyeTrackerMonitor:
         try:
             raw = getattr(self._tracker, setting.getter)()
         except TrackerError as e:
-            log.warning("%s not read: %s", setting.label.lower(), e)
+            log.warning("%s not read: %s", setting.lower, e)
             return self.setting_values.get(setting.name)
         value = None if raw is None else int(raw)
         if value is not None or setting.name == PUPIL_THRESHOLD_SETTING:

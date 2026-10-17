@@ -1327,7 +1327,7 @@ class TestIrAndPupilThresholdFromTheLiveMonitor:
         ]
         threshold = data["controls"][2]
         assert (threshold["min"], threshold["max"], threshold["zero_label"]) == (0, 255, "auto")
-        assert {"label": "ir intensity", "value": "6"} in data["stats"]
+        assert {"label": "IR intensity", "value": "6"} in data["stats"]
         assert {"label": "pupil threshold", "value": "auto"} in data["stats"]
 
     def test_a_tracker_with_only_the_iris_size_offers_only_that(self, session) -> None:
@@ -1339,5 +1339,5 @@ class TestIrAndPupilThresholdFromTheLiveMonitor:
                 ],
                 3,
             )
-            == "This eye tracker has no ir intensity setting; nothing changed."
+            == "This eye tracker has no IR intensity setting; nothing changed."
         )
