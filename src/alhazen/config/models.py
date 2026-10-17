@@ -299,6 +299,16 @@ class LiveMonitorConfig(Model):
     # trials. Totals travel alongside, and the state saved at teardown is
     # always complete.
     max_rows: int = 1000
+    # The two live streams the operator can also switch on the page, as each
+    # session starts: the Trial view's gaze traces and the eye camera image.
+    # A slow machine can start with either off; off means the session never
+    # produces that stream (live_monitor/runtime.py, STREAMS), not that the
+    # page hides it. Neither changes the stimulus, the trial logic, fixation,
+    # calibration or what the tracker records. Separate from
+    # eyetracker.camera_image, which turns the TRACKPixx3's image off at the
+    # device for every reader.
+    gaze_traces: bool = True
+    camera: bool = True
 
     @model_validator(mode="after")
     def _valid(self) -> LiveMonitorConfig:

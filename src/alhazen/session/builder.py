@@ -719,7 +719,10 @@ def build_session(
         on_failure.callback(_release_on_abort, "remove the unused run folder", paths.discard_unused)
         live_monitor_controller = (
             LiveMonitorController(
-                port=rig_cfg.live_monitor.port, auto_open=rig_cfg.live_monitor.auto_open
+                port=rig_cfg.live_monitor.port,
+                auto_open=rig_cfg.live_monitor.auto_open,
+                gaze_traces=rig_cfg.live_monitor.gaze_traces,
+                camera=rig_cfg.live_monitor.camera,
             )
             if rig_cfg.live_monitor.enabled
             else None
@@ -1064,12 +1067,19 @@ def build_session(
         # is a live monitor and a tracker to read — its gaze to the Trial
         # view too (live_monitor/gaze.py: decimated, batched, never blocking).
         # publish_gaze is looked up like the runner's publish_trial: a
-        # stand-in controller without it gets no gaze stream.
+        # stand-in controller without it gets no gaze stream. So is the
+        # operator's switch (gaze_traces_on): while it is off, a frame costs
+        # the feed one check.
         on_frame_input: FrameInputHook = frame_inputs.note
         publish_gaze = getattr(live_monitor_controller, "publish_gaze", None)
         if publish_gaze is not None and tracker is not None:
             on_frame_input = _also_feeding(
-                on_frame_input, GazeFeed(publish_gaze, screen.px_per_deg)
+                on_frame_input,
+                GazeFeed(
+                    publish_gaze,
+                    screen.px_per_deg,
+                    enabled=getattr(live_monitor_controller, "gaze_traces_on", None),
+                ),
             )
 
         overlay: Callable[[TrialContext], None] | None = None

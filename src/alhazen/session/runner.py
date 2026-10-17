@@ -83,7 +83,11 @@ from alhazen.errors import ConfigError
 from alhazen.live_monitor.controls import status_refusal
 from alhazen.live_monitor.juice import juice_payload, juice_totals, ul_by_width
 from alhazen.live_monitor.panels import frame_intervals_panel
-from alhazen.live_monitor.runtime import LiveMonitorController, live_monitor_state
+from alhazen.live_monitor.runtime import (
+    STREAM_LABELS,
+    LiveMonitorController,
+    live_monitor_state,
+)
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
@@ -403,6 +407,8 @@ class SessionRunner:
         # ERROR: a malformed live monitor panel is reported once, not on every
         # publish it stays malformed for (_report_invalid_panel).
         self._invalid_panels_reported: set[tuple[str, str]] = set()
+        # The live monitor's stream switches as last logged (_note_stream_switches).
+        self._stream_switches: dict[str, bool] | None = None
         # Insertion-ordered, so the first factor a task names is the one the
         # spatial panels take their colours from.
         self._condition_fields: list[str] = []
@@ -571,12 +577,16 @@ class SessionRunner:
                 log.info("setup: %s", note)
             if self._live_monitor is not None:
                 log.info("live monitor: %s", self._live_monitor.url)
+                self._note_stream_switches()
                 if self._eyetracker is not None:
                     # Camera frames stream to the page on their own channel
                     # while the session is paused or a procedure runs. Wired
                     # here, once the live monitor is known to be open, so a
                     # session without one never reads a frame nobody will see.
                     self._eyetracker.camera_sink = self._send_camera_frame
+                    # The operator's eye camera switch, looked up like
+                    # publish_trial: a stand-in controller has none.
+                    self._eyetracker.camera_enabled = getattr(self._live_monitor, "camera_on", None)
                     # And the tracker settings the page sends (the iris size),
                     # applied between frames, even while a procedure runs.
                     self._eyetracker.settings_source = self._poll_tracker_settings
@@ -906,6 +916,7 @@ class SessionRunner:
         publish_trial = getattr(self._live_monitor, "publish_trial", None)
         if publish_trial is None:
             return
+        self._note_stream_switches()
         view = trial_view(
             schematic=tuple(plan.schematic) if plan.schematic is not None else None,
             regions=plan.regions,
@@ -1212,6 +1223,8 @@ class SessionRunner:
         """
         if self._live_monitor is None:
             return {}
+        if self._stream_switches is not None:
+            self._note_stream_switches()
         self._live_monitor_revision += 1
         # The panels no trial record produces: the live analysis's, then the
         # eye tracker's. A camera frame is read only while the device is
@@ -1307,6 +1320,33 @@ class SessionRunner:
             title,
             problem,
         )
+
+    def _note_stream_switches(self) -> None:
+        """Say in session.log how the live monitor's streams stand: once as
+        the session starts, then whenever the operator has switched one since
+        (checked as each trial starts and at each publish, so a line says when
+        the session noticed, not the instant of the click). The switches are
+        the page's, not the experiment's, and change nothing that is recorded;
+        the log is where a slow session can later be matched to them."""
+        streams = getattr(self._live_monitor, "streams", None)
+        if streams is None:
+            return
+        now = streams()
+        before = self._stream_switches
+        self._stream_switches = now
+        if before is None:
+            log.info(
+                "live monitor streams: %s",
+                ", ".join(f"{STREAM_LABELS[n]} {'on' if on else 'off'}" for n, on in now.items()),
+            )
+            return
+        for name, on in now.items():
+            if before.get(name) != on:
+                log.info(
+                    "live monitor: %s switched %s from the page",
+                    STREAM_LABELS[name],
+                    "on" if on else "off",
+                )
 
     def _poll_tracker_settings(self) -> list[tuple[str, object]]:
         """The tracker settings the page sent, for the monitor to apply."""
