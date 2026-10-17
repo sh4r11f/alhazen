@@ -57,6 +57,9 @@ nav:
   - Experiment database: database.md
   - Live monitor: live_monitor.md
   - Experiment workspace: workspace.md
+  - Experiment Platform:
+      - Design: experiment-platform/design.md
+      - Operations: experiment-platform/operations.md
   - Versioning and releases: versioning.md
   - Design proposals:
       - Precomputed sessions: design/precomputed-sessions.md

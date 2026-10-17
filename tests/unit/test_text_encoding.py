@@ -36,7 +36,9 @@ SOURCE = ROOT / "src" / "alhazen"
 # so `self._display.open()` is the same exception as `display.open()`.
 # PIL's `Image.open` decodes an image's bytes (the calibration pictures, from
 # an in-memory buffer): binary, with no text encoding to name.
-NOT_FILES = {"display", "webbrowser", "Image"}
+# `os.open` returns a raw file descriptor, which has no text mode at all (the
+# platform store opens a directory with it to fsync a rename).
+NOT_FILES = {"display", "webbrowser", "Image", "os"}
 
 
 def _literal_mode(call: ast.Call) -> str | None:

@@ -58,7 +58,8 @@ src/alhazen/
 ```
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
-top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
+top to bottom: `cli` → `experiment_platform` → `modes` →
+`session | testing | analysis` → `training` →
 `task` → `live_monitor` → `paradigms | devices` → `core | neural` →
 `stimuli | scenes` → `display` → `config | data | _scaffold` →
 `_deprecation`. Imports point only downward; `errors` and `version` sit
@@ -72,7 +73,10 @@ directly under `cli`, the only package that imports it, and above `session`,
 which every mode builds or drives; the ruler that `--mode measure` and
 `alhazen calibrate ruler` both draw lives in `display/ruler.py` so that
 `modes` never imports from `cli`. `_scaffold` imports nothing from alhazen but
-`errors`, and its line keeps it that way.
+`errors`, and its line keeps it that way. `experiment_platform` (the Experiment
+Platform: catalogue, refresh and its hosts; docs/experiment-platform/design.md, and
+documentation.md for its source-bound documents)
+sits directly under `cli` and imports nothing that runs or presents an experiment.
 
 The experiment workspace (`alhazen dashboard`) lives in `cli/workspace.py`
 and `cli/dashboard.py`, above the execution layers. It discovers downstream
