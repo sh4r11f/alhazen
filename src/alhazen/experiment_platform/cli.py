@@ -24,7 +24,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-DEFAULT_STORE = Path.home() / ".alhazen" / "platform"
+DEFAULT_STORE_TEXT = "~/.alhazen/platform"
+
+
+def default_store() -> Path:
+    """The store used when --store is not given, looked up when a command needs it: every
+    alhazen command builds this parser, and one environment without a home directory
+    (a stripped-down subprocess environment on Windows) must not break the others."""
+    return Path.home() / ".alhazen" / "platform"
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg,unused-ignore]
@@ -37,9 +44,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-ar
         p.add_argument(
             "--store",
             type=Path,
-            default=None if required else DEFAULT_STORE,
+            default=None,
             required=required,
-            help=f"the platform store folder (default: {DEFAULT_STORE})"
+            help=f"the platform store folder (default: {DEFAULT_STORE_TEXT})"
             if not required
             else "the platform store folder",
         )
@@ -182,6 +189,8 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901 - one branch per subcom
     from alhazen.experiment_platform.store import FileStore
 
     command = args.platform_command
+    if getattr(args, "store", False) is None:
+        args.store = default_store()
     if command is None:
         print(
             "usage: alhazen platform {local,import,refresh,check,checkout,save,"

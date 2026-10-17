@@ -369,3 +369,33 @@ def test_a_documentation_only_refresh_is_a_new_version_that_can_be_copied(store,
     # and a third copy of the current version reuses the identical snapshot
     third, _ = service.fork(ADA, "lab", "fixation-demo")
     assert service.fork_docs(ADA, third)["docs"] == new_docs
+
+
+def test_alhazen_commands_work_without_a_home_directory(monkeypatch, capsys):
+    """Every alhazen command builds the platform parser. Its default store is looked up only
+    when a platform command needs it, so an environment with no home directory (a
+    stripped-down subprocess environment on Windows) does not break the other commands."""
+    from pathlib import Path
+
+    from alhazen.experiment_platform import cli as platform_cli
+
+    def no_home(cls=None):
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", classmethod(no_home))
+    assert alhazen_main(["platform"]) == 2
+    with pytest.raises(SystemExit) as stop:
+        alhazen_main(["platform", "local", "--help"])
+    assert stop.value.code == 0
+    assert "~/.alhazen/platform" in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="home directory"):
+        platform_cli.default_store()
+
+
+def test_the_default_store_is_under_the_home_directory(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from alhazen.experiment_platform import cli as platform_cli
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert platform_cli.default_store() == tmp_path / ".alhazen" / "platform"
