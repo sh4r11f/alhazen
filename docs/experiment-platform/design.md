@@ -176,6 +176,12 @@ host.uploadRevision(fork, file, message), host.archiveUrl(handle)               
 host.art {url, encodePath, error}, host.copyText(text), host.useTheme(), host.showChat(id)
 ```
 
+The implemented hosts add a few members the app uses for presentation and upkeep (`key`,
+`downloadArchive`, `links`, `openTerminalApp`, `fontStylesheet`, `inlineStyles`, `extraCss`,
+`signOut`, `refresh`, and the `themeToggle` / `signIn` capabilities); `platform-web/README.md`
+lists them. The standalone page loads `platform.css` instead of inline `<style>` so it runs
+under the strict Content-Security-Policy.
+
 Differences between hosts are explicit in the UI: standalone hosts replace "Change with
 Mana" by download / upload of a revision and show the exact commands to run a copy on a rig;
 "My machines" and "Fork with AI" appear only where Mana Terminal and Mana chats exist.
