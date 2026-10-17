@@ -55,6 +55,8 @@ live_monitor:
   auto_open: true
   port: 0                 # ask the OS for an unused loopback port
   max_rows: 1000          # trials/events per update; totals travel alongside
+  gaze_traces: true       # the Trial view's gaze traces, as the session starts
+  camera: true            # the eye camera image, as the session starts
 ```
 
 `max_rows` is why publishing stays cheap in a long session. Each update
@@ -75,7 +77,9 @@ the tab still works). The server refuses a malformed request with a 400
 rather than guessing: a query parameter that is not an integer or is given
 twice, a request id that is not a string of 1 to 64 characters, or a body
 whose length is negative (larger than 4 KiB gets a 413). `--live-monitor` and `--no-live-monitor` override the
-rig for one run. `--no-live-monitor-browser` starts the server without launching
+rig for one run, and `--gaze-traces`/`--no-gaze-traces` and
+`--eye-camera`/`--no-eye-camera` how its two switchable streams start
+(see [Switching streams off](#switching-streams-off)). `--no-live-monitor-browser` starts the server without launching
 the default browser; the URL is written to the session log.
 
 ## Session controls
@@ -1041,6 +1045,53 @@ The best alternatives, if a live eye image during trials is wanted:
 3. A between-trials snapshot on the TRACKPixx3 during the ITI is possible in
    principle, but it is the same register read during the recording; it
    should be tried on the rig with the ring check above before it is offered.
+
+### Switching streams off
+
+Two of the page's streams cost the session work while they run: the gaze
+traces (the feed above, during trials) and the eye camera (a device read and
+a copy of the image about fifteen times a second while paused or
+calibrating). On a slow machine either can be switched off, from the
+sidebar's **Live streams** switches (Gaze traces, Eye camera), at any time,
+from any page showing the session, the experiment workspace's embedded one
+included. Off is a switch at the source, not a hidden panel:
+
+| | Gaze traces off | Eye camera off |
+|---|---|---|
+| Session | `GazeFeed.note` returns after one check of a shared byte: no decimation, no batch, nothing on the gaze channel | `EyeTrackerMonitor.stream_camera` returns: no `camera_frame()` read, no copy, nothing on the camera channel; the Camera panel reads neither frame nor eye line |
+| Server | nothing arrives to serve | the newest frame is forgotten, so a page opened later is not shown an old picture |
+| Page | the gaze loop ends (its open request is aborted); the Trial view says "Gaze traces are off." | the camera loop ends; the Camera panel and the Trial view's camera box say "Eye camera is off." |
+
+Neither switch changes the stimulus, its timing, the trial logic, fixation,
+the calibration procedures or anything recorded: the tracker records every
+sample to its own file, and the frame-input record (frames.csv, the
+phases' gaze) is the same. On the EyeLink, the camera setup screen still
+sends its image to the display PC while calibrating; only the copy for the
+page stops.
+
+How a session starts them is the rig's `live_monitor.gaze_traces` and
+`live_monitor.camera` (both `true` by default), `--[no-]gaze-traces` and
+`--[no-]eye-camera` for one run, or the workspace Run page's **Live monitor**
+switches, which start from the rig's last launch there (kept in the
+workspace's state folder, `live-streams.json`, never in the experiment's
+files) and otherwise from the rig. session.log says how they started
+(`live monitor streams: gaze traces on, eye camera off`) and each switch the
+operator makes (`live monitor: gaze traces switched off from the page`), so a
+slow session can be matched to them afterwards.
+
+The switches are two shared bytes (`LiveMonitorController.streams`,
+`set_stream`, `gaze_traces_on`, `camera_on`): the server child writes them
+when the page asks (`POST /api/stream` with `{"stream": "gaze_traces" |
+"camera", "on": true | false}`, accepted in every status, answered with both
+switches) and the session reads them with no lock and no queue.
+`GET /api/streams` answers both; every state publish carries them as
+`streams`. Like the other channels they are optional capabilities of the
+controller, looked up with `getattr`: a stand-in without them streams as
+before. `eyetracker.camera_image: false` (TRACKPixx3) is different: it turns
+the image off at the device for every reader, for the whole session.
+
+**Benefit.** Measured as described in the PR (scripts and raw numbers in the
+change's verification notes): see the CHANGELOG entry for the figures.
 
 ### Wire format
 
