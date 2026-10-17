@@ -177,3 +177,6 @@ cython_debug/
 
 # The built docs site (mkdocs build); published by CI, never committed.
 site/
+
+# Experiment Platform web build dependencies (install outside the repo; see platform-web/build.mjs)
+platform-web/node_modules/
