@@ -25,7 +25,12 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.0.0 - 2026-10-16
+
+3.0 brings the redesigned dashboard: the Split design, parameter sections on the
+Run page, the live Trial view, operator commands from the live monitor and
+target-only calibration screens. It also removes what 2.x deprecated (see
+Removed below).
 
 ### Added
 - The mouse stand-in (`eyetracker.backend: mouse_sim`) takes
