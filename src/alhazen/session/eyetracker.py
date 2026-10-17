@@ -156,16 +156,36 @@ class TrackerSetting:
 
 TRACKER_SETTINGS = (
     TrackerSetting(
-        IRIS_SIZE_SETTING, "Iris size", "px", IRIS_SIZE_RANGE_PX, IRIS_SIZE_STEP_PX,
-        "iris_size", "set_iris_size", "expected iris size", " camera px",
+        IRIS_SIZE_SETTING,
+        "Iris size",
+        "px",
+        IRIS_SIZE_RANGE_PX,
+        IRIS_SIZE_STEP_PX,
+        "iris_size",
+        "set_iris_size",
+        "expected iris size",
+        " camera px",
     ),
     TrackerSetting(
-        LED_INTENSITY_SETTING, "IR intensity", "", LED_INTENSITY_RANGE, 1,
-        "led_intensity", "set_led_intensity", "IR intensity",
+        LED_INTENSITY_SETTING,
+        "IR intensity",
+        "",
+        LED_INTENSITY_RANGE,
+        1,
+        "led_intensity",
+        "set_led_intensity",
+        "IR intensity",
     ),
     TrackerSetting(
-        PUPIL_THRESHOLD_SETTING, "Pupil threshold", "", PUPIL_THRESHOLD_RANGE, 1,
-        "pupil_threshold", "set_pupil_threshold", "pupil threshold", zero_means="auto",
+        PUPIL_THRESHOLD_SETTING,
+        "Pupil threshold",
+        "",
+        PUPIL_THRESHOLD_RANGE,
+        1,
+        "pupil_threshold",
+        "set_pupil_threshold",
+        "pupil threshold",
+        zero_means="auto",
     ),
 )
 SETTINGS_BY_NAME = {setting.name: setting for setting in TRACKER_SETTINGS}
@@ -831,7 +851,9 @@ class EyeTrackerMonitor:
             setting.show(held) if setting.zero_means and held == 0 else held,
             setting.log_unit,
         )
-        self._emit("TRACKER_SETTING", {"setting": setting.name, "value": held, "previous": previous})
+        self._emit(
+            "TRACKER_SETTING", {"setting": setting.name, "value": held, "previous": previous}
+        )
         return f"{setting.label} set to {setting.show(held)} (was {setting.show(previous)})."
 
     def _read_setting(self, setting: TrackerSetting) -> int | None:

@@ -1961,7 +1961,9 @@ class ViewPixxTracker:
         """
         low, high = LED_INTENSITY_RANGE
         if isinstance(level, bool) or not isinstance(level, int) or not low <= level <= high:
-            raise ValueError(f"IR intensity must be a whole number in [{low}, {high}], got {level!r}")
+            raise ValueError(
+                f"IR intensity must be a whole number in [{low}, {high}], got {level!r}"
+            )
         self._require_device("set_led_intensity()")
         with self._device_lock:
             self._libdpx.TPxSetLEDIntensity(level)
@@ -2027,7 +2029,7 @@ class ViewPixxTracker:
         A library without it raises TrackerError naming the update needed."""
         wrapped = getattr(self._libdpx, name, None)
         if callable(wrapped):
-            return wrapped  # type: ignore[no-any-return]
+            return wrapped
         dll = getattr(self._libdpx, "DPxDll", None)
         try:
             function = dll[name] if dll is not None else None
@@ -2040,7 +2042,7 @@ class ViewPixxTracker:
             )
         function.argtypes = argtypes
         function.restype = restype
-        return function  # type: ignore[no-any-return]
+        return function
 
     # ------------------------------------------------------------------
     # Per trial

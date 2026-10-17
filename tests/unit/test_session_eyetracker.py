@@ -1332,9 +1332,12 @@ class TestIrAndPupilThresholdFromTheLiveMonitor:
 
     def test_a_tracker_with_only_the_iris_size_offers_only_that(self, session) -> None:
         s = session(IrisTracker)
-        assert s.monitor.change_setting(
-            __import__("alhazen.session.eyetracker", fromlist=["x"]).SETTINGS_BY_NAME[
-                "led_intensity"
-            ],
-            3,
-        ) == "This eye tracker has no ir intensity setting; nothing changed."
+        assert (
+            s.monitor.change_setting(
+                __import__("alhazen.session.eyetracker", fromlist=["x"]).SETTINGS_BY_NAME[
+                    "led_intensity"
+                ],
+                3,
+            )
+            == "This eye tracker has no ir intensity setting; nothing changed."
+        )
