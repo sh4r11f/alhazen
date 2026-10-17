@@ -634,8 +634,8 @@ def project_tasks(root: Path) -> dict[str, Any]:
 
     An experiment that ships several tasks writes them as a module-level dict
     literal and hands it to alhazen: ``TASKS = {"mt-tuning": (MTTuningTask,
-    "configs/task-tuning.yaml"), ...}`` then ``run_experiment(tasks=TASKS,
-    default_task=...)``. Reading the literal — the way rigs and scripts are
+    "configs/task-tuning.yaml"), ...}`` then ``run_experiment(tasks=TASKS)``.
+    Reading the literal — the way rigs and scripts are
     found, by looking at files — is what lets the page list the tasks and each
     one's params file without starting the project's interpreter on every
     poll. A ``tasks=`` this cannot read is reported in ``error`` with what
@@ -645,11 +645,12 @@ def project_tasks(root: Path) -> dict[str, Any]:
     Returns ``{"tasks": [{"name", "params"}, ...], "default": name, "error":
     None}``; a run.py declaring one task (``task_class=``) gives an empty
     list and no default. ``default`` is the task the Task menu opens on:
-    run.py's ``default_task=``, else the first declared. ``default_task=`` is
-    deprecated in run_experiment (alhazen 2.5; gone in 3.0, when every
-    command names its task), but while a run.py still passes it, it is still
-    read and checked here, because it is still that experiment's own answer
-    to which task to offer first. It only preselects: every launch sends the
+    run.py's ``default_task=``, else the first declared. ``default_task=`` was
+    deprecated in run_experiment in alhazen 2.5 and removed in 3.0, but the
+    project runs on its own pinned alhazen: a project on 2.x may still pass
+    it, and there it is still that experiment's own answer to which task to
+    offer first, so it is still read and checked here. (On 3.0 the run.py
+    itself refuses it, and the launch says so.) It only preselects: every launch sends the
     task chosen in the menu as ``--task`` (`Workspace._task_for`), so no
     session started here relies on run.py's default.
 

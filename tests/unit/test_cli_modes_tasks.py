@@ -251,7 +251,10 @@ class TestDefaultTaskIsRemoved:
 
     @pytest.mark.parametrize(
         ("kwargs", "argv"),
-        [({"tasks": TASKS}, ["--task", "task-a"]), ({"task_class": OneTask}, ["--task", "the-one"])],
+        [
+            ({"tasks": TASKS}, ["--task", "task-a"]),
+            ({"task_class": OneTask}, ["--task", "the-one"]),
+        ],
         ids=["tasks", "task_class"],
     )
     def test_it_is_refused_whatever_the_command_says(self, tmp_path, monkeypatch, kwargs, argv):
