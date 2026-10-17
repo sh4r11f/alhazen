@@ -745,6 +745,20 @@ class TestCommandContract:
         )
         command = workspace._command(request, workspace.directory / "job")
         emitted.update(token for token in command if token.startswith("--"))
+        # The live monitor's stream switches: emitted, on and off, for a mode
+        # with a live monitor by a project whose alhazen takes them
+        # (tests/unit/test_live_streams_workspace.py).
+        monkeypatch.setitem(project, "capabilities", ["params-source", "live-streams"])
+        for on in (True, False):
+            request = request_for(
+                workspace,
+                mode="test",
+                subject="s01",
+                initials="HD",
+                live_streams={"gaze_traces": on, "camera": on},
+            )
+            command = workspace._command(request, workspace.directory / "job")
+            emitted.update(token for token in command if token.startswith("--"))
         # The training flags: emitted for a Training launch by a project whose
         # run.py registers a ladder (tests/unit/test_workspace_training.py).
         emitted.update({"--ladder", "--stage"})
