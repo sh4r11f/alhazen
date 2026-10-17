@@ -25,6 +25,7 @@
   const POLL_BUSY_MS = 1500;
   const POLL_IDLE_MS = 20000;
   const STAGE_WORDS = {
+    checking: 'Checking this machine',
     fetching: 'Downloading the files',
     writing: 'Writing the files',
     building: 'Building the environment',
@@ -196,7 +197,8 @@
     const main = h.node('div', 'library-main');
     const title = h.node('div', 'library-title', item.title);
     const sub = [];
-    if (item.from) sub.push(`From ${item.from}${item.by ? ' by ' + item.by : ''}`);
+    if (item.from && item.from !== item.title) sub.push(`From ${item.from}${item.by ? ' by ' + item.by : ''}`);
+    else if (item.by) sub.push(`By ${item.by}`);
     if (item.revision) sub.push(`revision ${item.revision}`);
     main.append(title, h.node('div', 'library-sub', sub.join(' · ')));
     const disk = item.disk;
@@ -206,7 +208,7 @@
     if (disk.state === 'outdated' && disk.marker) facts.push(`folder holds revision ${disk.marker.bundle}`);
     if (facts.length) main.append(h.node('div', 'library-disk', facts.join(' · ')));
     const job = item.job;
-    if (job && job.status === 'done' && job.message) main.append(h.node('div', 'library-note ls-ok', job.message));
+    if (job && job.status === 'done' && job.message && disk.state === 'current') main.append(h.node('div', 'library-note ls-ok', job.message));
     if (job && job.status === 'failed') main.append(h.node('div', 'library-note ls-bad', job.message));
     const side = h.node('div', 'library-side');
     side.append(h.node('span', `library-state ls-${st.key}`, st.words));

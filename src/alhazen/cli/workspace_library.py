@@ -43,7 +43,7 @@ from alhazen.experiment_platform.library import (
 # A copy's environment build is the slow part (PsychoPy and its wheels); past this the
 # job is reported failed and uv is stopped.
 SYNC_TIMEOUT_S = 1800
-STAGES = ("fetching", "writing", "building", "registering")
+STAGES = ("checking", "fetching", "writing", "building", "registering")
 
 
 def find_uv() -> str | None:
@@ -242,7 +242,7 @@ class Library:
                 raise LibraryError("That copy is already being downloaded")
             job = {
                 "status": "running",
-                "stage": "fetching",
+                "stage": "checking",
                 "message": "",
                 "at": time.time(),
                 "replace": bool(replace),
@@ -343,6 +343,12 @@ def add_parser(sub: Any) -> None:
     connect.add_argument(
         "--copies", default=None, help="where downloads go (default: ~/alhazen-experiments)"
     )
+    connect.add_argument(
+        "--extras",
+        default="psychopy",
+        help="optional dependency groups to install when an experiment declares them, "
+        "comma-separated (default: psychopy; empty for none)",
+    )
     connect.add_argument("--state-dir", default=None, help="the dashboard's state folder")
     connect.add_argument(
         "--check", action="store_true", help="list the copies once to check the connection"
@@ -364,6 +370,7 @@ def run(args: argparse.Namespace) -> int:
             fields: dict[str, Any] = {}
             if args.label:
                 fields["label"] = args.label
+            fields["extras"] = tuple(x.strip() for x in args.extras.split(",") if x.strip())
             if args.copies:
                 fields["copies"] = Path(args.copies).expanduser().absolute()
             source = LibrarySource.from_url(args.url, token, **fields)

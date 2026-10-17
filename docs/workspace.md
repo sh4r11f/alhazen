@@ -18,6 +18,32 @@ while the running dashboard carries on as if nothing happened. Started with
 `python -m`, the dashboard holds only `python.exe`, which a reinstall never
 touches.
 
+## Your library
+
+A dashboard can list the experiments in your library on an Experiment Platform (your copies,
+"Add to library" on the platform) and download each one only when you want to run it:
+
+```bash
+alhazen library connect "http://127.0.0.1:8123/#token=..."      # the URL `alhazen platform local` printed
+alhazen library connect https://lab.example --token-file ~/token  # a platform reached over https
+```
+
+Options: `--copies` (where downloads go, default `~/alhazen-experiments`), `--label` (the
+library's name on the page), `--extras` (optional dependencies installed when an experiment
+declares them; default `psychopy`, empty for none), `--state-dir` (the dashboard's state
+folder, as for `alhazen dashboard`). `alhazen library show` and `alhazen library disconnect`
+say which library is connected and forget it. When Mana runs an experiment on your machine
+it connects Mana's dashboard there to your Mana library by itself.
+
+The sidebar then lists every copy that is not registered here, with *Download*; the
+Experiments page shows the whole library and what is on this machine. Downloading fetches the
+copy's current revision into `<copies>/<copy id>`, builds its environment with `uv sync
+--locked` and registers it. Nothing is downloaded twice: a folder already at that revision is
+used as it is, and a folder holding another revision and saved sessions is updated only when
+you answer *Update the files, keep the data* (files are written over the old ones, nothing is
+deleted). Copies already on this machine with saved sessions are registered when the library
+is refreshed, so their data shows on the Data and History pages.
+
 The folders are remembered. Next time, `alhazen dashboard` is enough. Add more
 with **Add experiment**, using the path to a checkout containing `run.py`.
 Nothing is installed by registering a folder. Choose a Python interpreter in

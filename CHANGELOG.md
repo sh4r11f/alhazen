@@ -25,6 +25,32 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **The dashboard's library.** `alhazen library connect <url>` (a local platform's `#token=`
+  URL, or a platform address with `--token-file`) stores, in the dashboard's state folder and
+  readable only by its owner, where the dashboard reads its owner's library. The sidebar then
+  lists every copy in that library that is not registered here, and the Experiments page shows
+  the whole library with each copy's state on this machine. A copy is downloaded only when
+  asked: its current revision is fetched (`GET /api/forks`, `GET /api/bundles/<handle>/archive`),
+  written to `<copies>/<copy id>`, built with `uv sync --locked` and registered. The disk is
+  checked first: a folder already at that revision is used as it is (a marker,
+  `.alhazen-hub/source.json`, records which revision a download wrote), a folder holding
+  exactly those files is adopted, and a folder holding another revision and saved sessions is
+  never overwritten without an explicit answer ("Update the files, keep the data"). Copies
+  already on disk with data and an environment are registered on refresh, so their sessions
+  show on the Data and History pages. (`alhazen.experiment_platform.library`,
+  `alhazen.cli.workspace_library`; `GET /api/library`, `POST /api/library/refresh`,
+  `POST /api/library/download`.)
+- **Experiment Platform: Remove from library.** My experiments rows and a copy's page offer
+  *Remove from library*, confirmed in place with what is removed (the copy, its revisions and
+  run records, the methods snapshot when no other copy uses it) and what is not (anything on a
+  machine's disk, a published listing). Both standalone hosts now delete the copy's private
+  revisions and unshared snapshot (`DELETE /api/forks/<id>` answers what it removed); the Mana
+  host does the same in one update of the viewer's workspace.
+
 ## 3.1.0 - 2026-10-17
 
 3.1 adds the Experiment Platform: a catalogue and methods reader for alhazen

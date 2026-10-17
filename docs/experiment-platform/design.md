@@ -221,7 +221,48 @@ overlays must be re-bound after review). AI generation ("Change with Mana", "For
 AI", "New experiment with Mana") and execution on paired machines exist only in the Mana
 host.
 
+## 8a. Rigs: the dashboard's library
+
+A rig's dashboard lists its owner's library and downloads a copy only when it is to be run
+(`alhazen.experiment_platform.library` for the protocol and the disk, `alhazen.cli.
+workspace_library` for the page and the jobs).
+
+- **Connection.** `<state dir>/library.json` (mode 0600; never in an experiment folder):
+  `{schema: 1, url, token, auth: "alhazen-token" | "bearer", label, copies, extras, expires?}`.
+  `alhazen library connect` writes it from a local platform's `#token=` URL or a platform
+  address plus a token file; the Mana kit writes it on every run (below). Plain `http` is
+  accepted only for loopback addresses. The page shows the platform's origin, never the URL's
+  path (a Mana ingress path is itself a credential).
+- **Client.** Two requests of Appendix A: `GET /api/forks` and `GET /api/bundles/<handle>/
+  archive`, the same against `alhazen platform local` and Mana. A server host's cookie
+  sessions are not supported yet (it would need per-rig API tokens).
+- **Disk.** Every download writes `<copies>/<copy id>/.alhazen-hub/source.json`
+  (`{schema: 1, id, bundle, title, source, writtenAt, files, previous}`). A copy's folder is
+  `absent`, `current` (marker names the library's revision), `outdated` or `unknown` (no
+  readable marker). Data is any run folder (`session.json` or `config_snapshot.yaml`) under the
+  folder, environments and hidden folders excluded. Writing overwrites the revision's files and
+  deletes nothing. A current folder is not fetched again; an unknown folder holding exactly the
+  revision's files is adopted; an outdated or unknown folder with data raises `CopyConflict`
+  unless the person answers "update the files, keep the data".
+- **Download job.** One background job per copy: checking, fetching, writing, building
+  (`uv sync --locked` plus the extras the experiment declares among the connection's
+  `extras`), registering; the page polls `GET /api/library`. Copies on disk with data and an
+  environment are registered when the library is refreshed.
+- **Mana.** A rig cannot read Firebase, so the Mana kit (`hubkit.library_connection`) runs a
+  small service in the viewer's own sandbox (daemon `alhazen-library` behind ingress) that
+  answers those two requests from `<viewer>/file-system/alhazen-experiment-platform-mine`. It
+  serves only that user's copies; each rig gets its own bearer token, stored in the sandbox only
+  as a SHA-256 hash with an expiry (7 days, renewed on every run), alongside an ingress link of
+  the same lifetime. `hubkit.run_on_machine` applies the same disk rules before copying
+  (raising `CopyHasData` instead of overwriting), adds the experiment to a dashboard that is
+  already open, and writes the connection file by file transfer (the token never appears in a
+  terminal command).
+
 ## 9. Decisions and their price
+
+- **The library is pulled by the rig, not pushed by the platform**: the rig decides what to
+  download and when, and the same client works against every host. Price: Mana needs a service
+  the rig can reach (a daemon and an ingress route per user) and tokens to renew.
 
 - **Same repository, optional module** rather than a separate distribution: one version
   number for toolkit and reader; the price is that the alhazen wheel carries ~0.5 MB of web
