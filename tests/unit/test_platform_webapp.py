@@ -371,6 +371,7 @@ class TestPublicCatalogue:
         app = _built(store, monkeypatch, public=True)
         session = call(app, "GET", "/api/session").json()
         assert session["viewer"] is None and session["publicCatalogue"] is True
+        assert not any(session["capabilities"][k] for k in ("fork", "publish", "uploadRevision"))
         listing = call(app, "GET", "/api/catalogue").json()["published"]["lab"]["dots"]
         handle = listing["bundle"]["path"]
         assert call(app, "GET", "/api/catalogue/lab/dots/docs").status == 200

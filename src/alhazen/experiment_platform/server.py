@@ -186,11 +186,14 @@ class ServerGate:
     def session(self, request: Request, principal: Principal | None) -> dict[str, Any]:
         found = self._session(request)
         viewer = {"uid": principal.uid, "name": principal.name} if principal else None
+        caps = capabilities(sign_in=True)
+        if principal is None:  # a visitor (public catalogue) only reads
+            caps.update(fork=False, publish=False, uploadRevision=False, downloadRevision=False)
         return {
             "kind": "server",
             "viewer": viewer,
             "csrf": found[1] if found else None,
-            "capabilities": capabilities(sign_in=True),
+            "capabilities": caps,
             "publicCatalogue": self.config.public_catalogue,
         }
 
