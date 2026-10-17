@@ -189,3 +189,12 @@ test('the hero drawing loses only its root style attribute', async () => {
   assert.equal(got[0].hero, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><g style="opacity:1"/></svg>');
   assert.equal(got[0].penrose, '<svg/>');
 });
+
+test('a server sign-in carries the page header the server requires, before any CSRF token exists', async () => {
+  const { api, calls } = loadHost({ responses: { 'POST /api/login': { body: { kind: 'server', viewer: { uid: 'u1', name: 'A' }, csrf: 'c' } } } });
+  const t = api.createTransport({ kind: 'server', token: '', getCsrf: () => '', onSignedOut: () => {} });
+  await t.request('POST', 'api/login', { json: { username: 'a', password: 'p' } });
+  assert.equal(calls[0].headers['X-Alhazen-Platform'], '1');
+  assert.equal(calls[0].headers['X-Alhazen-CSRF'], undefined);
+  assert.equal(calls[0].headers['X-Alhazen-Token'], undefined);
+});

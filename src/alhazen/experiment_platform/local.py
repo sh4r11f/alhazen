@@ -153,6 +153,13 @@ def run_local(
     init: bool = False,
     announce: Callable[[str], None] = print,
 ) -> int:
+    if announce is None:
+
+        def announce(line: str) -> None:
+            # Flushed: the link is the only way in, and a log file or pipe must show it
+            # at once, not when the server stops.
+            print(line, flush=True)
+
     store = FileStore(store_path, create=init or not Path(store_path).exists())
     platform = LocalPlatform(store, port=port, name=name)
     announce(f"Alhazen Experiment Platform (local) at {platform.url}")

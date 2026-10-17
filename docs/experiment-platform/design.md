@@ -225,7 +225,9 @@ message is generic and the detail goes to the server log).
 
 Authentication: local host, header `X-Alhazen-Token: <token>` (from the URL fragment
 `#token=`); server host, the `alhazen_platform_session` cookie plus header
-`X-Alhazen-CSRF: <csrf>` (from `/api/session`) on every POST and DELETE.
+`X-Alhazen-CSRF: <csrf>` (from `/api/session`) on every POST and DELETE, and
+`X-Alhazen-Platform: 1` on every POST and DELETE including `/api/login` (a header a
+cross-site form cannot send).
 
 | Request | Response |
 |---|---|

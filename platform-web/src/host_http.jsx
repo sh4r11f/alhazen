@@ -46,6 +46,9 @@ function createTransport({ kind, token, getCsrf, onSignedOut }) {
     const headers = {};
     if (kind === 'local' && token) headers['X-Alhazen-Token'] = token;
     if (method !== 'GET' && kind === 'server' && getCsrf()) headers['X-Alhazen-CSRF'] = getCsrf();
+    // The server refuses a sign-in (and any change) that does not come from its own page;
+    // a cross-site form cannot set this header without a preflight the server never grants.
+    if (method !== 'GET' && kind === 'server') headers['X-Alhazen-Platform'] = '1';
     let payload = body;
     if (json !== undefined) { headers['Content-Type'] = 'application/json'; payload = JSON.stringify(json); }
     else if (contentType) headers['Content-Type'] = contentType;
