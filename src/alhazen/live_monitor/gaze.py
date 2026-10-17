@@ -7,6 +7,11 @@ draws: the gaze in dva, at most ``max_hz`` samples a second, a gap where there
 was no sample (a blink, a lost eye), and the trial each sample belongs to so
 the page can start a fresh trail on every trial.
 
+The operator can switch the traces off (``enabled``, the live monitor's
+``gaze_traces_on``). Then a frame costs one check and nothing else: no
+decimation, no batch, nothing on the channel, and what was waiting is
+dropped. Switched back on, the feed starts a fresh trail, as at a new trial.
+
 It must never cost a frame. So, per frame, it does a few comparisons and an
 append; a batch leaves for the server child at most every ``flush_s`` through
 ``sink``, which is a non-blocking put on a one-slot queue
@@ -35,6 +40,8 @@ GazeSample = tuple[int, float, "float | None", "float | None"]
 # Where a batch goes. True when it was taken, False when the slot was full and
 # the batch must wait for the next flush.
 GazeSink = Callable[[list[GazeSample]], bool]
+# Whether the traces are on now: asked once per frame, so it must be cheap.
+GazeSwitch = Callable[[], bool]
 
 # The fastest the page is sent samples. A trail drawn at 60 Hz is smooth; a
 # 500 Hz tracker read once per frame (120 Hz on the lab rig) is decimated.
@@ -58,12 +65,15 @@ class GazeFeed:
         max_hz: float = MAX_HZ,
         flush_s: float = FLUSH_S,
         capacity: int = CAPACITY,
+        enabled: GazeSwitch | None = None,
     ) -> None:
         if px_per_deg <= 0:
             raise ValueError(f"px_per_deg must be greater than 0, got {px_per_deg!r}")
         if max_hz <= 0 or flush_s < 0 or capacity < 1:
             raise ValueError("max_hz must be > 0, flush_s >= 0 and capacity >= 1")
         self._sink = sink
+        # None: always on (a controller without switches, a test's sink).
+        self._enabled = enabled
         self._px_per_deg = float(px_per_deg)
         # A hair under the period, so a 60 Hz display feeding a 60 Hz cap is
         # not decimated to 30 Hz by frame-time jitter.
@@ -75,6 +85,8 @@ class GazeFeed:
         self._last_gaze_t: float | None = None
         self._last_was_gap = False
         self._last_flush_t: float | None = None
+        # Whether the last frame found the traces switched off.
+        self._off = False
         # How many samples were dropped because the child stopped collecting;
         # the page is told nothing about it beyond the hole, so it is kept for
         # a test (and a debugger) to read.
@@ -82,6 +94,14 @@ class GazeFeed:
 
     def note(self, trial_index: int, frame_index: int, t: float, inputs: InputFrame) -> None:
         """One displayed frame's inputs; the engine's ``on_frame_input``."""
+        if self._enabled is not None and not self._enabled():
+            if not self._off:
+                # Just switched off: what was waiting is no longer wanted.
+                self._pending.clear()
+                self._trial = None
+                self._off = True
+            return
+        resumed, self._off = self._off, False
         new_trial = trial_index != self._trial
         if new_trial:
             # A new trial starts a new trail. What the old trial still had
@@ -91,6 +111,11 @@ class GazeFeed:
             self._last_kept_t = None
             self._last_gaze_t = None
             self._last_was_gap = False
+            if resumed:
+                # Switched back on mid-trial: a gap first, so the page does
+                # not draw a line across the time the traces were off.
+                self._keep((trial_index, t, None, None))
+                self._last_was_gap = True
         gaze = inputs.gaze
         if gaze is not None and not (math.isfinite(gaze[0]) and math.isfinite(gaze[1])):
             # Not a position the page can draw, and not JSON: a gap.

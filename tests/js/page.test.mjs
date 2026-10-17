@@ -64,6 +64,8 @@ async function livePage({ states, camera = [], tracker }) {
       }
       if (url.startsWith('/api/camera')) return cameraQueue.length ? cameraQueue.shift() : pending();
       if (url.startsWith('/api/tracker')) return tracker(url, init);
+      // The stream switches (Live streams): both on, as a session starts by default.
+      if (url.startsWith('/api/streams')) return response({ json: { gaze_traces: true, camera: true } });
       // The Trial view's two long polls (trial picture, gaze): left waiting,
       // as an idle session leaves them; trial_view.test.mjs drives them.
       if (url.startsWith('/api/trial') || url.startsWith('/api/gaze')) return pending();

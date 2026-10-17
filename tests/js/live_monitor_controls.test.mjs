@@ -46,6 +46,8 @@ async function livePage({ state, command, acknowledgements }) {
     fetch: (url, init) => {
       if (url.startsWith('/api/state')) return response({ json: state });
       if (url.startsWith('/api/camera')) return pending();
+      // The stream switches (Live streams): both on, as a session starts by default.
+      if (url.startsWith('/api/streams')) return response({ json: { gaze_traces: true, camera: true } });
       if (url.startsWith('/api/command?') || url === '/api/command') return command(init);
       if (url.startsWith('/api/commands')) return acks.length ? acks.shift() : pending();
       throw new Error('unexpected fetch ' + url);

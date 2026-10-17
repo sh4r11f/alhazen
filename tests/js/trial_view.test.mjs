@@ -427,6 +427,8 @@ describe('the live page', () => {
         if (url.startsWith('/api/trial')) return trials.length ? trials.shift() : pending();
         if (url.startsWith('/api/gaze')) return gazes.length ? gazes.shift() : pending();
         if (url.startsWith('/api/camera')) return cameras.length ? cameras.shift() : pending();
+        // The stream switches (Live streams): both on, as a session starts by default.
+        if (url.startsWith('/api/streams')) return response({ json: { gaze_traces: true, camera: true } });
         throw new Error('unexpected fetch ' + url);
       },
     });

@@ -38,6 +38,7 @@ from alhazen.config.models import (
     CALIBRATION_MOTIONS,
     normalize_initials,
     with_calibration_target,
+    with_live_streams,
 )
 from alhazen.config.rigs import (
     collecting_rigs,
@@ -632,6 +633,23 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="serve the live monitor without opening a browser window",
     )
+    # The live monitor's two switchable streams, as the session starts
+    # (LiveMonitorConfig.gaze_traces/.camera); the operator can still switch
+    # either on the page. None leaves the rig's setting.
+    parser.add_argument(
+        "--gaze-traces",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="start the live monitor with the Trial view's gaze traces on or off "
+        "(default: the rig's live_monitor.gaze_traces)",
+    )
+    parser.add_argument(
+        "--eye-camera",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="start the live monitor with the eye camera image on or off "
+        "(default: the rig's live_monitor.camera)",
+    )
     parser.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
     # training (alhazen.training.ladder): which stage of which ladder. The
     # stage's own params file and overrides are the session's params, so
@@ -883,6 +901,13 @@ def _run_session(
             appearance=args.calibration_target,
             images=_calibration_images(args.calibration_images),
             motion=args.calibration_motion,
+        )
+        # And the live monitor's streams as this launch asked to start them,
+        # so the snapshot records how the session began.
+        rig = with_live_streams(
+            rig,
+            gaze_traces=getattr(args, "gaze_traces", None),
+            camera=getattr(args, "eye_camera", None),
         )
     except ConfigError as e:
         print(f"INVALID: {e}", file=sys.stderr)

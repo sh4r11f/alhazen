@@ -6,6 +6,7 @@ experiment process only performs non-blocking queue operations between trials.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import multiprocessing as mp
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
-from alhazen.config.models import IRIS_SIZE_RANGE_PX
+from alhazen.config.models import IRIS_SIZE_RANGE_PX, LiveMonitorConfig
 from alhazen.errors import SessionError
 from alhazen.live_monitor.controls import KNOWN_COMMANDS, status_refusal
 from alhazen.live_monitor.heatmap import check_heatmap
@@ -82,6 +83,27 @@ _REMEMBERED_REQUEST_IDS = 1024
 # What a refused request id is told.
 _REQUEST_ID_RULE = f"request_id must be a string of 1 to {_MAX_REQUEST_ID_CHARS} characters"
 
+# ---- live streams the operator can switch off ----------------------------
+# Two of the page's channels cost the experiment process work while they run:
+# the Trial view's gaze traces (GazeFeed, a check and a batch about thirty
+# times a second during trials) and the eye camera (a device read and a copy
+# of the image about fifteen times a second while paused or calibrating). On a
+# slow machine the operator can switch either off. Off is a switch at the
+# source, not a hidden panel: the session stops producing that stream, the
+# server stops serving it and the page stops asking for it. Neither switch
+# touches the stimulus, the trial logic, fixation, calibration or what is
+# recorded: the tracker still records every sample to its own file.
+#
+# The switches live in shared memory, written by the server child when the
+# page asks (POST /api/stream) and read by the session with no lock and no
+# queue: a frame's check is one byte. Their names are the wire contract and
+# the rig's keys (LiveMonitorConfig.gaze_traces, .camera).
+GAZE_TRACES = "gaze_traces"
+EYE_CAMERA = "camera"
+STREAMS: tuple[str, ...] = (GAZE_TRACES, EYE_CAMERA)
+# How each is named where a person reads it (the page's buttons, session.log).
+STREAM_LABELS = {GAZE_TRACES: "gaze traces", EYE_CAMERA: "eye camera"}
+
 
 @dataclass(frozen=True)
 class LiveMonitorCommand:
@@ -136,6 +158,11 @@ class LiveMonitorController:
 
     def __init__(self, *, port: int = 0, auto_open: bool = True) -> None:
         ctx = mp.get_context("spawn")
+        # The operator's stream switches (STREAMS, in that order), shared with
+        # the server child, which sets them; see the block above STREAMS. Both
+        # on until set_stream says otherwise (the rig's live_monitor.gaze_traces
+        # and .camera, before start()).
+        self._streams: Any = ctx.RawArray(ctypes.c_bool, [True] * len(STREAMS))
         self._updates: Any = ctx.Queue(maxsize=1)
         # The camera's own one-slot queue, beside the state's: a frame reaches
         # the page without a state publish, and a newer frame replaces one the
@@ -197,6 +224,7 @@ class LiveMonitorController:
                 self._port,
                 self._trial,
                 self._gaze,
+                self._streams,
             ),
             name="alhazen-live-monitor",
             daemon=True,
@@ -231,6 +259,29 @@ class LiveMonitorController:
             log.warning("could not open live monitor browser; open %s", self.url)
         return self.url
 
+    # --- Live stream switches --------------------------------------------
+
+    def gaze_traces_on(self) -> bool:
+        """Whether the Trial view's gaze traces are on. Read on every frame
+        (GazeFeed), so it is one shared byte and nothing else."""
+        return bool(self._streams[0])
+
+    def camera_on(self) -> bool:
+        """Whether the eye camera is on: frames are read and sent only then."""
+        return bool(self._streams[1])
+
+    def set_stream(self, name: str, on: bool) -> None:
+        """Switch one stream (STREAMS) on or off from the session's side: how
+        the session starts it, from the rig. The page switches it through
+        the server; whichever wrote last holds."""
+        if name not in STREAMS:
+            raise ValueError(f"unknown live monitor stream {name!r}; expected one of {STREAMS}")
+        self._streams[STREAMS.index(name)] = bool(on)
+
+    def streams(self) -> dict[str, bool]:
+        """Both switches by name (STREAMS), as every state publish carries them."""
+        return {name: bool(self._streams[i]) for i, name in enumerate(STREAMS)}
+
     def publish(self, state: dict[str, Any]) -> None:
         """Replace any unread snapshot; monitoring must never block a session."""
         if self._process is not None and not self._process.is_alive():
@@ -243,7 +294,9 @@ class LiveMonitorController:
             int(state.get("revision", 0)),
             str(state.get("status", "")),
             _published_controls(state),
-            json.dumps(state, default=str),
+            # The switches as they stand now, so a page that did not flip them
+            # (a second tab, the dashboard's frame) shows them right.
+            json.dumps({**state, "streams": self.streams()}, default=str),
         )
         try:
             self._updates.put_nowait(snapshot)
@@ -292,6 +345,11 @@ class LiveMonitorController:
             if not self._camera_down_reported:
                 log.error("live monitor process exited; camera frames are no longer sent")
                 self._camera_down_reported = True
+            return
+        if not self.camera_on():
+            # Switched off: no copy of the pixels and nothing on the channel.
+            # The session's own check (EyeTrackerMonitor.stream_camera) means
+            # a frame is not even read; this keeps any other caller honest.
             return
         shape = tuple(getattr(pixels, "shape", ()))
         if len(shape) != 2 or str(getattr(pixels, "dtype", "")) != "uint8":
@@ -366,8 +424,11 @@ class LiveMonitorController:
         the previous one: the caller keeps the samples and offers them again
         with the next batch. Never blocks, and never raises for a full slot.
         A dead child takes nothing, so True — there is nobody to keep them
-        for — and says so once.
+        for — and says so once. With the gaze traces switched off nothing is
+        sent either, and True for the same reason.
         """
+        if not self.gaze_traces_on():
+            return True
         if self._process is not None and not self._process.is_alive():
             if not self._gaze_down_reported:
                 log.error("live monitor process exited; gaze is no longer sent")
@@ -458,6 +519,18 @@ class LiveMonitorController:
         if process.is_alive():
             process.terminate()
             process.join(timeout_s)
+
+
+def start_live_streams(controller: Any, cfg: LiveMonitorConfig) -> None:
+    """Set the live monitor's two switchable streams as the rig starts them
+    (live_monitor.gaze_traces, .camera), before its server starts. Looked up
+    like publish_trial: a stand-in controller without switches is left as it
+    is, streaming whatever it streams."""
+    set_stream = getattr(controller, "set_stream", None)
+    if set_stream is None:
+        return
+    set_stream(GAZE_TRACES, cfg.gaze_traces)
+    set_stream(EYE_CAMERA, cfg.camera)
 
 
 class _State:
@@ -551,6 +624,13 @@ class _CameraState:
             self.seq += 1
             self.frame = frame
             self.condition.notify_all()
+
+    def forget(self) -> None:
+        """Drop the newest frame (the eye camera was switched off), so a page
+        opened later is not handed an old picture as if it were current. The
+        numbering goes on from where it was."""
+        with self.condition:
+            self.frame = None
 
     def wait_after(self, seq: int, timeout: float) -> tuple[int, _CameraFrame] | None:
         """The newest frame and its number if it is newer than ``seq``,
@@ -735,6 +815,7 @@ def _serve(
     port: int,
     trial_updates: Any = None,
     gaze_updates: Any = None,
+    streams: Any = None,
 ) -> None:
     state = _State()
     camera = _CameraState()
@@ -757,6 +838,13 @@ def _serve(
         return candidate is not None and secrets.compare_digest(
             candidate.encode("utf-8"), token_bytes
         )
+
+    def stream_switches() -> dict[str, bool]:
+        """The operator's stream switches by name; both on for a caller that
+        shares none (an older controller's arguments)."""
+        if streams is None:
+            return dict.fromkeys(STREAMS, True)
+        return {name: bool(streams[i]) for i, name in enumerate(STREAMS)}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -782,6 +870,11 @@ def _serve(
                     return
                 payload = state.wait_after(revision)
                 self._send(HTTPStatus.OK, payload, "application/json")
+                return
+            if path == "/api/streams":
+                if not self._authorized(params):
+                    return
+                self._send(HTTPStatus.OK, json.dumps(stream_switches()), "application/json")
                 return
             if path == "/api/camera":
                 if not self._authorized(params):
@@ -871,6 +964,9 @@ def _serve(
             if self.path == "/api/tracker":
                 self._tracker_setting()
                 return
+            if self.path == "/api/stream":
+                self._stream_switch()
+                return
             if self.path != "/api/command":
                 self._send(HTTPStatus.FORBIDDEN, "forbidden", "text/plain")
                 return
@@ -903,6 +999,40 @@ def _serve(
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, "command queue full", "text/plain")
                 return
             self._send(HTTPStatus.ACCEPTED, "accepted", "text/plain")
+
+        def _stream_switch(self) -> None:
+            """Switch one live stream on or off: ``{"stream": name, "on": bool}``.
+
+            Accepted in every status, because it changes what the page is
+            sent, never what the session does to the subject. Answers with
+            both switches as they now stand. Setting a switch to what it
+            already is changes nothing, so a retried click needs no request
+            id. The session reads the switch itself (see STREAMS); the
+            server's part is to stop serving what was switched off.
+            """
+            try:
+                body = self._json_body()
+            except _BadBody as refused:
+                self._send(refused.status, refused.message, "text/plain")
+                return
+            try:
+                name, on = body["stream"], body["on"]
+            except (KeyError, TypeError):
+                self._send(HTTPStatus.BAD_REQUEST, "invalid stream switch", "text/plain")
+                return
+            if streams is None:
+                self._send(HTTPStatus.CONFLICT, "this server has no stream switches", "text/plain")
+                return
+            if not isinstance(name, str) or name not in STREAMS:
+                self._send(HTTPStatus.BAD_REQUEST, f"unknown stream {name!r}", "text/plain")
+                return
+            if not isinstance(on, bool):
+                self._send(HTTPStatus.BAD_REQUEST, "on must be true or false", "text/plain")
+                return
+            streams[STREAMS.index(name)] = on
+            if name == EYE_CAMERA and not on:
+                camera.forget()
+            self._send(HTTPStatus.OK, json.dumps(stream_switches()), "application/json")
 
         def _tracker_setting(self) -> None:
             """A tracker setting from the page: the camera panel's iris size.
@@ -1096,7 +1226,16 @@ def _serve(
         if slot is not None:
             threading.Thread(target=pump_slot, args=(slot, take), daemon=True).start()
     # --- end Trial view ---------------------------------------------------
+    # The session that started this child. If it dies without stopping it (it
+    # was killed: SIGKILL, a dashboard's kill after a hung exit, Task Manager),
+    # the child must not outlive it: an orphan would keep the port, the
+    # session's inherited pipes and the resource tracker alive indefinitely.
+    # None when _serve runs in the calling process (nothing to outlive).
+    parent = mp.parent_process()
     while not stop.is_set():
+        if parent is not None and not parent.is_alive():
+            log.warning("live monitor: the session process is gone; stopping")
+            break
         server.handle_request()
     server.server_close()
 

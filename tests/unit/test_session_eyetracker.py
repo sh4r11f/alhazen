@@ -31,6 +31,7 @@ from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.devices.eyetracker.viewpixx import eye_status_text
 from alhazen.errors import TrackerError
 from alhazen.session.eyetracker import (
+    CAMERA_OFF,
     CAMERA_STREAM_S,
     PROCEDURE_STATUS,
     PROGRESS_PUBLISH_S,
@@ -947,6 +948,42 @@ class TestCameraStream:
         data = s.panel("Camera", camera=False, image=False)["data"]
         assert "stream" not in data and data["pixels"] == ""
         assert data["note"] == "image left out of the saved copy"
+
+    def test_switched_off_no_frame_is_read_or_sent(self, session) -> None:
+        """The operator's Eye camera switch is off at the source: the device
+        is not read, nothing goes to the channel, and the panel and the Trial
+        view say it is off."""
+        s, frames = self.streaming(session)
+        on = [False]
+        s.monitor.camera_enabled = lambda: on[0]
+        for _ in range(5):
+            s.monitor.stream_camera()
+            s.monitor._on_progress("calibrating", "target 1 of 5")
+            s.clock.advance(CAMERA_STREAM_S)
+        assert (s.tracker.reads, frames) == (0, [])
+        assert s.panel("Camera", camera=True)["data"] == {"form": "empty", "message": CAMERA_OFF}
+        assert s.tracker.reads == 0, "the panel reads no frame either"
+        assert s.monitor.trial_camera() == {
+            "live": False,
+            "has_frames": False,
+            "off": True,
+            "reason": CAMERA_OFF,
+        }
+        on[0] = True
+        s.monitor.stream_camera()
+        assert (s.tracker.reads, len(frames)) == (1, 1)
+
+    def test_switched_off_the_saved_copy_is_unchanged(self, session) -> None:
+        s, _frames = self.streaming(session)
+        s.monitor.stream_camera()
+        s.monitor.camera_enabled = lambda: False
+        data = s.panel("Camera", camera=False, image=False)["data"]
+        assert data["note"] == "image left out of the saved copy"
+
+    def test_without_a_live_monitor_the_switch_is_not_consulted(self, session) -> None:
+        s = session(CameraTracker)
+        s.monitor.camera_enabled = lambda: False
+        assert s.monitor.camera_switched_off is False
 
 
 class TestCalibrationPanel:

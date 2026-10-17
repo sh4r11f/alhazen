@@ -65,7 +65,7 @@ from alhazen.display.screen import Screen
 from alhazen.display.simulated import SimulatedDisplay
 from alhazen.errors import ConfigError
 from alhazen.live_monitor.gaze import GazeFeed
-from alhazen.live_monitor.runtime import LiveMonitorController
+from alhazen.live_monitor.runtime import LiveMonitorController, start_live_streams
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import TrialSource
 from alhazen.paradigms.config import validate_after_break_paths
@@ -732,6 +732,7 @@ def build_session(
             on_failure.callback(
                 _release_on_abort, "stop the live monitor server", live_monitor_controller.stop
             )
+            start_live_streams(live_monitor_controller, rig_cfg.live_monitor)
             live_monitor_controller.start()
 
         display: DisplayBackend
@@ -1064,12 +1065,19 @@ def build_session(
         # is a live monitor and a tracker to read — its gaze to the Trial
         # view too (live_monitor/gaze.py: decimated, batched, never blocking).
         # publish_gaze is looked up like the runner's publish_trial: a
-        # stand-in controller without it gets no gaze stream.
+        # stand-in controller without it gets no gaze stream. So is the
+        # operator's switch (gaze_traces_on): while it is off, a frame costs
+        # the feed one check.
         on_frame_input: FrameInputHook = frame_inputs.note
         publish_gaze = getattr(live_monitor_controller, "publish_gaze", None)
         if publish_gaze is not None and tracker is not None:
             on_frame_input = _also_feeding(
-                on_frame_input, GazeFeed(publish_gaze, screen.px_per_deg)
+                on_frame_input,
+                GazeFeed(
+                    publish_gaze,
+                    screen.px_per_deg,
+                    enabled=getattr(live_monitor_controller, "gaze_traces_on", None),
+                ),
             )
 
         overlay: Callable[[TrialContext], None] | None = None

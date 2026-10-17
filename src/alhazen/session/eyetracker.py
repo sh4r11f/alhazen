@@ -107,6 +107,11 @@ Emitter = Callable[[str, dict[str, Any]], object]
 CameraSink = Callable[[CameraFrame], object]
 # Where the live monitor's tracker settings come from: (setting, value) pairs.
 SettingsSource = Callable[[], list[tuple[str, object]]]
+# Whether the operator has the eye camera on (the live monitor's camera_on).
+CameraSwitch = Callable[[], bool]
+
+# What the Camera panel and the Trial view say while the eye camera is off.
+CAMERA_OFF = "Eye camera is off. Turn it on with Eye camera in the live monitor's View controls."
 
 # The tracker setting the live monitor can change, by the name the page sends:
 # the TRACKPixx3's expected iris size (devices/eyetracker/viewpixx.py).
@@ -223,6 +228,9 @@ class EyeTrackerMonitor:
         # Set by the runner when a live monitor is open: frames then stream to it
         # (stream_camera), and state publishes stop carrying the pixels.
         self.camera_sink: CameraSink | None = None
+        # Set by the runner with the camera sink: the operator's switch. While
+        # it is off no frame is read for the live monitor at all.
+        self.camera_enabled: CameraSwitch | None = None
         self._last_stream = float("-inf")
         # The frame last sent to the sink (stream_camera sends each one once).
         self._sent_frame: CameraFrame | None = None
@@ -560,6 +568,8 @@ class EyeTrackerMonitor:
         another optional capability looked up here; a tracker that does not
         say gets a sentence that is true of every tracker.
         """
+        if self.camera_switched_off:
+            return {"live": False, "has_frames": False, "off": True, "reason": CAMERA_OFF}
         reason = getattr(self._tracker, "camera_while_recording", None)
         if not isinstance(reason, str) or not reason:
             reason = (
@@ -589,7 +599,22 @@ class EyeTrackerMonitor:
         panels.append({"title": "Drift correction", "section": SECTION, "data": self._drift()})
         return panels
 
+    @property
+    def camera_switched_off(self) -> bool:
+        """Whether the operator switched the live monitor's eye camera off.
+        Only a live monitor has the switch: with none, nothing streams and
+        nothing is switched."""
+        return (
+            self.camera_sink is not None
+            and self.camera_enabled is not None
+            and not self.camera_enabled()
+        )
+
     def _camera(self, live: bool, image: bool) -> dict[str, Any]:
+        if image and self.camera_switched_off:
+            # Off at the source: no frame read, no eye line read, no pixels.
+            # The copy saved at teardown (image=False) is unchanged.
+            return {"form": "empty", "message": CAMERA_OFF}
         # With a live monitor open the frames stream on their own channel
         # (stream_camera), so a state publish neither reads one nor carries
         # its pixels: the panel says it streams, and the page draws the newest
@@ -750,7 +775,7 @@ class EyeTrackerMonitor:
         next state publish (_read_camera), and the page keeps its last frame
         with the reason under it.
         """
-        if self.camera_sink is None or not self.has_camera:
+        if self.camera_sink is None or not self.has_camera or self.camera_switched_off:
             return
         now = self._clock.now()
         if now - self._last_stream < CAMERA_STREAM_S:

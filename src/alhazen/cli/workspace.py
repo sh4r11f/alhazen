@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
@@ -313,6 +314,13 @@ def records_demographics(project: dict[str, Any]) -> bool | None:
     if capabilities is None:
         return None
     return "subject-demographics" in capabilities
+
+
+def takes_live_streams(project: dict[str, Any]) -> bool:
+    """Whether the project's alhazen can start the live monitor with its gaze
+    traces or eye camera off (``--gaze-traces``/``--eye-camera``): its probe
+    reported the "live-streams" capability. False when unknown."""
+    return "live-streams" in (project.get("capabilities") or [])
 
 
 def _calibration_offer(reported: Any) -> dict[str, Any] | None:
@@ -1075,6 +1083,26 @@ def script_actions(root: Path) -> list[dict[str, Any]]:
     return actions
 
 
+class LiveStreams(BaseModel):
+    """How the live monitor's two switchable streams start for one launch:
+    the Trial view's gaze traces and the eye camera image (the rig's
+    ``live_monitor.gaze_traces`` and ``.camera``, which the Run page's Live
+    monitor switches start from). The operator can still switch either on
+    the monitor itself during the session."""
+
+    model_config = ConfigDict(extra="forbid")
+    gaze_traces: bool = True
+    camera: bool = True
+
+
+# The modes whose session opens a live monitor, and so take the switches.
+LIVE_STREAM_MODES = frozenset({"run", "test", "simulate", "training", "measure"})
+
+# Where the workspace remembers each rig's last Live monitor choice, in its own
+# state folder (never in an experiment's files): {"<project>|<rig>": {...}}.
+LIVE_STREAMS_FILE = "live-streams.json"
+
+
 class Launch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project: str
@@ -1152,6 +1180,10 @@ class Launch(BaseModel):
     # subject and initials, no experimenter).
     subject_record: str | None = None
     experimenter: str | None = None
+    # How the live monitor's gaze traces and eye camera start (LiveStreams),
+    # from the Run page's Live monitor switches; None from a client without
+    # them, and the rig's own setting then holds.
+    live_streams: LiveStreams | None = None
 
 
 # Every flag `_mode_command` can emit, whichever mode. An extra argument
@@ -1209,6 +1241,12 @@ MODE_FLAGS = frozenset(
         # Sent beside --params, to a project whose alhazen takes it
         # (params-source capability): the file as chosen in Task parameters.
         "--params-source",
+        # Sent with the Live monitor switches, to a project whose alhazen
+        # takes them (live-streams capability).
+        "--gaze-traces",
+        "--no-gaze-traces",
+        "--eye-camera",
+        "--no-eye-camera",
     }
 )
 # The same for a standalone preview module: the flags `_script_command`
@@ -1403,8 +1441,13 @@ def _mode_command(
     demographics: dict[str, Any] | None = None,
     training: tuple[str, str] | None = None,
     params_source: str | None = None,
+    live_streams: LiveStreams | None = None,
 ) -> list[str]:
     """run.py's arguments for one of the modes: the launcher's flags, then the extras.
+
+    ``live_streams`` is how the live monitor's gaze traces and eye camera
+    start, sent as ``--[no-]gaze-traces`` and ``--[no-]eye-camera`` for a mode
+    that opens one; None sends nothing (the rig's setting holds).
 
     ``training`` is ``(ladder, stage)`` for a training launch — training mode,
     or simulate mode rehearsing the stage — sent as ``--ladder``/``--stage``;
@@ -1505,6 +1548,9 @@ def _mode_command(
         if measure_subject is not None:
             command += ["--sub", measure_subject]
     command += _calibration_arguments(request.calibration_target)
+    if live_streams is not None and mode.value in LIVE_STREAM_MODES:
+        command += ["--gaze-traces" if live_streams.gaze_traces else "--no-gaze-traces"]
+        command += ["--eye-camera" if live_streams.camera else "--no-eye-camera"]
     # Last, after every flag of the launcher's own, where a typed command
     # puts them: run.py takes what is its own (a run.py that reads its own
     # `--task` before run_experiment does) and hands the rest on.
@@ -1957,6 +2003,9 @@ class Workspace:
             "records_experimenter": records_experimenter(project),
             # And the subject's age and sex (records_demographics), likewise.
             "records_demographics": records_demographics(project),
+            # Whether the Run page's Live monitor switches can be sent
+            # (takes_live_streams).
+            "live_streams": takes_live_streams(project),
             "meta": project.get("meta", {}),
             "archived": bool(project.get("archived", False)),
         }
@@ -2119,6 +2168,7 @@ class Workspace:
                 experimenter=experimenter,
                 demographics=demographics,
                 training=training,
+                live_streams=self._live_streams(project, request),
             )
         if request.mode in {m.value for m in Mode}:
             # With a task chosen from the menu, `--task` is the form's too and
@@ -2148,6 +2198,7 @@ class Workspace:
                 experimenter=experimenter,
                 demographics=demographics,
                 params_source=self._params_source(project, request),
+                live_streams=self._live_streams(project, request),
             )
         # A standalone script reads --rig with its own argparse and hands it
         # to load_rig, which takes a file: a shared rig goes as the file the
@@ -2407,7 +2458,81 @@ class Workspace:
             # this rig file (config/reward_calibration.py); None when nothing
             # was measured, and an error string when the file cannot be read.
             "reward_calibration": _reward_calibration_summary(ref.path),
+            # How the Run page's Live monitor switches start for this rig: the
+            # last choice launched with it here, else the rig's own setting.
+            "live_streams": self._live_stream_defaults(key, spec, merged.values),
         }
+
+    def _live_stream_key(self, key: str, spec: str) -> str:
+        return f"{key}|{spec}"
+
+    def _remembered_live_streams(self) -> tuple[dict[str, Any], str | None]:
+        """Every rig's last Live monitor choice (LIVE_STREAMS_FILE), and why
+        it could not be read (None when it could, or there is none yet). A
+        file that cannot be read is not a reason to refuse the rig: the
+        problem goes to the Run page beside the switches (``problem`` in
+        ``_live_stream_defaults``), which then start from the rig."""
+        path = self.directory / LIVE_STREAMS_FILE
+        if not path.is_file():
+            return {}, None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            return {}, f"the remembered choices in {path} cannot be read ({e})"
+        if not isinstance(data, dict):
+            return {}, f"the remembered choices in {path} are not a JSON object"
+        return data, None
+
+    def _live_stream_defaults(
+        self, key: str, spec: str, values: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The Run page's starting position for the two switches: the last
+        choice launched with this rig here, else the rig's own settings, with
+        ``problem`` saying why a remembered choice was not used."""
+        remembered, problem = self._remembered_live_streams()
+        entry = remembered.get(self._live_stream_key(key, spec))
+        if entry is not None:
+            try:
+                choice = LiveStreams.model_validate(entry)
+            except ValueError as e:
+                problem = f"the remembered choice for this rig is not valid ({e})"
+            else:
+                return {**choice.model_dump(), "remembered": True, "problem": None}
+        monitor = values.get("live_monitor") or {}
+        return {
+            "gaze_traces": monitor.get("gaze_traces", True) is not False,
+            "camera": monitor.get("camera", True) is not False,
+            "remembered": False,
+            "problem": problem,
+        }
+
+    def _remember_live_streams(self, key: str, spec: str, choice: LiveStreams) -> None:
+        """Keep a launch's switches for this rig. A memory that could not be
+        read is replaced: what it held was already unusable, and the Run page
+        has said so."""
+        remembered, _problem = self._remembered_live_streams()
+        remembered[self._live_stream_key(key, spec)] = choice.model_dump()
+        replace_atomically(
+            self.directory / LIVE_STREAMS_FILE, json.dumps(remembered, indent=2, sort_keys=True)
+        )
+
+    def _live_streams(self, project: dict[str, Any], request: Launch) -> LiveStreams | None:
+        """The switches to send with a launch, or None to send none: none
+        chosen, or a project whose alhazen does not take them. Asking such a
+        project to start with a stream off is refused, saying why, rather
+        than starting it with the stream on."""
+        choice = request.live_streams
+        if choice is None or request.mode not in LIVE_STREAM_MODES:
+            return None
+        if takes_live_streams(project):
+            return choice
+        if choice.gaze_traces and choice.camera:
+            return None
+        raise ValueError(
+            "This experiment's alhazen cannot start the live monitor with its gaze traces or "
+            "eye camera off; update its alhazen, or turn both on and switch them off on the "
+            "live monitor"
+        )
 
     def _one_task(self, project: dict[str, Any], request: Launch) -> str | None:
         """The name to send as ``--task`` in a mode launch of a project whose
@@ -2612,6 +2737,11 @@ class Workspace:
                 self._check_parameter_set(project, request, task)
             ref, shared = self._launch_rig(project, request.rig)
             merged = rig_mapping(ref.path, shared=shared)
+            # The Live monitor switches as launched become this rig's starting
+            # position on the Run page next time (_live_stream_defaults).
+            sent_streams = self._live_streams(project, request)
+            if sent_streams is not None:
+                self._remember_live_streams(project["id"], request.rig, sent_streams)
             (run_dir / "media").mkdir(parents=True)
             started = now()
             # The launch as it was decided, written once and never again

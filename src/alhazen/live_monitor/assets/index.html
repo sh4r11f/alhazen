@@ -32,6 +32,20 @@
     <div id="controls" class="controls" data-controls-host></div>
     <p id="notice"></p>
 
+    <!-- The two streams the operator can switch off on a slow machine
+         (live_monitor.js, "Live streams"). Off stops the session producing
+         the stream, not only the page drawing it. The live page only. -->
+    <h2 id="streams-title" class="side-title streams-title">Live streams</h2>
+    <div id="streams" class="streams">
+      <button id="stream-gaze_traces" class="stream-switch" type="button" role="switch" aria-checked="true" data-stream="gaze_traces">
+        <span class="switch-label">Gaze traces</span><span class="switch-track" aria-hidden="true"></span>
+      </button>
+      <button id="stream-camera" class="stream-switch" type="button" role="switch" aria-checked="true" data-stream="camera">
+        <span class="switch-label">Eye camera</span><span class="switch-track" aria-hidden="true"></span>
+      </button>
+      <p id="streams-note" class="streams-note"></p>
+    </div>
+
     <h2 class="side-title">View</h2>
     <div class="controls">
       <button class="control" id="theme" type="button">Theme: auto</button>

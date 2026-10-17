@@ -50,6 +50,28 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   machine's disk, a published listing). Both standalone hosts now delete the copy's private
   revisions and unshared snapshot (`DELETE /api/forks/<id>` answers what it removed); the Mana
   host does the same in one update of the viewer's workspace.
+- **The live monitor's gaze traces and eye camera can be switched off**, for a
+  machine where they cost too much. Two switches in the monitor's sidebar
+  (Live streams: Gaze traces, Eye camera) stop the session producing the
+  stream, not only the page drawing it: off, the gaze feed costs a frame one
+  check of a shared byte, no camera frame is read or copied, the server stops
+  serving it and the page stops asking. Nothing about the stimulus, its
+  timing, the trial logic, fixation, calibration or what is recorded changes.
+  A session starts them from the rig (`live_monitor.gaze_traces`,
+  `live_monitor.camera`, both `true` by default), `--[no-]gaze-traces` and
+  `--[no-]eye-camera` for one run, or the workspace Run page's Live monitor
+  switches, remembered per rig in the workspace's state folder. session.log
+  records how they started and every switch. New capability `live-streams`;
+  `POST /api/stream`, `GET /api/streams`, `streams` in every state.
+  docs/live_monitor.md, "Switching streams off".
+
+### Fixed
+
+- **The live monitor no longer outlives a killed session.** Its server child (and the
+  multiprocessing resource tracker with it) used to keep running, holding its port and the
+  session's inherited pipes, when the session was killed without stopping it (a dashboard's
+  kill after a run hung at exit, SIGKILL, Task Manager). It now notices within a fraction of
+  a second and exits.
 
 ## 3.1.0 - 2026-10-17
 

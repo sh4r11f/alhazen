@@ -155,6 +155,8 @@ export function loadLiveMonitor(options = {}) {
     location: location,
     history: history,
     URLSearchParams: URLSearchParams,
+    /* The live streams' loops are stopped by aborting their open request. */
+    AbortController: AbortController,
     localStorage: fakeStorage(options.storage || {}),
     sessionStorage: fakeStorage({}),
     /* The page root answers with the light theme's custom properties; any

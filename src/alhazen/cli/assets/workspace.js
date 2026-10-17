@@ -1304,6 +1304,7 @@ function modeChanged() {
   $('windowed-field').hidden = !['test', 'run', 'demo', 'measure', 'simulate', 'training']
     .includes(mode);
   $('movie-options').hidden = mode !== 'movie';
+  renderLiveStreams();
   // The calibration target applies to run and test only (renderCalibration).
   if (calibration) renderCalibration();
   // Extra arguments are offered for every mode and script; only the words
@@ -1486,6 +1487,22 @@ async function parameterSetChanged() {
   await Promise.all(loads);
 }
 
+/* The modes whose session opens a live monitor (workspace.py LIVE_STREAM_MODES). */
+const LIVE_STREAM_MODES = ['run', 'test', 'simulate', 'training', 'measure'];
+
+/** Whether this launch sends the Live monitor switches: a mode with a live
+ *  monitor, a rig with it on, and an alhazen that takes the flags. */
+function sendsLiveStreams() {
+  const p = project();
+  if (!p || !p.live_streams) return false;
+  if (!LIVE_STREAM_MODES.includes($('mode').value)) return false;
+  return rigMonitor[`${p.id}:${$('rig').value}`] === true;
+}
+
+function renderLiveStreams() {
+  $('live-streams-field').hidden = !sendsLiveStreams();
+}
+
 /**
  * Read the selected rig and summarise its monitor, and say whose rig it is.
  * The server answers with the rig as it would run — merged over the shared
@@ -1529,6 +1546,17 @@ async function loadRig() {
   // 2.0 that still says it is refused at launch, naming `live_monitor:`.
   const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
   rigMonitor[`${p.id}:${value}`] = monitorOn;
+  // The Live monitor switches start where this rig was last launched from
+  // here, else at its own live_monitor settings (server: _live_stream_defaults).
+  const streams = data.live_streams || { gaze_traces: true, camera: true };
+  $('launch-gaze-traces').checked = streams.gaze_traces !== false;
+  $('launch-eye-camera').checked = streams.camera !== false;
+  // Why a remembered choice was not used (an unreadable memory): said under
+  // the switches, which then start from the rig.
+  $('live-streams-help').textContent = streams.problem
+    ? 'Started from the rig: ' + streams.problem + '.' : '';
+  $('live-streams-help').hidden = !streams.problem;
+  renderLiveStreams();
   // The display backend, for the launch footer's PsychoPy warning. A rig
   // that does not say gets the model's default (DisplayConfig.backend).
   rigBackend[`${p.id}:${value}`] = rig.display?.backend || 'psychopy';
@@ -3101,6 +3129,14 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     // subject's come from its record on the server).
     if (age.value) request.age = age.value;
     if (named && !record && $('sex').value) request.sex = $('sex').value;
+    // The Live monitor switches, only where the form shows them: any other
+    // launch leaves the rig's own setting.
+    if (sendsLiveStreams()) {
+      request.live_streams = {
+        gaze_traces: $('launch-gaze-traces').checked,
+        camera: $('launch-eye-camera').checked,
+      };
+    }
     const run = await api('/api/runs', request);
     runId = run.id;
     // Remembered so the Live monitor tab comes up on its own when this run's

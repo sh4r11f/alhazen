@@ -2184,3 +2184,14 @@ footer {
  * An unclosed rule just above (#identity's field pair) had made the earlier
  * "bench" layout rules that stood here dead since 2026-10-08; they are
  * removed rather than revived, since workspace_split.css replaces them. */
+
+
+/* ---- Run options: the live monitor's stream switches (2026-10-17) ----
+ * A labelled row of two boxes under the run options, the label in the
+ * form's own field-label style. */
+.live-streams-field .field-label {
+  display: block;
+  margin: 0 0 7px;
+  font-size: 14px;
+  font-weight: 600;
+}

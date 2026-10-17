@@ -2123,6 +2123,7 @@ async function sendTrackerSetting(control, value) {
 function cameraRateText() {
   const now = performance.now();
   while (cameraArrivals.length && now - cameraArrivals[0] > 2000) cameraArrivals.shift();
+  if (!streams.camera) return 'Eye camera is off.';
   if (cameraProblem) return cameraProblem;
   if (!cameraFrame) return 'Waiting for the camera…';
   if (!cameraArrivals.length) return 'No new frame: the image is live only while paused or calibrating';
@@ -2171,12 +2172,12 @@ function queueCameraPaint() {
  * request every two seconds and a live frame arrives as soon as it is read.
  * Only the canvas is redrawn: nothing here rebuilds the panels.
  */
-async function cameraLoop() {
-  for (;;) {
+async function cameraLoop(signal) {
+  while (!signal.aborted) {
     let retryMs = 0;
     try {
       const response = await fetch('/api/camera?token=' + encodeURIComponent(token) +
-        '&after=' + cameraSeq + '&wait_ms=2000');
+        '&after=' + cameraSeq + '&wait_ms=2000', { signal: signal });
       if (response.status === 200) {
         const width = Number(response.headers.get('X-Frame-Width'));
         const height = Number(response.headers.get('X-Frame-Height'));
@@ -2206,6 +2207,8 @@ async function cameraLoop() {
         throw new Error('the server answered ' + response.status + ': ' + await response.text());
       }
     } catch (error) {
+      /* Switched off (applyStreams aborted the request): not a failure. */
+      if (signal.aborted) break;
       /* Said under the image and in the console, never swallowed: a frozen
        * picture that looks live is the failure this panel must not have. */
       console.error('camera stream failed', error);
@@ -3556,6 +3559,7 @@ function paintGaze() {
 function gazeStatus(view, own, current) {
   if (trialView.problem) return trialView.problem;
   if (!view.gaze) return 'No gaze: this rig has no eye tracker.';
+  if (!streams.gaze_traces) return 'Gaze traces are off.';
   const status = state ? state.status : 'running';
   if (status === 'paused' || status === 'calibrating') {
     /* A pause keyed between trials takes effect on the next trial's first
@@ -3615,6 +3619,12 @@ function paintTrialCamera() {
     note.textContent = '';
     return;
   }
+  if (!streams.camera || camera.off) {
+    holds('none');
+    host.replaceChildren(htmlEl('div', 'trial-camera-empty', 'Eye camera is off.'));
+    note.textContent = '';
+    return;
+  }
   if (!camera.has_frames || !cameraFrame) {
     holds(camera.has_frames ? 'waiting' : 'none');
     host.replaceChildren(htmlEl('div', 'trial-camera-empty',
@@ -3669,6 +3679,7 @@ async function trialLoop() {
         if (trialView.problem.startsWith('Trial stream')) trialView.problem = '';
         drawTrialStage();
         paintTrialCamera();
+        renderStreamSwitches();
       } else if (response.status !== 204) {
         throw new Error('the server answered ' + response.status + ': ' + await response.text());
       }
@@ -3683,12 +3694,12 @@ async function trialLoop() {
 }
 
 /** The gaze channel: batches of samples while trials run. */
-async function gazeLoop() {
-  for (;;) {
+async function gazeLoop(signal) {
+  while (!signal.aborted) {
     let retryMs = 0;
     try {
       const response = await fetch('/api/gaze?token=' + encodeURIComponent(token) +
-        '&after=' + trialView.gazeSeq + '&wait_ms=2000');
+        '&after=' + trialView.gazeSeq + '&wait_ms=2000', { signal: signal });
       if (response.status === 200) {
         takeGaze(await response.json());
         gazeArrivedAt = performance.now();
@@ -3697,6 +3708,8 @@ async function gazeLoop() {
         throw new Error('the server answered ' + response.status + ': ' + await response.text());
       }
     } catch (error) {
+      /* Switched off (applyStreams aborted the request): not a failure. */
+      if (signal.aborted) break;
       console.error('gaze stream failed', error);
       trialView.problem = 'Gaze stream failed: ' + error.message;
       retryMs = 1000;
@@ -3723,6 +3736,153 @@ new ResizeObserver(() => {
 
 /* ------------------------------------------------------------------ */
 /* end Trial view                                                      */
+/* ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ */
+/* Live streams                                                        */
+/* ------------------------------------------------------------------ */
+/*
+ * Two of the page's streams cost the session work while they run: the
+ * Trial view's gaze traces and the eye camera. On a slow machine the
+ * operator switches either off here. The switch belongs to the session and
+ * is held by the server (POST /api/stream), so every page showing it agrees:
+ * off, the session stops producing the stream (runtime.py STREAMS), and this
+ * page stops asking for it (its loop ends, an open request is aborted).
+ * Nothing the subject sees and nothing recorded changes.
+ *
+ *   button ─POST /api/stream─▶ server ─▶ applyStreams ─▶ start/stop the loop
+ *   each new state ─GET /api/streams─▶ applyStreams   (another page's switch)
+ */
+const STREAM_NAMES = ['gaze_traces', 'camera'];
+const STREAM_LOOPS = { gaze_traces: (signal) => gazeLoop(signal), camera: (signal) => cameraLoop(signal) };
+const STREAM_TITLES = { gaze_traces: 'Gaze traces', camera: 'Eye camera' };
+const streams = { gaze_traces: true, camera: true };
+/* The AbortController of each running loop; null while it is stopped. */
+const streamLoops = { gaze_traces: null, camera: null };
+let streamsSyncing = false;
+
+function startStream(name) {
+  if (streamLoops[name]) return;
+  const controller = new AbortController();
+  streamLoops[name] = controller;
+  STREAM_LOOPS[name](controller.signal).finally(() => {
+    if (streamLoops[name] === controller) streamLoops[name] = null;
+  });
+}
+
+function stopStream(name) {
+  const controller = streamLoops[name];
+  streamLoops[name] = null;
+  if (controller) controller.abort();
+}
+
+/** Take the server's switches: run exactly the loops that are on, drop what
+ *  an off stream left on the page, and redraw what shows it. */
+function applyStreams(next) {
+  let changed = false;
+  STREAM_NAMES.forEach((name) => {
+    if (typeof next[name] !== 'boolean') return;
+    changed = changed || streams[name] !== next[name];
+    streams[name] = next[name];
+    if (streams[name]) startStream(name);
+    else stopStream(name);
+  });
+  if (!changed) return;
+  if (!streams.camera) {
+    cameraFrame = null;
+    cameraArrivals.length = 0;
+  }
+  if (!streams.gaze_traces) trialView.samples = [];
+  renderStreamSwitches();
+  queueGazePaint();
+  queueCameraPaint();
+  paintTrialCamera();
+}
+
+/** Ask the server how the switches stand. Without an answer both loops run,
+ *  as they did before there were switches: a stream is never lost to a
+ *  failed question. */
+async function syncStreams() {
+  if (streamsSyncing) return;
+  streamsSyncing = true;
+  let answer = null;
+  let problem = '';
+  try {
+    const response = await fetch('/api/streams?token=' + encodeURIComponent(token));
+    if (response.ok) answer = await response.json();
+    else problem = 'the server answered ' + response.status;
+  } catch (error) {
+    /* A network failure (the session ended, the server is gone): said in
+     * the console and under the switches below. */
+    console.error('stream switches not read', error);
+    problem = error.message;
+  } finally {
+    streamsSyncing = false;
+  }
+  const note = byId('streams-note');
+  if (note) note.textContent = problem ? 'Live stream switches not read: ' + problem : '';
+  if (answer) applyStreams(answer);
+  else STREAM_NAMES.forEach((name) => { if (streams[name]) startStream(name); });
+}
+
+/** Whether this rig has the stream at all, as far as the running trial says;
+ *  true until a trial has said. */
+function streamAvailable(name) {
+  const view = trialView.view;
+  if (!view) return true;
+  if (name === 'gaze_traces') return view.gaze !== false;
+  const camera = view.camera;
+  return !camera || !!camera.has_frames || !!camera.off;
+}
+
+function renderStreamSwitches() {
+  const host = byId('streams');
+  if (!host) return;
+  setShown(host, STATIC_STATE === null);
+  const title = byId('streams-title');
+  if (title) setShown(title, STATIC_STATE === null);
+  STREAM_NAMES.forEach((name) => {
+    const button = byId('stream-' + name);
+    if (!button) return;
+    const on = streams[name];
+    const available = streamAvailable(name);
+    button.setAttribute('aria-checked', on ? 'true' : 'false');
+    button.disabled = !available;
+    button.title = available ? '' : name === 'gaze_traces'
+      ? 'This rig has no eye tracker.' : 'This eye tracker gives the session no camera image.';
+  });
+}
+
+/** One switch, flipped by the operator. Pending until the server answers;
+ *  a refusal is said under the switches, never dropped. */
+async function sendStreamSwitch(name, button) {
+  const note = byId('streams-note');
+  button.dataset.pending = 'true';
+  try {
+    const response = await fetch('/api/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Alhazen-Token': token },
+      body: JSON.stringify({ stream: name, on: !streams[name] }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    if (note) note.textContent = '';
+    applyStreams(await response.json());
+  } catch (error) {
+    console.error('stream switch failed', error);
+    if (note) note.textContent = STREAM_TITLES[name] + ' not switched: ' + error.message;
+  } finally {
+    delete button.dataset.pending;
+  }
+}
+
+STREAM_NAMES.forEach((name) => {
+  const button = byId('stream-' + name);
+  if (button) button.onclick = () => sendStreamSwitch(name, button);
+});
+renderStreamSwitches();
+
+/* ------------------------------------------------------------------ */
+/* end Live streams                                                    */
 /* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
@@ -4009,6 +4169,9 @@ async function poll() {
         state = next;
         painted = next.revision;
         render();
+        /* Another page (the dashboard's frame, a second tab) may have
+         * switched a stream: the server's answer is the one that counts. */
+        syncStreams();
       }
     }
   } catch (error) {
@@ -4026,7 +4189,8 @@ if (STATIC_STATE !== null) {
   render();
 } else {
   poll();
-  cameraLoop();
   trialLoop();
-  gazeLoop();
+  /* The gaze and camera loops start once the server has said which of the
+   * two streams are on (syncStreams); a page that cannot ask starts both. */
+  syncStreams();
 }

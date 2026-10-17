@@ -299,6 +299,16 @@ class LiveMonitorConfig(Model):
     # trials. Totals travel alongside, and the state saved at teardown is
     # always complete.
     max_rows: int = 1000
+    # The two live streams the operator can also switch on the page, as each
+    # session starts: the Trial view's gaze traces and the eye camera image.
+    # A slow machine can start with either off; off means the session never
+    # produces that stream (live_monitor/runtime.py, STREAMS), not that the
+    # page hides it. Neither changes the stimulus, the trial logic, fixation,
+    # calibration or what the tracker records. Separate from
+    # eyetracker.camera_image, which turns the TRACKPixx3's image off at the
+    # device for every reader.
+    gaze_traces: bool = True
+    camera: bool = True
 
     @model_validator(mode="after")
     def _valid(self) -> LiveMonitorConfig:
@@ -1498,6 +1508,24 @@ def with_calibration_target(
         raise ConfigError(f"invalid calibration target for this run:\n{e}") from e
     devices = rig.devices.model_copy(update={"eyetracker": chosen})
     return rig.model_copy(update={"devices": devices})
+
+
+def with_live_streams(
+    rig: RigConfig, *, gaze_traces: bool | None = None, camera: bool | None = None
+) -> RigConfig:
+    """``rig`` with the live monitor's streams set as one launch starts them
+    (``--gaze-traces``/``--no-gaze-traces``, ``--eye-camera``/``--no-eye-camera``,
+    the workspace's Live monitor switches). None leaves the rig's setting;
+    nothing asked returns the rig unchanged. A rig whose live monitor is off
+    takes the setting too: it is recorded, and simply never used."""
+    update = {
+        name: value
+        for name, value in (("gaze_traces", gaze_traces), ("camera", camera))
+        if value is not None
+    }
+    if not update:
+        return rig
+    return rig.model_copy(update={"live_monitor": rig.live_monitor.model_copy(update=update)})
 
 
 # The rule a subject's initials are held to, in the words every entry point

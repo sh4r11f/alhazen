@@ -2854,3 +2854,43 @@ describe('why the last launch failed, beside Start', () => {
     assert.equal(app.byId('launch-failure').hidden, true);
   });
 });
+
+
+describe('the Live monitor switches on the Run page', () => {
+  async function simulatePage({ project = { ...PROJECT, live_streams: true }, streams } = {}) {
+    const app = loadWorkspace();
+    app.server.state = { projects: [project], runs: [], active: null };
+    app.server.details = { launched: runDetail({ id: 'launched', log: '' }) };
+    app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+    app.server.rigs = { 'configs/rig-mac.yaml': { ...rig(true), live_streams: streams } };
+    app.server.schemas = {};
+    await app.run('refresh()');
+    await settle();
+    chooseMode(app, 'simulate');
+    app.run("$('launch-form').reportValidity = () => true");
+    return app;
+  }
+
+  it('start where the rig says and send what the operator chose', async () => {
+    const app = await simulatePage({ streams: { gaze_traces: true, camera: false, remembered: true } });
+    assert.equal(app.byId('live-streams-field').hidden, false);
+    assert.equal(app.byId('launch-gaze-traces').checked, true);
+    assert.equal(app.byId('launch-eye-camera').checked, false);
+    app.byId('launch-gaze-traces').checked = false;
+    await launch(app);
+    assert.deepEqual(plain(launched(app).live_streams), { gaze_traces: false, camera: false });
+  });
+
+  it('are not offered, and nothing is sent, for an alhazen that cannot take them', async () => {
+    const app = await simulatePage({ project: { ...PROJECT, live_streams: false } });
+    assert.equal(app.byId('live-streams-field').hidden, true);
+    await launch(app);
+    assert.equal('live_streams' in launched(app), false);
+  });
+
+  it('are not offered for a mode without a live monitor', async () => {
+    const app = await simulatePage();
+    chooseMode(app, 'demo');
+    assert.equal(app.byId('live-streams-field').hidden, true);
+  });
+});
