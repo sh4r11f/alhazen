@@ -266,7 +266,9 @@ class LibraryClient:
 
     def _refusal(self, error: urllib.error.HTTPError) -> str:
         detail = ""
-        with contextlib.suppress(Exception):
+        # A refusal without a JSON body (a proxy's HTML page, a cut connection) still gets
+        # its status reported; only the detail is missing.
+        with contextlib.suppress(ValueError, OSError, AttributeError, TypeError):
             body = json.loads(error.read(64 * 1024))
             got = body.get("error") if isinstance(body, dict) else None
             detail = (
