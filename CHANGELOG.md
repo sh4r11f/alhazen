@@ -25,7 +25,7 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.4.0 - 2026-10-17
 
 Operator flow from the live monitor, so a session can be run without clicking
 into the PsychoPy window (reported on the TRACKPixx3 rig).
