@@ -31,6 +31,7 @@ class Pauses:
         raw_keys: list[list[str]] | None = None,
         rest_resume_after_s: float | None = None,
         monitor: Any = None,
+        confirm_quit: Any = None,
     ) -> None:
         """``monitor`` stands in for the session's EyeTrackerMonitor; None
         is a session with no eye tracker."""
@@ -65,6 +66,7 @@ class Pauses:
             last_message=lambda: None,
             emit_session_event=lambda name, payload: self.events.append((name, payload)),
             on_session_command=self.commands.append,
+            confirm_quit=confirm_quit,
         )
 
 
@@ -97,6 +99,38 @@ class TestHowAPauseEnds:
         pauses = Pauses([], raw_keys=[["space"]], rest_resume_after_s=0.5)
         assert pauses.controller.handle({}, rest="BLOCK 1 OF 2 COMPLETE — REST")
         assert pauses.clock.now() < 0.5
+
+
+class TestAQuitKeyAsksFirst:
+    """2026-10-17: a quit key read by the controller itself (a rest that can
+    resume by itself polls the keys) is asked before the pause ends."""
+
+    def test_not_confirmed_the_rest_waits_for_the_next_answer(self):
+        answers = iter([False])
+        # After the quit was taken back the rest waits for somebody (on_pause),
+        # who resumes.
+        pauses = Pauses(
+            ["resume"],
+            raw_keys=[["q"]],
+            rest_resume_after_s=5.0,
+            confirm_quit=lambda: next(answers),
+        )
+        assert pauses.controller.handle({}, rest=REST_HEADING)
+        assert pauses.events == [("RESUMED", {})]
+        assert pauses.clock.now() < 5.0
+
+    def test_confirmed_it_quits(self):
+        pauses = Pauses([], raw_keys=[["q"]], rest_resume_after_s=5.0, confirm_quit=lambda: True)
+        assert not pauses.controller.handle({}, rest=REST_HEADING)
+
+    def test_an_answer_from_on_pause_is_not_asked_again(self):
+        asked: list = []
+        pauses = Pauses(["quit"], confirm_quit=lambda: asked.append(1) or True)
+        assert not pauses.controller.handle({})
+        assert asked == []  # the keyboard strategy asks itself (run_pause_menu)
+
+
+REST_HEADING = "BLOCK 1 OF 2 COMPLETE — REST"
 
 
 class TestTheMenusOtherChoices:

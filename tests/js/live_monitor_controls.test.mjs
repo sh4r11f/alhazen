@@ -248,3 +248,30 @@ describe('the operator controls', () => {
       /ended before it took: Skip trial/);
   });
 });
+
+
+describe('a screen waiting before the first trial', () => {
+  /* 2026-10-17: at the instructions screen Resume was greyed out. The
+   * session now publishes "waiting" with what that screen answers to. */
+  const WAITING = {
+    shown: ['pause', 'resume', 'calibrate', 'validate', 'drift_correct', 'manual_reward', 'skip_trial', 'quit'],
+    available: ['resume', 'quit'],
+    refused: { pause: 'Pause is not available before the session has started' },
+    keys: { resume: 'SPACE', quit: 'ESC' },
+    labels: { pause: 'Pause', resume: 'Resume', calibrate: 'Calibrate', validate: 'Validate',
+      drift_correct: 'Drift correct', manual_reward: 'Reward', skip_trial: 'Skip trial', quit: 'Quit' },
+  };
+
+  it('enables Resume, and a click sends it', async () => {
+    const live_monitor = await livePage({
+      state: running({ status: 'waiting', controls: WAITING }),
+      command: () => response({ status: 202 }),
+    });
+    const sidebar = live_monitor.byId('controls');
+    assert.equal(button(sidebar, 'resume').getAttribute('aria-disabled'), 'false');
+    assert.equal(button(sidebar, 'pause').getAttribute('aria-disabled'), 'true');
+    button(sidebar, 'resume').onclick();
+    await settle();
+    assert.equal(JSON.parse(posts(live_monitor)[0].init.body).name, 'resume');
+  });
+});

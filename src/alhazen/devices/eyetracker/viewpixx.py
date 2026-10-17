@@ -91,6 +91,7 @@ from alhazen.devices.eyetracker.protocol import (
     CalibrationTarget,
     CameraEye,
     CameraFrame,
+    CommandSource,
     GazeSample,
     HostShape,
     ProgressHook,
@@ -231,6 +232,24 @@ PAUSE_KEYS = tuple(key for key, command in DEFAULT_KEYMAP.items() if command is 
 WALK_KEYS = (*ACCEPT_KEYS, REDO_KEY, ABORT_KEY, *PAUSE_KEYS)
 # How the stop keys are named on screen: "P or ESC".
 STOP_KEYS_LABEL = " or ".join([*(key.upper() for key in PAUSE_KEYS), "ESC"])
+# The live monitor's commands during the walk (protocol.py
+# set_command_source), as the keys that mean the same at the rig: Resume is
+# SPACE, Back is BACKSPACE, Pause is the pause key (the walk stops and the
+# previous calibration is kept).
+COMMAND_WALK_KEYS = {"resume": ACCEPT_KEYS[0], "back": REDO_KEY, "pause": PAUSE_KEYS[0]}
+
+
+def command_keys(source: CommandSource | None, key_list: Sequence[str]) -> list[str] | None:
+    """The live monitor's commands for a wait that answers ``key_list``, as
+    those keys; None when there are none (or no source). A command whose key
+    this wait does not answer (Back at the guide) is not taken: it waits in
+    the source for a read that does."""
+    if source is None:
+        return None
+    accepted = [name for name, key in COMMAND_WALK_KEYS.items() if key in key_list]
+    keys = [COMMAND_WALK_KEYS[name] for name in source(accepted) if name in COMMAND_WALK_KEYS]
+    return keys or None
+
 
 # The walk's keys on the guide screen, in the experimenter's words.
 GUIDE_KEYS = (
@@ -1149,6 +1168,9 @@ class ViewPixxTracker:
         # (device clock seconds, session clock seconds, text) for every
         # message, held until shutdown writes them beside the samples.
         self._messages: list[tuple[float, float, str]] = []
+        # Where the calibration walk reads the live monitor's commands
+        # (set_command_source); None: the keyboard alone.
+        self._commands: CommandSource | None = None
         # Where the calibration walk reports its progress (set_progress_hook);
         # None until the session's eye-tracker monitor installs one.
         self._progress: ProgressHook | None = None
@@ -1354,6 +1376,11 @@ class ViewPixxTracker:
         which target it is on. None switches the reports off."""
         self._progress = hook
 
+    def set_command_source(self, source: CommandSource | None) -> None:
+        """Optional capability (protocol.py): where the calibration walk reads
+        the live monitor's Resume, Back and Pause. None: the keys alone."""
+        self._commands = source
+
     def calibrate(self) -> CalibrationResult:
         """Show the guide, walk the target grid and fit the device's gaze
         model. Blocks until the experimenter finishes or aborts.
@@ -1548,9 +1575,12 @@ class ViewPixxTracker:
         # an answer to it. Cleared once, here, and never again while it
         # waits (read_keys).
         event.clearEvents("keyboard")
+        guide_keys = [ACCEPT_KEYS[0], ABORT_KEY, *PAUSE_KEYS]
         while True:
             self._report("calibration guide", f"{status} · {start_line}")
-            keys = read_keys(event, [ACCEPT_KEYS[0], ABORT_KEY, *PAUSE_KEYS], STATUS_REFRESH_S)
+            keys = command_keys(self._commands, guide_keys) or read_keys(
+                event, guide_keys, STATUS_REFRESH_S
+            )
             if keys:
                 return keys[0] == ACCEPT_KEYS[0]
             if getattr(window, "_closed", False):
@@ -1570,11 +1600,14 @@ class ViewPixxTracker:
         auto-advance count and the live-monitor report keep their one-per-
         refresh rhythm, so what decides when a target is accepted is unchanged.
         """
+        commanded = command_keys(self._commands, WALK_KEYS)
+        if commanded:
+            return commanded
         if not target.animated:
             return read_keys(event, WALK_KEYS, STATUS_REFRESH_S)
         deadline = self._clock.now() + STATUS_REFRESH_S
         while True:
-            keys = poll_keys(event, WALK_KEYS)
+            keys = poll_keys(event, WALK_KEYS) or command_keys(self._commands, WALK_KEYS)
             if keys or getattr(window, "_closed", False) or self._clock.now() >= deadline:
                 return keys
             target.draw()

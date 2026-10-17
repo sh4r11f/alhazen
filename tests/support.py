@@ -285,6 +285,7 @@ class SessionHarness:
         live: Any = None,
         task_params: dict[str, Any] | None = None,
         merge_live_monitor: bool = False,
+        quit_confirmation: Any = None,
     ) -> None:
         """``merge_live_monitor`` wires the live monitor's buttons into the
         running trials as build_session does: an OperatorCommands over
@@ -485,4 +486,5 @@ class SessionHarness:
             rest_resume_after_s=rest_resume_after_s,
             identity=identity if identity is not None else RunIdentity(experiment=TEST_EXPERIMENT),
             operator_commands=self.operator,
+            quit_confirmation=quit_confirmation,
         )

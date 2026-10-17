@@ -7,7 +7,11 @@ The page posts a command; the server checks it against the status it holds
 - **where a command goes.** One accepted while a trial ran goes to the engine,
   through the same ``CommandSource`` the keyboard feeds (core/commands.py
   ``MergedCommands``), one per frame. One accepted while paused goes to the
-  pause menu (session/pause_control.py). A command is acted on only in the
+  pause menu (session/pause_control.py). One accepted while a blocking screen
+  is up — the instructions or the calibration request before trial 1
+  (``waiting``), an eye-tracker procedure's walk (``calibrating``) — goes to
+  that screen, which says beforehand what it answers to (``offer``) and reads
+  its commands between its own key reads (``take_offered``). A command is acted on only in the
   status it was accepted in: a Resume accepted a moment before the keyboard
   resumed would otherwise fire in the next trial, and a Reward accepted a
   moment before a pause in the pause after it.
@@ -22,8 +26,9 @@ The page posts a command; the server checks it against the status it holds
   ``RECENT`` of them, in every state publish as ``commands`` and at once on
   the live monitor's acknowledgement channel).
 
-Interface: ``bind``, ``take_for_trial``, ``take_for_pause``, ``record_keyboard``,
-``discard_pending``, ``acknowledge``, ``controls``, ``recent``.
+Interface: ``bind``, ``take_for_trial``, ``take_for_pause``, ``offer``,
+``take_offered``, ``withdraw``, ``record_keyboard``, ``discard_pending``,
+``acknowledge``, ``controls``, ``recent``.
 
 Callers must not rely on the wording of a note, nor on when within a frame
 the queue is read; only on each command being acted on at most once, in the
@@ -34,13 +39,14 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from alhazen.core.clock import Clock
 from alhazen.core.commands import DEFAULT_KEYMAP, Command
 from alhazen.live_monitor.controls import (
+    CONTEXT_COMMANDS,
     KNOWN_COMMANDS,
     LABELS,
     STATUS_COMMANDS,
@@ -63,7 +69,10 @@ RECENT = 20
 ORDER = (
     "pause",
     "resume",
+    "back",
     "calibrate",
+    "reuse_calibration",
+    "accept_calibration",
     "validate",
     "drift_correct",
     "manual_reward",
@@ -109,6 +118,25 @@ _TRIAL_NOTES = {
 }
 
 _TRACKER_COMMANDS = frozenset({"calibrate", "validate", "drift_correct"})
+
+# The statuses whose commands go to the blocking screen that offered them.
+OFFERED_STATUSES = frozenset({"waiting", "calibrating"})
+
+
+@dataclass(frozen=True)
+class Offer:
+    """What the blocking screen on now answers to: the status it publishes
+    under, each command it takes with the note its acknowledgement carries,
+    the key each stands for at the rig, what the screen is called, and why
+    it offers nothing when it offers nothing."""
+
+    status: str
+    commands: Mapping[str, str]
+    keys: Mapping[str, str]
+    what: str
+    none_because: str | None = None
+
+
 _STAGE_COMMANDS = frozenset({"promote_stage", "demote_stage", "hold_stage"})
 
 
@@ -184,6 +212,8 @@ class OperatorCommands:
         self._emit: Callable[[str, dict[str, Any]], None] | None = None
         self._caps = Capabilities()
         self._keys = {"running": _running_keys(), "paused": _paused_keys()}
+        # The blocking screen's offer while one is up (``offer``), else None.
+        self._offer: Offer | None = None
 
     def bind(
         self,
@@ -205,7 +235,21 @@ class OperatorCommands:
 
     def refusal(self, name: str, status: str) -> str | None:
         """Why the session will not act on ``name`` in ``status``, or None."""
-        return status_refusal(name, status) or capability_refusal(name, self._caps)
+        refused = status_refusal(name, status) or capability_refusal(name, self._caps)
+        if refused is None and status in OFFERED_STATUSES:
+            refused = self._offer_refusal(name, status)
+        return refused
+
+    def _offer_refusal(self, name: str, status: str) -> str | None:
+        """Why the blocking screen up in ``status`` does not take ``name``."""
+        offer = self._offer
+        if offer is None or offer.status != status:
+            return f"{LABELS[name]} is not taken here right now"
+        if name in offer.commands:
+            return None
+        if not offer.commands and offer.none_because:
+            return offer.none_because
+        return f"{LABELS[name]} does nothing at {offer.what}"
 
     def controls(self, status: str) -> dict[str, Any]:
         """The ``controls`` block a state publish carries for ``status``.
@@ -213,20 +257,33 @@ class OperatorCommands:
         ``shown``: the buttons the page lists, in order — every one this
         session could ever act on, plus the standard ones it cannot, which are
         listed off with their reason (a rig with no tracker still shows
-        Calibrate, saying why it is off), and the stage keys only when a
-        curriculum runs. ``available``: the ones it acts on now. ``refused``:
-        why each other shown one is off. ``keys``: the key at the rig, in the
-        status where it works."""
-        shown = [name for name in ORDER if name not in _STAGE_COMMANDS or self._caps.training]
+        Calibrate, saying why it is off), the stage keys only when a
+        curriculum runs, and a screen's own commands (Back, Reuse
+        calibration, Accept calibration) only while that screen offers them.
+        ``available``: the ones it acts on now. ``refused``: why each other
+        shown one is off. ``keys``: the key at the rig, in the status where it
+        works."""
+        offered = (
+            self._offer.commands if self._offer is not None and self._offer.status == status else {}
+        )
+        shown = [
+            name
+            for name in ORDER
+            if (name not in _STAGE_COMMANDS or self._caps.training)
+            and (name not in CONTEXT_COMMANDS or name in offered)
+        ]
         available = [name for name in shown if self.refusal(name, status) is None]
         refused = {
             name: reason for name in shown if (reason := self.refusal(name, status)) is not None
         }
         keys = {}
         for name in shown:
+            if name in offered and self._offer is not None and name in self._offer.keys:
+                keys[name] = key_label(self._offer.keys[name])
+                continue
             where = (
                 status
-                if name in STATUS_COMMANDS.get(status, ())
+                if name in STATUS_COMMANDS.get(status, ()) and status in self._keys
                 else ("paused" if name in STATUS_COMMANDS["paused"] else "running")
             )
             key = self._keys[where].get(name)
@@ -239,6 +296,82 @@ class OperatorCommands:
             "keys": keys,
             "labels": {name: LABELS[name] for name in shown},
         }
+
+    # ------------------------------------------------------------------
+    # A blocking screen's commands
+    # ------------------------------------------------------------------
+
+    def offer(self, offer: Offer) -> None:
+        """Say what the blocking screen going up now answers to. Set before
+        the screen's first publish, so that publish already enables its
+        buttons; replaced by the next offer (a procedure run from the
+        calibration request offers its own, and the request offers again
+        when it is back)."""
+        self._offer = offer
+
+    def withdraw(self, note: str) -> None:
+        """The blocking screen is down: nothing more is taken for it, and
+        whatever was sent to it and is still waiting is discarded, each
+        acknowledged with ``note``."""
+        offer, self._offer = self._offer, None
+        if offer is None:
+            return
+        self._refill()
+        kept: deque[LiveMonitorCommand] = deque()
+        while self._pending:
+            command = self._pending.popleft()
+            if command.status == offer.status:
+                self.acknowledge(command, "discarded", note)
+            else:
+                kept.append(command)
+        self._pending = kept
+
+    def take_offered(self, accepted: Collection[str] | None = None, limit: int = 1) -> list[str]:
+        """The commands the blocking screen up now takes, oldest first, at
+        most ``limit`` of them (one by default: a screen acts on one answer
+        per read, as on one key, and the next waits for its next read), each
+        acknowledged as applied with its offer's note.
+
+        ``accepted`` narrows it to what the screen can act on at this moment
+        (a walk's guide starts on Resume but has no target to step back
+        from): a command it offers but cannot take yet stays queued, in
+        order, for its next read. A command accepted in another status — sent
+        a moment before the screen went up, or after it went down — is
+        discarded, and one it does not offer (an offer that changed after the
+        click: a reuse no longer offered) refused, each acknowledged. With no
+        screen offered (the page was never told of one) nothing is taken and
+        the queue is left as it is."""
+        offer = self._offer
+        if offer is None:
+            return []
+        self._refill()
+        taken: list[str] = []
+        kept: deque[LiveMonitorCommand] = deque()
+        while self._pending:
+            command = self._pending.popleft()
+            if command.status != offer.status:
+                self.acknowledge(
+                    command,
+                    "discarded",
+                    f"sent while the session was {command.status}; {offer.what} was up "
+                    "by the time it arrived",
+                )
+                continue
+            if command.name not in offer.commands:
+                reason = (
+                    self._offer_refusal(command.name, offer.status)
+                    if command.name in KNOWN_COMMANDS
+                    else f"unknown command {command.name!r}"
+                )
+                self.acknowledge(command, "refused", reason or "not offered")
+                continue
+            if (accepted is not None and command.name not in accepted) or len(taken) >= limit:
+                kept.append(command)
+                continue
+            self.acknowledge(command, "applied", offer.commands[command.name])
+            taken.append(command.name)
+        self._pending = kept
+        return taken
 
     # ------------------------------------------------------------------
     # Taking commands off the queue

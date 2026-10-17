@@ -16,6 +16,7 @@ free of hardware.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import logging
 import time
@@ -82,7 +83,12 @@ from alhazen.session.identity import (
     source_file,
 )
 from alhazen.session.operator_commands import OperatorCommands
-from alhazen.session.pause import PauseMenu, run_pause_menu
+from alhazen.session.pause import (
+    QUIT_CONFIRM_COLOR,
+    PauseMenu,
+    QuitConfirmation,
+    run_pause_menu,
+)
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
 from alhazen.session.startup_calibration import TITLE_COLOR as STARTUP_TITLE_COLOR
@@ -738,6 +744,10 @@ def build_session(
         display: DisplayBackend
         commands: CommandSource
         on_pause: Callable[[PauseMenu], str] | None
+        # A quit key's second-ESC question (session/pause.py), for a rig with
+        # somebody at the keyboard; None for an unattended run, which has no
+        # quit key to ask about.
+        quit_confirmation: QuitConfirmation | None = None
         if rig_cfg.display.backend == "simulated":
             display = SimulatedDisplay(
                 rig_cfg.monitor.refresh_rate_hz,
@@ -752,6 +762,11 @@ def build_session(
         else:
             display = PsychoPyDisplay(rig_cfg.monitor, windowed=windowed)
             commands = KeyboardCommands()
+            quit_confirmation = QuitConfirmation(
+                show=lambda title, body: display.show_menu(title, body, color=QUIT_CONFIRM_COLOR),
+                raw_keys=commands.poll_raw_keys,
+            )
+            asks = quit_confirmation
 
             # The runner builds the menu (only it knows what is wired); the
             # builder supplies the two ends the runner has no business owning —
@@ -762,6 +777,7 @@ def build_session(
                     lambda m: display.show_menu(m.title, m.render(), color=m.color),
                     commands.poll_raw_keys,
                     time.sleep,
+                    confirm_quit=lambda: asks.ask("the pause menu"),
                 )
 
         # [workstream B] The live monitor's buttons reach a running trial
@@ -994,6 +1010,11 @@ def build_session(
                 session=session,
                 show=lambda title, body: display.show_menu(title, body, color=STARTUP_TITLE_COLOR),
                 poll_keys=commands.poll_raw_keys,
+                confirm_quit=(
+                    (lambda: confirmation.ask("the calibration request"))
+                    if (confirmation := quit_confirmation) is not None
+                    else None
+                ),
             )
         if spikes is not None:
             # Same rule as the tracker: a SpikeGLX host that is unreachable,
@@ -1207,7 +1228,20 @@ def build_session(
                 if instructions and auto_start
                 else instructions
             ),
-            await_start=_start_gate(instructions, display.kind, auto_start),
+            await_start=_bind_start_gate(
+                _start_gate(instructions, display.kind, auto_start),
+                answers=operator_commands.take_offered if operator_commands is not None else None,
+                confirm_quit=(
+                    (
+                        lambda: confirmation.ask(
+                            "the instructions screen",
+                            redraw=lambda: display.show_message(instructions or ""),
+                        )
+                    )
+                    if (confirmation := quit_confirmation) is not None
+                    else None
+                ),
+            ),
             live_monitor=live_monitor_controller,
             live_monitor_spec=live_monitor_spec,
             manual_reward=on_manual_reward,
@@ -1219,6 +1253,7 @@ def build_session(
             recording=recording,
             startup_calibration=startup_calibration,
             operator_commands=operator_commands,
+            quit_confirmation=quit_confirmation,
         )
         # Built. Every release registered above now belongs to the runner's
         # teardown, so they are dropped here without running.
@@ -1317,12 +1352,51 @@ def _start_gate(
     return _psychopy_auto_start if auto_start else _psychopy_await_start
 
 
-def _psychopy_await_start() -> bool:
-    """Wait at a subject instruction screen; False means cancel cleanly."""
+def _bind_start_gate(
+    gate: Callable[..., bool] | None,
+    *,
+    answers: Callable[[], list[str]] | None,
+    confirm_quit: Callable[[], bool] | None,
+) -> Callable[[], bool] | None:
+    """The instruction screen's wait, with what it reads besides the keys:
+    the live monitor's answers while the runner has offered them, and the
+    second-ESC question. Only the attended gate reads them; the auto-start
+    and no gate at all are returned as they are."""
+    if gate is not _psychopy_await_start:
+        return gate
+    return functools.partial(_psychopy_await_start, answers=answers, confirm_quit=confirm_quit)
+
+
+def _psychopy_await_start(
+    answers: Callable[[], list[str]] | None = None,
+    confirm_quit: Callable[[], bool] | None = None,
+) -> bool:
+    """Wait at a subject instruction screen; False means cancel cleanly.
+
+    SPACE starts. ESC cancels once ``confirm_quit`` (the second-ESC
+    question) confirms it; not confirmed, the instructions are back and the
+    wait goes on. ``answers`` is the live monitor's, read between the keys
+    while the runner offers them (session/operator_commands.py
+    ``take_offered``): Resume starts, Quit cancels at once (it was confirmed
+    on the page).
+    """
     from psychopy import event
 
-    keys = event.waitKeys(keyList=["space", "escape"])
-    return bool(keys and keys[0] == "space")
+    # A press from before the screen appeared is not an answer to it.
+    event.clearEvents("keyboard")
+    while True:
+        for name in answers() if answers is not None else []:
+            if name == "resume":
+                return True
+            if name == "quit":
+                return False
+        for key in event.getKeys(keyList=["space", "escape"]):
+            if key == "space":
+                return True
+            if confirm_quit is None or confirm_quit():
+                return False
+            break
+        time.sleep(0.01)
 
 
 def _psychopy_auto_start() -> bool:

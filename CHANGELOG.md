@@ -25,6 +25,36 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+Operator flow from the live monitor, so a session can be run without clicking
+into the PsychoPy window (reported on the TRACKPixx3 rig).
+
+- **The instructions screen and the calibration request answer the page.**
+  They publish a new status, `waiting`, and offer exactly what they take:
+  Resume (start) and Quit at the instructions; Calibrate, Reuse calibration
+  and Accept calibration (each only when the request offers it) and Quit at
+  the calibration request. Before, the page showed `running` there, Resume was
+  off, and a Pause clicked there was queued for the first trial.
+- **A procedure's walk takes Resume, Back and Pause.** In `calibrating`,
+  Resume is SPACE (start at the guide, accept the target), Back is BACKSPACE
+  and Pause stops the walk with the previous calibration kept, back to the menu
+  it came from. The TRACKPixx3 and mouse calibration walks read them through a
+  new optional tracker capability, `set_command_source`; validation and drift
+  correction read them as keys. The EyeLink's calibration (its own setup
+  screen) offers none and says so.
+- **The Trial view shows the procedure**: its targets with the one on screen
+  filled, the camera live, and the gaze during a validation or drift
+  correction. A banner says when the pause menu is up or the session waits
+  before trial 1.
+- **Quitting at the rig asks twice.** ESC/Q on the pause menu, ESC at the
+  instructions and ESC/Q at the calibration request show *QUIT THE SESSION?*;
+  a second ESC quits, any other key goes back. New reserved event
+  `QUIT_CONFIRMATION`. The page's Quit is confirmed in the page and is not
+  asked again; Ctrl-C during a trial still quits at once.
+- Every page command a blocking screen takes, discards or refuses is
+  acknowledged once and recorded as `OPERATOR_COMMAND`, as before.
+
 ## 3.3.0 - 2026-10-17
 
 3.3 adds the TRACKPixx3's IR intensity and black (pupil) threshold to the live monitor's

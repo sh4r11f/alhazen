@@ -2979,6 +2979,7 @@ function render() {
   setShown(byId('trial-view'), trialViewShown());
   if (STATIC_STATE === null) {
     if (wasHidden && trialViewShown()) drawTrialStage();
+    paintTrialBanner();
     paintTrialCamera();
     paintGaze();
   }
@@ -3199,11 +3200,18 @@ function setShown(element, shown) {
   else element.setAttribute('hidden', '');
 }
 
-/** The trial's title and its condition, in the head. */
+/** The trial's title and its condition, in the head — or, while an
+ *  eye-tracker procedure runs, which procedure and where it is. */
 function drawTrialHead(view) {
-  byId('trial-title').textContent = view ? 'Trial ' + view.trial_index : 'Trial';
+  const procedure = view && view.procedure;
+  byId('trial-title').textContent = procedure ? procedure.title
+    : view ? 'Trial ' + view.trial_index : 'Trial';
   if (!view) {
     byId('trial-meta').textContent = 'Waiting for the first trial…';
+    return;
+  }
+  if (procedure) {
+    byId('trial-meta').textContent = procedureMeta(procedure);
     return;
   }
   const parts = [];
@@ -3499,6 +3507,15 @@ function drawTrialStage() {
   paintGaze();
 }
 
+/** Where a procedure is, for the Trial view's head: the target on the
+ *  subject's screen, or that it waits to start or has ended. */
+function procedureMeta(procedure) {
+  if (procedure.ended) return 'Ended · ' + (procedure.line || '');
+  if (procedure.step && procedure.n) return 'Target ' + procedure.step + ' of ' + procedure.n;
+  if (/guide/.test(procedure.line || '')) return 'Waiting to start: Resume starts the walk';
+  return 'Starting';
+}
+
 /** The one sentence under the picture, or ''. A task that defines no picture
  *  of its stimuli is shown as its gaze windows alone (nothing is guessed from
  *  the stimuli), and that is said once, so an empty screen is never read as
@@ -3506,6 +3523,18 @@ function drawTrialStage() {
 function trialNote(view) {
   if (!view) return '';
   const parts = [];
+  if (view.source === 'procedure') {
+    const p = view.procedure || {};
+    if (!p.targets_known) {
+      parts.push('This tracker lays out its calibration targets itself; their positions are not known here.');
+    } else {
+      parts.push('The ' + String(p.title || 'procedure').toLowerCase() + '’s target positions' +
+        (p.ended ? '.' : '; the filled one is on the subject’s screen.') + ' Markers are not to scale.');
+    }
+    if (!view.gaze) parts.push('No gaze is shown while the gaze model is being fitted.');
+    if (!p.reads_page && !p.ended) parts.push('Its keys are at the rig: this tracker’s calibration does not read the live monitor.');
+    return parts.join(' ');
+  }
   if (view.source === 'regions') {
     const windows = (view.shapes || []).some((s) => s.role === 'region');
     parts.push(windows
@@ -3527,6 +3556,11 @@ function drawTrialLegend(view) {
   const roles = new Set(marks.map((s) => (s.approximate ? 'approx' : s.role)));
   const items = [];
   if (view.gaze) items.push(['gaze', 'Gaze'], ['trail', 'Trail']);
+  if (view.source === 'procedure') {
+    if (roles.has('stimulus')) items.push(['stimulus', 'Target on screen']);
+    if (roles.has('annotation')) items.push(['annotation', 'Other targets']);
+    roles.clear();
+  }
   if (roles.has('stimulus')) items.push(['stimulus', 'Stimulus']);
   if (roles.has('annotation')) items.push(['annotation', 'Outline or path']);
   if (roles.has('region')) items.push(['window', 'Gaze window']);
@@ -3573,9 +3607,23 @@ function paintGaze() {
  *  position. Plain words, one line. */
 function gazeStatus(view, own, current) {
   if (trialView.problem) return trialView.problem;
+  const procedure = view.procedure;
+  if (procedure && !view.gaze) {
+    return procedure.kind === 'calibration'
+      ? 'No gaze during a calibration: the gaze model is what it fits.' : 'No gaze channel.';
+  }
   if (!view.gaze) return 'No gaze: this rig has no eye tracker.';
   if (!streams.gaze_traces) return 'Gaze traces are off.';
   const status = state ? state.status : 'running';
+  if (procedure && status === 'calibrating' && !procedure.ended) {
+    if (!own.length) return 'Waiting for gaze samples…';
+    if (!current) return 'No gaze sample: a blink, or the eye is lost.';
+    return 'Gaze ' + minus(current[0].toFixed(1)) + '°, ' + minus(current[1].toFixed(1)) + '°';
+  }
+  if (procedure && (status === 'paused' || status === 'calibrating')) {
+    const whose = String(procedure.title || 'procedure').toLowerCase();
+    return own.length ? 'Paused. The trail is the ' + whose + '’s.' : 'Paused.';
+  }
   if (status === 'paused' || status === 'calibrating') {
     /* A pause keyed between trials takes effect on the next trial's first
      * frame, before anything is drawn: that trial's picture, and no trail. */
@@ -3672,7 +3720,9 @@ function paintTrialCamera() {
 /** What the camera box's frame is: live (paused), or how long before this
  *  trial it was taken — both times on the session clock. */
 function cameraAgeText(camera, frame, view, paused) {
-  if (paused && cameraArrivals.length) return 'Live while paused.';
+  if (paused && cameraArrivals.length) {
+    return state && state.status === 'calibrating' ? 'Live during the procedure.' : 'Live while paused.';
+  }
   if (!Number.isFinite(frame.t) || !Number.isFinite(view.t)) {
     return 'Last frame from a pause or calibration. ' + camera.reason;
   }
@@ -3690,7 +3740,9 @@ async function trialLoop() {
         '&after=' + trialView.seq + '&wait_ms=2000');
       if (response.status === 200) {
         trialView.seq = Number(response.headers.get('X-Trial-Seq')) || trialView.seq + 1;
+        const previous = trialView.view;
         trialView.view = await response.json();
+        takeProcedureView(previous, trialView.view);
         if (trialView.problem.startsWith('Trial stream')) trialView.problem = '';
         drawTrialStage();
         paintTrialCamera();
@@ -3732,6 +3784,40 @@ async function gazeLoop(signal) {
     queueGazePaint();
     if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
   }
+}
+
+/** A procedure's picture starts its own trail: its gaze is tagged with the
+ *  trial it follows, whose trail must not run on into the procedure's. */
+function takeProcedureView(previous, view) {
+  const procedure = view && view.procedure;
+  if (!procedure) return;
+  const same = previous && previous.procedure && previous.procedure.id === procedure.id;
+  if (same) return;
+  trialView.gazeTrial = view.trial_index;
+  trialView.samples = [];
+}
+
+/** The banner over the Trial view while the session is not running a
+ *  trial: the pause menu up, a screen waiting before trial 1, a quit. Plain
+ *  words, so the picture of the last trial is never taken for a live one. */
+function trialBanner(current) {
+  if (!current) return '';
+  /* The pause's notice leads with "Paused —"; the banner already says it. */
+  const rest = String(current.message || '').replace(/^Paused\s*[—-]\s*/, '');
+  const message = rest ? ' ' + rest[0].toUpperCase() + rest.slice(1) : '';
+  if (current.status === 'paused') return 'Paused: the pause menu is on the subject’s screen.' + message;
+  if (current.status === 'waiting') return 'Waiting before the first trial.' + message;
+  if (current.status === 'stopping') return 'Quitting.' + message;
+  return '';
+}
+
+function paintTrialBanner() {
+  const banner = byId('trial-banner');
+  if (!banner) return;
+  const text = trialBanner(state);
+  banner.textContent = text;
+  banner.dataset.status = (state && state.status) || '';
+  setShown(banner, Boolean(text));
 }
 
 /** Is the Trial view part of what the sidebar's choice shows? */

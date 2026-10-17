@@ -536,3 +536,100 @@ class TestThroughASession:
         )
         harness.runner.run()
         assert _acks(harness) == [("manual_reward", "refused"), ("resume", "applied")]
+
+
+class TestABlockingScreensOffer:
+    """The instructions screen, the calibration request and a procedure's walk
+    block the session until answered; the page answers them through an offer
+    (2026-10-17: Resume was greyed out at the instructions, and Pause during a
+    calibration showed a red refusal while nothing happened)."""
+
+    def offer(self, operator, status="waiting", names=("resume", "quit"), **extra):
+        from alhazen.session.operator_commands import Offer
+
+        operator.offer(
+            Offer(
+                status,
+                {name: f"{name} taken" for name in names},
+                dict.fromkeys(names, "space"),
+                "the instructions screen",
+                **extra,
+            )
+        )
+
+    def test_waiting_enables_exactly_what_the_screen_offers(self):
+        operator, _ = bound(ScriptedQueue())
+        self.offer(operator)
+        block = operator.controls("waiting")
+        assert block["available"] == ["resume", "quit"]
+        assert "Pause" in block["refused"]["pause"]
+        assert "the instructions screen" in block["refused"]["calibrate"]
+        # A screen's own commands are listed only while offered.
+        assert "reuse_calibration" not in block["shown"]
+        assert "back" not in block["shown"]
+
+    def test_with_no_offer_waiting_and_calibrating_enable_nothing(self):
+        operator, _ = bound(ScriptedQueue())
+        for status in ("waiting", "calibrating"):
+            assert operator.controls(status)["available"] == []
+
+    def test_an_offer_of_nothing_says_why(self):
+        operator, _ = bound(ScriptedQueue())
+        self.offer(operator, status="calibrating", names=(), none_because="runs on its own screen")
+        block = operator.controls("calibrating")
+        assert block["available"] == []
+        assert block["refused"]["resume"] == "runs on its own screen"
+
+    def test_context_commands_are_shown_while_offered(self):
+        operator, _ = bound(ScriptedQueue())
+        self.offer(operator, names=("calibrate", "reuse_calibration", "quit"))
+        block = operator.controls("waiting")
+        assert block["available"] == ["calibrate", "reuse_calibration", "quit"]
+        assert "accept_calibration" not in block["shown"]
+
+    def test_taking_acknowledges_each_command_once(self):
+        queue = ScriptedQueue(
+            [[("resume", "running"), ("pause", "waiting"), ("resume", "waiting")]]
+        )
+        operator, events = bound(queue)
+        self.offer(operator)
+        assert operator.take_offered() == ["resume"]
+        results = [(p["name"], p["result"]) for _, p in events]
+        # Sent before the screen was up: discarded. Not offered: refused.
+        assert results == [("resume", "discarded"), ("pause", "refused"), ("resume", "applied")]
+        assert all(name == "OPERATOR_COMMAND" for name, _ in events)
+        assert operator.take_offered() == []
+
+    def test_a_command_the_screen_cannot_take_yet_waits_in_order(self):
+        queue = ScriptedQueue([[("back", "calibrating"), ("resume", "calibrating")]])
+        operator, events = bound(queue)
+        self.offer(operator, status="calibrating", names=("resume", "back", "pause"))
+        assert operator.take_offered(accepted=("resume", "pause")) == ["resume"]
+        assert operator.take_offered(accepted=("resume", "back", "pause")) == ["back"]
+        assert [p["result"] for _, p in events] == ["applied", "applied"]
+
+    def test_withdraw_discards_what_was_sent_to_the_screen(self):
+        queue = ScriptedQueue([[("back", "calibrating"), ("resume", "paused")]])
+        operator, events = bound(queue)
+        self.offer(operator, status="calibrating", names=("resume", "back", "pause"))
+        operator.withdraw("the walk had ended")
+        assert [(p["name"], p["result"], p["note"]) for _, p in events] == [
+            ("back", "discarded", "the walk had ended")
+        ]
+        # The paused one is left for the pause menu to take.
+        assert [c.name for c in operator.take_for_pause()] == ["resume"]
+        assert operator.controls("waiting")["available"] == []
+
+    def test_with_no_offer_nothing_is_taken(self):
+        queue = ScriptedQueue([[("resume", "waiting")]])
+        operator, events = bound(queue)
+        assert operator.take_offered() == []
+        assert queue.polls == 0 and events == []
+
+    def test_new_statuses_refuse_with_reasons(self):
+        assert status_refusal("pause", "calibrating") is None
+        assert status_refusal("resume", "waiting") is None
+        assert "procedure" in status_refusal("quit", "calibrating")
+        assert "before the session has started" in status_refusal("pause", "waiting")
+        assert "pause menu" in status_refusal("back", "paused")
+        assert "while a trial is running" in status_refusal("reuse_calibration", "running")

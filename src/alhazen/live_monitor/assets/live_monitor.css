@@ -751,6 +751,16 @@ line.trial-shape { fill: none; }
 }
 .trial-camera-box canvas { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
 .trial-camera-empty { max-width: 30ch; padding: 16px; color: var(--ink-2); font-size: 13px; text-align: center; }
+/* The Trial view's banner while no trial runs: the pause menu up, a screen
+ * waiting before trial 1, a quit. A hairline band in the status colour, so
+ * the picture under it is never read as a live trial. */
+.trial-banner {
+  margin: 0 0 8px; padding: 8px 12px; border-left: 3px solid var(--series-2);
+  background: color-mix(in srgb, var(--series-2) 10%, transparent);
+  color: var(--ink); font-size: 14px; font-weight: 600; line-height: 1.4;
+}
+.trial-banner[data-status="waiting"] { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.trial-banner[data-status="stopping"] { border-left-color: var(--critical); background: color-mix(in srgb, var(--critical) 10%, transparent); }
 
 .trial-controls:empty { display: none; }
 .trial-controls { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--rule); }

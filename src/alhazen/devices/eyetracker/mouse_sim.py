@@ -32,6 +32,7 @@ from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide
 from alhazen.devices.eyetracker.procedures import ABORT_KEY, ACCEPT_KEYS, REDO_KEY
 from alhazen.devices.eyetracker.protocol import (
     CalibrationResult,
+    CommandSource,
     GazeSample,
     HostShape,
     ProgressHook,
@@ -44,6 +45,7 @@ from alhazen.devices.eyetracker.viewpixx import (
     STOP_KEYS_LABEL,
     WALK_KEYS,
     calibration_targets,
+    command_keys,
     poll_keys,
     read_keys,
 )
@@ -102,6 +104,8 @@ class MouseSimTracker:
         # class, so the deck and its random order are theirs too.
         self._targets = CalibrationTargets(self._cfg.calibration_target, calibration_rng)
         self._progress: ProgressHook | None = None
+        # The live monitor's Resume/Back/Pause for the walk (set_command_source).
+        self._commands: CommandSource | None = None
         # PsychoPy may hide the OS cursor for fullscreen windows.  In this
         # backend the cursor is the simulated gaze marker, so hiding it makes
         # the task impossible to operate by hand.
@@ -143,6 +147,11 @@ class MouseSimTracker:
     def set_progress_hook(self, hook: ProgressHook | None) -> None:
         """Where the walk says which target it is on; None switches it off."""
         self._progress = hook
+
+    def set_command_source(self, source: CommandSource | None) -> None:
+        """Where the walk reads the live monitor's Resume, Back and Pause, as
+        the TRACKPixx3's does (protocol.py); None: the keys alone."""
+        self._commands = source
 
     def _report(self, stage: str, detail: str) -> None:
         if self._progress is not None:
@@ -242,9 +251,12 @@ class MouseSimTracker:
 
     def _wait_to_start(self, event: Any, window: Any) -> bool:
         """The guide's wait: True when SPACE starts the walk."""
+        guide_keys = [ACCEPT_KEYS[0], ABORT_KEY, *PAUSE_KEYS]
         while True:
             self._report("calibration guide", START_LINE)
-            keys = read_keys(event, [ACCEPT_KEYS[0], ABORT_KEY, *PAUSE_KEYS], STATUS_REFRESH_S)
+            keys = command_keys(self._commands, guide_keys) or read_keys(
+                event, guide_keys, STATUS_REFRESH_S
+            )
             if keys:
                 return keys[0] == ACCEPT_KEYS[0]
             if getattr(window, "_closed", False):
@@ -253,11 +265,14 @@ class MouseSimTracker:
     def _wait_for_keys(self, event: Any, window: Any, target: TargetPresenter) -> list[str] | None:
         """One refresh's wait for keys — a pulsating target redrawn each frame
         meanwhile, a still one left as drawn (the TRACKPixx3 walk's rhythm)."""
+        commanded = command_keys(self._commands, WALK_KEYS)
+        if commanded:
+            return commanded
         if not target.animated:
             return read_keys(event, WALK_KEYS, STATUS_REFRESH_S)
         deadline = self._clock.now() + STATUS_REFRESH_S
         while True:
-            keys = poll_keys(event, WALK_KEYS)
+            keys = poll_keys(event, WALK_KEYS) or command_keys(self._commands, WALK_KEYS)
             if keys or getattr(window, "_closed", False) or self._clock.now() >= deadline:
                 return keys
             target.draw()

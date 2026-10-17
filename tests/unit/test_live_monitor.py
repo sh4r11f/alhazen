@@ -707,6 +707,10 @@ class TestRecentRequestIds:
         assert forwarded == ["a", "b", "c", "d", "a"]
 
 
+# Marks a FakeLiveMonitor batch that arrives while a procedure runs.
+DURING = "<during a procedure>"
+
+
 class FakeLiveMonitor:
     def __init__(self, batches: list[list[str]]) -> None:
         self.batches = list(batches)
@@ -730,8 +734,17 @@ class FakeLiveMonitor:
         return self.setting_batches.pop(0) if self.setting_batches else []
 
     def poll_commands(self) -> list[LiveMonitorCommand]:
+        # Each batch is a click on the pause menu's buttons, which the page
+        # offers only once the session says "paused" again: while a procedure
+        # runs (and reads the queue itself, every frame, for its own Resume/
+        # Back/Pause) the page sends none of them — except a batch marked
+        # DURING, a click the server accepted under "paused" a moment before
+        # it saw the procedure start, which arrives while the procedure runs.
+        running = bool(self.states) and self.states[-1]["status"] == "calibrating"
+        if self.batches and (self.batches[0][:1] == [DURING]) != running:
+            return []
         names = self.batches.pop(0) if self.batches else []
-        return [LiveMonitorCommand(str(i), name) for i, name in enumerate(names)]
+        return [LiveMonitorCommand(str(i), name) for i, name in enumerate(names) if name != DURING]
 
     def publish_commands(self, records: list[dict]) -> None:
         # The acknowledgement channel: what the page would read at once.
@@ -1361,7 +1374,9 @@ class TestStaleCommandsAreDiscarded:
         # Second batch: a double-click, two Calibrates in one poll. Third: a
         # Validate the server accepted before it saw "calibrating". Then a
         # Resume clicked after the buttons came back, which must still work.
-        live_monitor = FakeLiveMonitor([[], ["calibrate", "calibrate"], ["validate"], ["resume"]])
+        live_monitor = FakeLiveMonitor(
+            [[], ["calibrate", "calibrate"], [DURING, "validate"], ["resume"]]
+        )
         harness = SessionHarness(
             tmp_path,
             n_trials=1,
@@ -1809,3 +1824,115 @@ class TestFigureConventionsInTheRenderer:
         rule = re.search(r"\.hairline\s*\{([^}]*)\}", css)
         assert rule is not None, "no .hairline rule"
         assert not re.search(r"(^|[;\s])opacity\s*:", rule.group(1)), rule.group(1)
+
+
+class ScriptedQuitQuestion:
+    """The second-ESC question with scripted answers; records where it was
+    asked and what the runner wired into it."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.asked: list[str] = []
+        self.emit = None
+        self.on_ask = None
+
+    def ask(self, where, redraw=None):
+        self.asked.append(where)
+        if self.on_ask is not None:
+            self.on_ask(where)
+        answer = self.answers.pop(0)
+        if self.emit is not None:
+            self.emit("QUIT_CONFIRMATION", {"where": where, "quit": answer, "key": "x"})
+        return answer
+
+
+class TestTheQuitKeyAsksFirst:
+    """2026-10-17: ESC at the pause menu asks before the session ends; the
+    page's Quit was confirmed on the page and is not asked again."""
+
+    def test_a_quit_key_at_the_rig_is_asked_and_a_no_keeps_the_pause(self, tmp_path: Path):
+        commands = ScriptedCommands([[Command.PAUSE]], raw_keys=[["q"], [], ["escape"]])
+        question = ScriptedQuitQuestion([False, True])
+        live_monitor = FakeLiveMonitor([])
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=2,
+            commands=commands,
+            quit_confirmation=question,
+            **wired(live_monitor),
+        )
+
+        harness.runner.run()
+
+        assert question.asked == ["the pause menu", "the pause menu"]
+        names = [event.name for event in harness.collector.events]
+        assert names.count("QUIT_CONFIRMATION") == 2
+        assert "RESUMED" not in names
+        messages = [s["message"] or "" for s in live_monitor.states]
+        assert any("a second ESC quits" in m for m in messages)
+        assert any("Quit not confirmed" in m for m in messages)
+        # The second ESC quit: the pause ended the session, and no trial ran after it.
+        assert [s["status"] for s in live_monitor.states][-2:] == ["stopping", "complete"]
+        assert harness.recorder.trials == []
+
+    def test_the_pages_quit_is_not_asked_again(self, tmp_path: Path):
+        commands = ScriptedCommands([[Command.PAUSE]])
+        question = ScriptedQuitQuestion([])
+        live_monitor = FakeLiveMonitor([[], ["quit"]])
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=2,
+            commands=commands,
+            quit_confirmation=question,
+            **wired(live_monitor),
+        )
+
+        harness.runner.run()
+
+        assert question.asked == []
+        assert any(s["status"] == "stopping" for s in live_monitor.states)
+
+
+class TestTheInstructionsAnswerThePage:
+    """2026-10-17: at the instructions screen Resume was greyed out, so the
+    session could not start without clicking into the subject's window."""
+
+    def test_resume_on_the_page_starts_the_session(self, tmp_path: Path):
+        from alhazen.live_monitor.runtime import LiveMonitorCommand
+
+        class Queue(FakeLiveMonitor):
+            def poll_commands(self):
+                if self.states and self.states[-1]["status"] == "waiting" and self.batches:
+                    names = self.batches.pop(0)
+                    return [LiveMonitorCommand(n, n, status="waiting") for n in names]
+                return []
+
+        live_monitor = Queue([["pause"], ["resume"]])
+        holder: dict = {}
+
+        def await_start():
+            # What the attended gate does with the page (builder's
+            # _psychopy_await_start): read the offered answers until one comes.
+            for _ in range(10):
+                for name in holder["runner"]._operator.take_offered():
+                    return name == "resume"
+            raise AssertionError("no answer from the page")
+
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            instructions="Look at the dot.",
+            await_start=await_start,
+            **wired(live_monitor),
+        )
+        holder["runner"] = harness.runner
+
+        harness.runner.run()
+
+        waiting = [s for s in live_monitor.states if s["status"] == "waiting"]
+        assert waiting and waiting[0]["controls"]["available"] == ["resume", "quit"]
+        assert "Resume starts" in waiting[0]["message"]
+        results = [(r["name"], r["result"]) for r in live_monitor.ack_records[-1]]
+        assert results == [("pause", "refused"), ("resume", "applied")]
+        assert live_monitor.states[-1]["status"] == "complete"
+        assert len(harness.recorder.trials) == 1

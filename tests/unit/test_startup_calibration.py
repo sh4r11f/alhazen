@@ -447,3 +447,88 @@ class TestEveryCalibrationIsRecorded:
         assert monitor.calibrate().ok is True
         assert "not recorded in the rig's calibration ledger" in events[0][1]["ledger"]
         assert "No space left" in caplog.text
+
+
+class PageQueue:
+    """The live monitor's queue for the request: each poll hands over the next
+    batch of command names, accepted under "waiting"."""
+
+    def __init__(self, batches):
+        self.batches = [list(b) for b in batches]
+        self.acks: list = []
+
+    def poll_commands(self):
+        from alhazen.live_monitor.runtime import LiveMonitorCommand
+
+        names = self.batches.pop(0) if self.batches else []
+        return [LiveMonitorCommand(f"p{i}", n, status="waiting") for i, n in enumerate(names)]
+
+    def publish_commands(self, records):
+        self.acks.append(records)
+
+
+def with_page(request, batches):
+    from alhazen.session.operator_commands import Capabilities, OperatorCommands
+
+    queue = PageQueue(batches)
+    operator = OperatorCommands(queue)
+    events: list = []
+    operator.bind(
+        emit=lambda n, p: events.append((n, p)),
+        capabilities=Capabilities(tracker=True),
+        clock=Clock(),
+    )
+    published: list = []
+    request.operator = operator
+    request.publish = lambda status, message=None: published.append(
+        (status, message, operator.controls(status))
+    )
+    return operator, events, published
+
+
+class TestThePageAnswersTheRequest:
+    """2026-10-17: the calibration request answers the live monitor's buttons
+    as its keys, so the operator need not click into the subject's window."""
+
+    def test_calibrate_from_the_page(self, tmp_path):
+        request, monitor, _shown, events, _ = make(tmp_path, [], results=[result()])
+        _op, acks, published = with_page(request, [[], ["calibrate"]])
+        assert request.request() is True
+        assert monitor.calls == 1
+        assert events[0][1]["choice"] == "calibrated"
+        status, _message, controls = published[0]
+        assert status == "waiting"
+        assert controls["available"] == ["calibrate", "quit"]
+        assert [(p["name"], p["result"]) for _, p in acks] == [("calibrate", "applied")]
+
+    def test_reuse_is_offered_on_the_page_only_when_r_is(self, tmp_path):
+        request, monitor, _shown, events, _ = make(tmp_path, [], record=good_record())
+        _op, _acks, published = with_page(request, [["reuse_calibration"]])
+        assert request.request() is True
+        assert monitor.calls == 0
+        assert events[0][1]["choice"] == "reused previous"
+        assert "reuse_calibration" in published[0][2]["available"]
+
+    def test_the_pages_quit_cancels_without_the_second_escape(self, tmp_path):
+        request, monitor, _shown, events, _ = make(tmp_path, [])
+        asked: list = []
+        request.confirm_quit = lambda: asked.append(1) or False
+        operator, _acks, _published = with_page(request, [["quit"]])
+        assert request.request() is False
+        assert asked == [] and events[0][1]["choice"] == "cancelled"
+        # The offer is gone once the request is answered.
+        assert operator.controls("waiting")["available"] == []
+
+    def test_escape_is_asked_and_a_no_keeps_the_request(self, tmp_path):
+        request, monitor, shown, events, _ = make(tmp_path, ["escape", "r"], record=good_record())
+        answers = iter([False])
+        request.confirm_quit = lambda: next(answers)
+        assert request.request() is True
+        assert events[0][1]["choice"] == "reused previous"
+        assert len(shown) == 2  # drawn again after the quit was taken back
+
+    def test_escape_confirmed_cancels(self, tmp_path):
+        request, _monitor, _shown, events, _ = make(tmp_path, ["escape"])
+        request.confirm_quit = lambda: True
+        assert request.request() is False
+        assert events[0][1]["choice"] == "cancelled"
