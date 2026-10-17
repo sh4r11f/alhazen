@@ -85,9 +85,16 @@ function PlatformApp({ host }) {
     setDialog(null); setFlash({ kind: 'ok', text: fork.title + ' was taken off the marketplace. Your copy is unchanged.' });
   }
 
+  // Remove a copy from the library (My experiments). The host deletes the copy with its revisions
+  // and job records, plus the docs snapshot when no other copy uses it; nothing on a machine's disk.
   async function removeFork(fork) {
-    await host.removeFork(fork);
-    setDialog(null); go({ v: 'mine' }, true); setFlash({ kind: 'ok', text: fork.title + ' was removed from My experiments.' });
+    try {
+      setBusy('Removing');
+      await host.removeFork(fork);
+      setBusy(''); setDialog(null);
+      if (route.v === 'fork') go({ v: 'mine' }, true);
+      setFlash({ kind: 'ok', text: fork.title + ' was removed from your library.' });
+    } catch (e) { setBusy(''); setDialog(null); setFlash({ kind: 'bad', text: 'Could not remove ' + fork.title + ': ' + (e.message || e) }); }
   }
 
   // Standalone hosts: a changed copy comes back as a zip and becomes a new revision.
@@ -419,13 +426,16 @@ function PlatformApp({ host }) {
             const jobs = Object.values(f.jobs || {}).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
             const live = jobs.find((j) => j.status === 'running' || j.status === 'waiting');
             return (
-              <button key={f.id} className="row rowbtn" onClick={() => go({ v: 'fork', id: f.id })}>
-                <div className="row-art"><EHExperimentLogo item={f}/></div>
-                <div className="row-main"><div className="row-title">{f.title}</div>
-                  <div className="row-sub">{f.origin && f.origin.scratch ? 'Started from scratch' : `From ${f.origin.title}${f.origin.publisherName ? ' by ' + f.origin.publisherName : ''}`} · {Object.keys(f.revisions || {}).length} revision{Object.keys(f.revisions || {}).length === 1 ? '' : 's'} · changed {ago(f.updatedAt)}</div></div>
-                {f.published ? <span className="status st-ok">On the marketplace</span> : null}
-                {live ? statusChip(live.status) : null}
-              </button>);
+              <div key={f.id} className="row eh-mine-row">
+                <button className="eh-row-open" onClick={() => go({ v: 'fork', id: f.id })}>
+                  <div className="row-art"><EHExperimentLogo item={f}/></div>
+                  <div className="row-main"><div className="row-title">{f.title}</div>
+                    <div className="row-sub">{f.origin && f.origin.scratch ? 'Started from scratch' : `From ${f.origin.title}${f.origin.publisherName ? ' by ' + f.origin.publisherName : ''}`} · {Object.keys(f.revisions || {}).length} revision{Object.keys(f.revisions || {}).length === 1 ? '' : 's'} · changed {ago(f.updatedAt)}</div></div>
+                  {f.published ? <span className="status st-ok">On the marketplace</span> : null}
+                  {live ? statusChip(live.status) : null}
+                </button>
+                <button className="btn btn-quiet btn-small eh-row-remove" aria-label={'Remove ' + f.title + ' from your library'} onClick={() => setDialog({ kind: 'remove', f })}>Remove</button>
+              </div>);
           })}
         </div> : (caps.signIn && !viewerUid ? <div className="empty"><h3>Sign in to keep experiments</h3><p>Your copies are private to your account.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-primary" onClick={() => host.signIn()}>Sign in</button></div></div> : <div className="empty"><h3>Nothing here yet</h3><p>{caps.newWithMana ? 'Fork an experiment from Browse, or start a new one.' : 'Fork an experiment from Browse.'}</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-line" onClick={() => go({ v: 'browse' })}>Browse experiments</button></div></div>)}
       </>
@@ -548,7 +558,7 @@ function PlatformApp({ host }) {
         : <div className="eh-actions"><button className="btn btn-line" disabled={!head} onClick={() => nav('changes')}>Changes</button><button className="btn btn-line" onClick={() => nav('run')}>Run</button></div>}
           <div style={{ marginTop: 32, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {f.published ? <button className="btn btn-line btn-small" onClick={() => setDialog({ kind: 'unpublish', f })}>Take off the marketplace</button> : null}
-            <button className="btn btn-quiet btn-small" onClick={() => setDialog({ kind: 'remove', f })}>Remove from My experiments</button>
+            <button className="btn btn-quiet btn-small" onClick={() => setDialog({ kind: 'remove', f })}>Remove from library</button>
           </div>
     </section>;
     const versionsView = <section className="eh-reference-versions"><h2>Revisions of your copy</h2>
@@ -628,9 +638,17 @@ function PlatformApp({ host }) {
     else if (d.kind === 'unpublish') body = <>
       <h2>Take off the marketplace?</h2><p>The listing disappears from Browse. Copies others already forked stay theirs, and your copy is unchanged.</p>
       <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" onClick={() => unpublish(d.f)}>Take off</button></div></>;
-    else if (d.kind === 'remove') body = <>
-      <h2>Remove {d.f.title}?</h2><p>This removes your copy and its revision list from My experiments. {d.f.published ? 'The marketplace listing stays until you take it off. ' : ''}Folders already copied to your rig are not touched.</p>
-      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" onClick={() => removeFork(d.f)}>Remove</button></div></>;
+    else if (d.kind === 'remove') { const plan = removalPlan(d.f, forkList);
+      body = <>
+      <h2>Remove {d.f.title} from your library?</h2>
+      <div className="eh-remove-plan">
+        <h3>Removed</h3>
+        <ul>{plan.removed.map((x) => <li key={x}>{x}</li>)}</ul>
+        <h3>Not removed</h3>
+        <ul>{plan.kept.map((x) => <li key={x}>{x}</li>)}</ul>
+      </div>
+      {plan.working ? <p className="eh-remove-warn">Mana is still working on this copy. Removing it does not stop that request.</p> : null}
+      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={() => removeFork(d.f)}>Remove from library</button></div></>; }
     return <div className="eh-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}><div className="eh-dialog" role="dialog" aria-modal="true">{body}</div></div>;
   }
 

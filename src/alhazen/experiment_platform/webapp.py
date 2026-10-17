@@ -372,8 +372,7 @@ class PlatformApp:
             svc.unpublish(principal, args["fork"])
             return self._json(200, {})
         if name == "remove":
-            svc.remove_fork(principal, args["fork"])
-            return self._json(200, {})
+            return self._json(200, {"removed": svc.remove_fork(principal, args["fork"])})
         raise NotFound("No such API route")  # pragma: no cover - every route is handled above
 
 

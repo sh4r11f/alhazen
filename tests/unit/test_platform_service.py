@@ -263,6 +263,56 @@ class TestPublishing:
         assert fork_id not in service.forks(ADA)
         assert service.catalogue(BEN)[ADA.uid][fork_id]
 
+    def test_removing_a_copy_deletes_its_revisions_and_unshared_docs_snapshot(
+        self, store: FileStore, service: PlatformService
+    ):
+        first, fork = service.fork(ADA, "lab", "dots")
+        origin_bundle = fork["head"]["id"]
+        revision, _ = service.upload_revision(
+            ADA, first, zip_of(experiment(**{"configs/task.yaml": b"n_trials: 12\n"})), "fewer"
+        )
+        second, _ = service.fork(ADA, "lab", "dots")
+
+        removed = service.remove_fork(ADA, first)
+
+        # Its own revision goes; the forked version and its methods stay: the second copy
+        # still names both.
+        assert removed == {"bundles": [revision["bundle"]], "docs": []}
+        assert store.private_bundles(ADA.uid) == [origin_bundle]
+        assert service.fork_docs(ADA, second)["docs"]["methods"].startswith("## Question")
+        with pytest.raises(NotFound):
+            service.fork_docs(ADA, first)
+
+        removed = service.remove_fork(ADA, second)
+        assert removed == {"bundles": [origin_bundle], "docs": [origin_bundle]}
+        assert store.private_bundles(ADA.uid) == [] and store.fork_docs_keys(ADA.uid) == []
+        # The catalogue version itself is untouched.
+        assert service.bundle_meta(ADA, service.catalogue(ADA)["lab"]["dots"]["bundle"]["path"])
+
+    def test_removing_a_published_copy_keeps_the_listings_files(
+        self, store: FileStore, service: PlatformService
+    ):
+        fork_id, _ = service.fork(ADA, "lab", "dots")
+        service.upload_revision(
+            ADA, fork_id, zip_of(experiment(**{"configs/task.yaml": b"n_trials: 9\n"})), "nine"
+        )
+        listing = service.publish(ADA, fork_id, FORM)
+        service.remove_fork(ADA, fork_id)
+        assert store.private_bundles(ADA.uid) == []
+        # Ben can still fork the published revision: it lives in the published store.
+        ben_id, ben = service.fork(BEN, ADA.uid, fork_id)
+        assert ben["head"]["id"] == listing["bundle"]["id"]
+        assert service.bundle_meta(BEN, ben["head"]["path"])["fileCount"] == 4
+
+    def test_removing_another_users_copy_leaves_theirs(
+        self, store: FileStore, service: PlatformService
+    ):
+        ada_id, _ = service.fork(ADA, "lab", "dots")
+        ben_id, ben = service.fork(BEN, "lab", "dots")
+        service.remove_fork(ADA, ada_id)
+        assert store.private_bundles(BEN.uid) == [ben["head"]["id"]]
+        assert service.fork_docs(BEN, ben_id)["docs"]
+
     def test_unknown_versions_of_a_listing_are_not_served(self, service: PlatformService):
         with pytest.raises(NotFound):
             service.bundle_meta(ADA, "L~lab~dots~dots-0000000000")

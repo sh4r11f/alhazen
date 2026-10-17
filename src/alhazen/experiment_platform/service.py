@@ -506,10 +506,48 @@ class PlatformService:
             fork.pop("published", None)
             self.store.put_fork(who.uid, fork_id, fork)
 
-    def remove_fork(self, principal: Principal | None, fork_id: str) -> None:
-        """Remove a copy from the principal's experiments. A listing published from it
-        stays until it is taken off; its stored revisions are kept for that listing."""
+    def remove_fork(self, principal: Principal | None, fork_id: str) -> dict[str, Any]:
+        """Remove a copy from the principal's experiments: its record (revisions and job
+        records with it), the private bundles of its revisions that no other copy of the
+        principal names, and the docs snapshot of the version it was forked from when no
+        other copy was forked from that version. A listing published from it stays until
+        it is taken off: publishing copied that revision into the published store.
+        Returns what was removed: ``{"bundles": [...], "docs": [...]}``."""
         who = self._writer(principal)
         with self.store.lock():
             self._fork(who, fork_id)
             self.store.delete_fork(who.uid, fork_id)
+            kept_bundles: set[str] = set()
+            kept_docs: set[str] = set()
+            for other in self.store.forks(who.uid).values():
+                kept_bundles.update(_fork_bundles(other))
+                key = _fork_docs_key(other)
+                if key:
+                    kept_docs.add(key)
+            # Private bundles and snapshots no remaining copy names: the removed copy's,
+            # and any left behind by removals before this cleanup existed.
+            bundles_gone = [b for b in self.store.private_bundles(who.uid) if b not in kept_bundles]
+            docs_gone = [k for k in self.store.fork_docs_keys(who.uid) if k not in kept_docs]
+            for bundle_id in bundles_gone:
+                self.store.delete_private_bundle(who.uid, bundle_id)
+            for key in docs_gone:
+                self.store.delete_fork_docs(who.uid, key)
+        return {"bundles": bundles_gone, "docs": docs_gone}
+
+
+def _fork_bundles(fork: Mapping[str, Any]) -> set[str]:
+    """Every bundle a copy names: its head and each revision's."""
+    named = {str(r.get("bundle")) for r in (fork.get("revisions") or {}).values() if isinstance(r, dict) and r.get("bundle")}
+    head = (fork.get("head") or {}).get("id") if isinstance(fork.get("head"), dict) else None
+    if head:
+        named.add(str(head))
+    return named
+
+
+def _fork_docs_key(fork: Mapping[str, Any]) -> str | None:
+    """The docs snapshot a copy reads: the catalogue version it was forked from."""
+    origin = fork.get("origin") or {}
+    if origin.get("scratch"):
+        return None
+    key = origin.get("docsKey") or origin.get("bundle")
+    return str(key) if key else None

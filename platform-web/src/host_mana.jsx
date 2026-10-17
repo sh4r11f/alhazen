@@ -212,8 +212,20 @@ function UserDiv() {
       await FS.update(FS.ref(FS.db, MINE + '/forks/' + fork.id), { published: null, updatedAt: Date.now() });
     },
 
+    // Remove a copy from the library in one atomic update of the viewer's own workspace: the copy
+    // (revisions and job records live inside it), its revision files no other copy names, and the
+    // docs snapshot of its origin version when no other copy uses it (removalPlan). Read fresh, so
+    // a copy made in another tab a moment ago keeps what it names. Published listings keep their
+    // own files under hub/bundles; nothing on a machine is touched.
     async removeFork(fork) {
-      await FS.remove(FS.ref(FS.db, MINE + '/forks/' + fork.id));
+      const forks = (await get(MINE + '/forks')) || {};
+      if (!forks[fork.id]) return;
+      const all = Object.entries(forks).filter(([k, v]) => k !== 'metadata' && v && typeof v === 'object').map(([id, v]) => ({ ...v, id }));
+      const plan = removalPlan({ ...forks[fork.id], id: fork.id }, all);
+      const upd = { ['forks/' + fork.id]: null };
+      for (const b of plan.bundles) upd['bundles/' + b] = null;
+      if (plan.docsKey) upd['docs/' + plan.docsKey] = null;
+      await FS.update(FS.ref(FS.db, MINE), upd);
     },
 
     // [2026-10-15] Switch chats through the shell's own route event (same fix as Agent Hub). Pushing ?chatId=

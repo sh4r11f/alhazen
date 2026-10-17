@@ -351,6 +351,35 @@ class FileStore:
             path.unlink()
             _fsync_dir(path.parent)
 
+    def private_bundles(self, uid: str) -> list[str]:
+        """The ids of the bundles stored privately for ``uid`` (its copies' revisions)."""
+        folder = self._user_dir(uid) / "bundles"
+        return sorted(p.name for p in folder.iterdir() if p.is_dir()) if folder.is_dir() else []
+
+    def delete_private_bundle(self, uid: str, bundle_id: str) -> None:
+        """Delete one of ``uid``'s private bundles: the meta record first, so a reader
+        never sees a bundle whose chunks are going (a bundle without meta does not
+        exist), then its chunks. Published bundles are never touched here."""
+        folder = self._bundle_dir(check_id(uid, "User id"), bundle_id)
+        meta = folder / "meta.json"
+        if meta.exists():
+            meta.unlink()
+            _fsync_dir(folder)
+        if folder.is_dir():
+            shutil.rmtree(folder)
+            _fsync_dir(folder.parent)
+
+    def fork_docs_keys(self, uid: str) -> list[str]:
+        """The keys of ``uid``'s docs snapshots (one per forked catalogue version)."""
+        folder = self._user_dir(uid) / "docs"
+        return sorted(p.stem for p in folder.glob("*.json")) if folder.is_dir() else []
+
+    def delete_fork_docs(self, uid: str, key: str) -> None:
+        path = self._user_dir(uid) / "docs" / f"{check_id(key, 'Bundle id')}.json"
+        if path.exists():
+            path.unlink()
+            _fsync_dir(path.parent)
+
     def fork_docs(self, uid: str, bundle_id: str) -> dict[str, Any] | None:
         return self._read_json(
             self._user_dir(uid) / "docs" / f"{check_id(bundle_id, 'Bundle id')}.json"

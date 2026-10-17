@@ -135,6 +135,11 @@ copied at fork time; a fork's documentation never changes by itself.
   from the account, not the request. A published bundle is copied (verified) into the
   shared bundle store. Unpublishing removes the listing pointer; versions already forked
   by others remain in their forks.
+- Removing a copy from the library (My experiments) deletes the copy record (its revisions
+  list and job records with it), the private bundles no remaining copy of the principal
+  names, and the docs snapshot no remaining copy reads. A listing published from the copy
+  keeps its files (publishing copied them into the published store); nothing on a rig's disk
+  is touched. The Mana host does the same in one atomic update of the viewer's workspace.
 - Uploads (a new revision as a zip): bounded size (`max_upload_mb`, default 64), every
   entry checked as a bundle path, no symlinks, no files outside the root, no `.git/`.
 
@@ -262,7 +267,7 @@ cross-site form cannot send).
 | `POST /api/forks/<id>/revisions?message=<text>` body: zip bytes | `{revision: {bundle, message, by, at}, fork}` |
 | `POST /api/forks/<id>/publish` `{title, summary, category, subjects, hardware, version, license}` | `{listing}` |
 | `POST /api/forks/<id>/unpublish` | `{}` |
-| `DELETE /api/forks/<id>` | `{}` |
+| `DELETE /api/forks/<id>` | `{removed: {bundles: [bundleId], docs: [docsKey]}}` |
 | `GET /api/art/<path>` | the image (content-hashed name, cacheable) |
 
 Bundle handles are opaque to the web app: `L~<publisher>~<exp>~<bundleId>` for a published

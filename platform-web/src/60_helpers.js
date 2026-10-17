@@ -9,6 +9,30 @@ const ago = (ms) => {
   if (s < 60) return 'just now'; if (s < 3600) return Math.round(s / 60) + ' min ago'; if (s < 86400) return Math.round(s / 3600) + ' h ago';
   const d = Math.round(s / 86400); return d < 30 ? d + ' d ago' : new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
+// What removing a copy from the library takes with it (design.md section 5): the copy, its
+// revisions and job records, the docs snapshot of the version it was forked from when no other
+// copy uses that snapshot, and private revision files no other copy names. Hosts delete exactly
+// these; nothing on a machine's disk, and no published listing, is touched.
+const forkDocsKey = (f) => { const o = (f && f.origin) || {}; return o.scratch ? null : (o.docsKey || o.bundle || null); };
+const forkBundles = (f) => { const out = new Set(); for (const r of Object.values((f && f.revisions) || {})) if (r && r.bundle) out.add(r.bundle); const h = f && f.head; if (h && h.id) out.add(h.id); return out; };
+function removalPlan(f, all) {
+  const others = (all || []).filter((o) => o && o.id !== f.id);
+  const key = forkDocsKey(f);
+  const docsShared = !key || others.some((o) => forkDocsKey(o) === key);
+  const kept = new Set(); for (const o of others) for (const b of forkBundles(o)) kept.add(b);
+  const bundles = [...forkBundles(f)].filter((b) => !kept.has(b));
+  const nRev = Object.keys(f.revisions || {}).length;
+  const jobs = Object.values(f.jobs || {});
+  const nJobs = jobs.length;
+  const removed = ['Your private copy of ' + f.title + (nRev ? ', with its ' + (nRev === 1 ? 'revision' : nRev + ' revisions') : '')];
+  if (nJobs) removed.push('Its ' + (nJobs === 1 ? 'request and run record' : nJobs + ' request and run records'));
+  if (key && !docsShared) removed.push('The saved methods of the version you copied');
+  const kept_ = ['Folders already copied to your machines, and the session data in them'];
+  if (key && docsShared) kept_.push('The saved methods of the version you copied: another copy in your library uses them');
+  if (f.published) kept_.push('Your marketplace listing: it stays until you take it off');
+  else kept_.push('The original listing on the marketplace');
+  return { removed, kept: kept_, bundles, docsKey: key && !docsShared ? key : null, working: jobs.some((j) => j && (j.status === 'running' || j.status === 'waiting')) };
+}
 const kb = (b) => b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB';
 
 function readRoute() {
