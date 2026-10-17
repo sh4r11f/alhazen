@@ -25,12 +25,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-import warnings
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
-from alhazen._deprecation import deprecation_message, warn_deprecated_argument
 from alhazen.modes import Mode
 
 
@@ -44,8 +42,8 @@ def run_experiment(
     description: str | None = None,
     params_hook: Callable[[Any, argparse.Namespace], Any] | None = None,
     tasks: Mapping[str, tuple[type, Path | str | None]] | None = None,
-    default_task: str | None = None,
     ladders: Mapping[str, Path | str] | None = None,
+    **removed: NoReturn,
 ) -> int:
     """Parse ``argv`` and run this experiment in the mode it names.
 
@@ -102,10 +100,12 @@ def run_experiment(
     **Every session names its task.** ``--task`` is on the parser in both
     forms: its choices are the table's keys, or, with ``task_class``, the
     one task's ``name`` alone. It is required in every mode but measure,
-    which checks the machine and runs no task. Until alhazen 3.0 a command
-    that leaves it out still runs what it always ran — with ``tasks``,
-    ``default_task``, else the first task declared; with ``task_class``, its
-    task — and warns (a ``FutureWarning`` naming that task); 3.0 refuses it.
+    which checks the machine and runs no task, and training, where the stage
+    names its task. A command that leaves it out is refused as a usage error
+    (exit status 2) naming the ``--task`` to pass, before anything loads.
+    From 2.5 to 2.x such a command still ran the first task declared (or
+    ``default_task``'s, or the one task) with a ``FutureWarning``; 3.0
+    removed that.
 
     ``ladders`` registers the experiment's training ladders
     (alhazen.training.ladder), for ``--mode training --stage <id>``: a
@@ -117,21 +117,29 @@ def run_experiment(
     With ``--stage`` the stage names the task (``--task`` may be left out)
     and its params file (``--params`` is refused).
 
-    ``default_task`` is deprecated (since 2.5, removed in 3.0) and warns
-    whenever it is given: it chose what a command without ``--task`` ran,
-    and in 3.0 there is no such command. Until then it still does.
+    ``default_task`` was removed in 3.0 (deprecated since 2.5): it chose
+    what a command without ``--task`` ran, and there is no such command any
+    more. A ``run.py`` that still passes it is refused with a TypeError
+    saying so; delete the argument and name the task with ``--task``. Any
+    other keyword this function does not take is the TypeError Python would
+    give.
     """
     from alhazen.cli.main import _run_session, add_mode_arguments
     from alhazen.task.task import default_params_path
 
-    # Deprecated wherever it is passed — even beside task_class=, where it
-    # never did anything — because run.py's own line is what has to change.
-    # Warned from here so the warning points at that line (stacklevel 3 in
-    # the helper: past it and past this function).
-    if default_task is not None:
-        warn_deprecated_argument(
-            "default_task", since="2.5", removed_in="3.0", instead="--task on every command line"
-        )
+    # Removed arguments, caught by name so the refusal says what to do
+    # rather than only that the keyword is unexpected. `**removed` is typed
+    # NoReturn so a type checker still flags any keyword passed to it, as it
+    # would with no catch-all at all.
+    for keyword in removed:
+        if keyword == "default_task":
+            raise TypeError(
+                "run_experiment() no longer takes default_task= (deprecated since alhazen 2.5, "
+                "removed in 3.0): every command names its task with --task, so there is no "
+                "default to choose. Delete default_task= from run.py and add --task <name> to "
+                "every command that started that task without it"
+            )
+        raise TypeError(f"run_experiment() got an unexpected keyword argument {keyword!r}")
 
     # One task or several, never neither and never both: a run.py that says
     # both has two answers to "which task", and the one it did not mean would
@@ -143,15 +151,10 @@ def run_experiment(
         # (run-NN_task-<name>), so it is the one spelling --task can take.
         one = getattr(task_class, "name", task_class.__name__)
         names = [one]
-        # Until 3.0, what a command without --task runs, and how the warning
-        # says why that task: there is no other it could be.
-        unnamed, why = one, "run.py's one task"
         prog = f"run.py ({one})"
         description = description or task_class.__doc__
-        task_help = (
-            f"the task to run, {one} — required in every mode but measure; until alhazen 3.0 "
-            "a command without it runs that task anyway, with a warning"
-        )
+        task_help = f"the task to run, {one} — required in every mode but measure and training"
+
     else:
         if task_class is not None:
             raise TypeError("run_experiment takes either task_class= or tasks=, not both")
@@ -163,26 +166,19 @@ def run_experiment(
         if not tasks:
             raise ValueError("tasks= declares no task; name at least one")
         names = list(tasks)
-        if default_task is None:
-            unnamed, why = names[0], "the first task run.py declares"
-        else:
-            # Still checked while it is honoured: a default that names no
-            # task would otherwise surface only on a command without --task.
-            if default_task not in tasks:
-                raise ValueError(
-                    f"default_task {default_task!r} is not one of the declared tasks: "
-                    f"{', '.join(names)}"
-                )
-            unnamed, why = default_task, "run.py's default_task"
         prog = f"run.py ({' | '.join(names)})"
         description = description or (
-            f"Tasks: {', '.join(names)}. --task names the one to run, and is required; "
-            f"until alhazen 3.0 a command without it runs {unnamed}, with a warning."
+            f"Tasks: {', '.join(names)}. --task names the one to run, and is required."
         )
         task_help = (
-            "which of this experiment's tasks to run — required in every mode but measure; "
-            f"until alhazen 3.0 a command without it runs {unnamed}, with a warning"
+            "which of this experiment's tasks to run — required in every mode but measure "
+            "and training"
         )
+    # Measure mode runs no task, and training without --stage is refused by
+    # the dispatch, so neither needs one named; each is handed the first task
+    # declared (the one task) only so the session can find the experiment's
+    # folder, and every task in the table belongs to the same experiment.
+    unnamed = names[0]
 
     parser = argparse.ArgumentParser(prog=prog, description=description)
     add_mode_arguments(parser)
@@ -256,28 +252,18 @@ def run_experiment(
         and stage_task is None
         and args.mode not in (Mode.MEASURE.value, Mode.TRAINING.value)
     ):
-        # Deprecated, not refused: refusing a command that used to work is a
-        # MAJOR change (docs/versioning.md §1, §4), so until 3.0 it runs what
-        # it always ran and says which task that is. A FutureWarning rather
-        # than a DeprecationWarning, because the person who has to change is
-        # whoever typed the command, not run.py's author: Python hides a
-        # DeprecationWarning unless it is raised from __main__, and a run.py
-        # that calls this from inside its own package would never show it.
-        warnings.warn(
-            deprecation_message(
-                "running run.py without --task",
-                since="2.5",
-                removed_in="3.0",
-                instead=f"--task {unnamed}",
-            )
-            + f". This session runs {unnamed}, {why}; alhazen 3.0 will refuse a command "
-            "that names no task",
-            FutureWarning,
-            stacklevel=2,
+        # Every session names its task: refused as a usage error, the way
+        # argparse refuses a misspelt one, before anything is loaded or
+        # written. Removed in 3.0 (docs/versioning.md §4): from 2.5 this ran
+        # the first task declared, with a FutureWarning.
+        if len(names) == 1:
+            which = f"pass --task {names[0]}"
+        else:
+            which = f"pass --task with one of {', '.join(names)}"
+        parser.error(
+            f"every session names its task; {which} (alhazen 3.0 no longer runs a default "
+            "task when --task is left out)"
         )
-    # Measure mode runs no task, so it needs none named; the one it is given
-    # here only says which experiment's folder to look for a rig name in, and
-    # every task in the table belongs to the same experiment.
     if stage_task is not None:
         # The training stage decides the task and its params
         # (alhazen.cli.main._settle_training_stage resolves it).
