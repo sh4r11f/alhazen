@@ -25,6 +25,15 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+- **The Trial view fits the window.** The live monitor draws the trial (and
+  calibration) picture only as tall as the room left once the header, the
+  procedure guide, the legend and the buttons are placed, so the buttons are
+  on screen without scrolling in a full browser tab. Before, the picture was
+  stretched to the column's width, which on a wide window pushed the buttons
+  below the fold. The camera box beside it is never taller than the picture.
+
 ## 3.4.0 - 2026-10-17
 
 Operator flow from the live monitor, so a session can be run without clicking

@@ -717,7 +717,12 @@ button.control:focus-visible { outline: 2px solid var(--series-1); outline-offse
 #trial-note:empty { display: none; }
 
 .trial-stage-box { position: relative; width: 100%; }
-.trial-stage-box svg { display: block; width: 100%; height: auto; }
+/* Drawn at the size trialFit chose (its width and height attributes): never
+ * stretched to the column's width, which on a wide window made the picture
+ * taller than the room left for it and pushed the buttons off the screen. */
+.trial-stage-box svg { display: block; width: auto; max-width: 100%; height: auto; margin-inline: auto; }
+/* Beside the picture, the camera is never taller than it. */
+.trial-camera-box { max-height: var(--trial-fit-h, none); }
 
 .trial-screen { fill: var(--page); stroke: var(--rule); stroke-width: 1; }
 .trial-grid   { stroke: var(--rule); stroke-width: 1; }
