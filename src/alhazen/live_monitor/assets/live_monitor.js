@@ -3458,6 +3458,42 @@ function drawTrialGrid(svg, fit, place) {
   label.textContent = step + '°';
 }
 
+/* The smallest the trial picture is drawn however little room is left. */
+const TRIAL_MIN_HEIGHT = 160;
+
+/** The tallest the trial picture may be drawn so that the whole Trial view,
+ *  its buttons included, fits in the window without scrolling: the window's
+ *  height less everything above the picture (the header, the procedure guide,
+ *  the view's head) and everything below it (legend, caption and, when the
+ *  camera sits under the screen, the camera; then the buttons). A page with
+ *  no layout yet (a saved copy, the tests) keeps the old 62 % of the window. */
+function trialStageMaxHeight() {
+  const fallback = Math.max(240, Math.round(window.innerHeight * 0.62) || 480);
+  const section = byId('trial-view');
+  const host = byId('trial-stage');
+  if (!section || !host || section.hidden) return fallback;
+  if (!(section.offsetHeight > 0) || typeof host.offsetHeight !== 'number') return fallback;
+  const figure = host.parentNode;
+  const camera = section.querySelector('.trial-camera');
+  const body = section.querySelector('.trial-body');
+  let around = section.offsetHeight - host.offsetHeight;
+  /* Beside the screen, a camera taller than the picture lengthens the view
+   * without being above or below the picture. */
+  const beside = camera && figure && Math.abs((camera.offsetTop || 0) - (figure.offsetTop || 0)) < 2;
+  if (beside && body && figure.offsetHeight > 0) around -= Math.max(0, body.offsetHeight - figure.offsetHeight);
+  const top = section.getBoundingClientRect().top + (window.scrollY || 0);
+  const room = window.innerHeight - top - around - 12;
+  if (!(room > 0)) return TRIAL_MIN_HEIGHT;
+  return Math.max(TRIAL_MIN_HEIGHT, Math.floor(room));
+}
+
+/** Redraw the picture when the room for it has changed: the window resized,
+ *  the procedure guide came or went, the buttons wrapped onto another row. */
+function refitTrialStage() {
+  if (!trialView.view) return;
+  if (Math.abs(trialStageMaxHeight() - (trialView.maxHeight || 0)) > 4) drawTrialStage();
+}
+
 /** Build the picture for the current trial: the screen, its grid, the
  *  shapes, and an empty gaze layer that paintGaze fills. */
 function drawTrialStage() {
@@ -3473,9 +3509,14 @@ function drawTrialStage() {
     return;
   }
   const width = host.clientWidth || 640;
-  const fit = trialFit(view.screen.width_dva, view.screen.height_dva, width,
-    Math.max(240, Math.round(window.innerHeight * 0.62) || 480));
+  const maxHeight = trialStageMaxHeight();
+  const fit = trialFit(view.screen.width_dva, view.screen.height_dva, width, maxHeight);
   trialView.fit = fit;
+  trialView.maxHeight = maxHeight;
+  const section = byId('trial-view');
+  if (section && section.style && section.style.setProperty) {
+    section.style.setProperty('--trial-fit-h', Math.round(fit.height) + 'px');
+  }
   const svg = svgEl('svg', {
     viewBox: '0 0 ' + fit.width + ' ' + fit.height,
     width: fit.width,
@@ -3834,6 +3875,14 @@ byId('trial-trail').onchange = (event) => {
 new ResizeObserver(() => {
   if (trialView.view) drawTrialStage();
 }).observe(byId('trial-stage'));
+{
+  const refit = new ResizeObserver(() => refitTrialStage());
+  ['procedure', 'trial-controls', 'trial-legend'].forEach((id) => {
+    const el = byId(id);
+    if (el) refit.observe(el);
+  });
+  if (typeof window.addEventListener === 'function') window.addEventListener('resize', refitTrialStage);
+}
 
 /* ------------------------------------------------------------------ */
 /* end Trial view                                                      */
