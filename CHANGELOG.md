@@ -25,7 +25,7 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.4.1 - 2026-10-17
 
 - **The Trial view fits the window.** The live monitor draws the trial (and
   calibration) picture only as tall as the room left once the header, the
