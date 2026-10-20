@@ -697,7 +697,7 @@ function PlatformApp({ host }) {
         </form>
         {madeToken ? <div className="panel eh-token-made" style={{ marginBottom: 20 }} role="status">
           <h3>Token for {madeToken.machine.name}</h3>
-          <p>Copy it now: it is not shown again. On that machine, in the experiment's environment (or any alhazen 3.5 or later), run:</p>
+          <p>Copy it now: it is not shown again. On that machine, where alhazen is installed, run:</p>
           <pre className="eh-cmd">{command}</pre>
           <div className="eh-actions" style={{ marginTop: 12 }}>
             <button className="btn btn-line btn-small" onClick={() => copy(command, 'command')}>Copy the command</button>

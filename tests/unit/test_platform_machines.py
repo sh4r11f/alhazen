@@ -64,6 +64,9 @@ def signed_in(app: PlatformApp, user: str) -> dict[str, str]:
         headers={"Content-Type": "application/json", "X-Alhazen-Platform": "1"},
         body=json.dumps({"username": user, "password": PASSWORD}).encode(),
     )
+    assert (
+        response.json()["capabilities"]["machineTokens"] is True
+    )  # the page shows Machines at once
     cookie = response.headers["set-cookie"].split(";")[0]
     return {"Cookie": cookie, "X-Alhazen-CSRF": response.json()["csrf"], "X-Alhazen-Platform": "1"}
 
@@ -89,6 +92,7 @@ class TestServerMachines:
         app, _ = server
         ada, ben = signed_in(app, "ada"), signed_in(app, "ben")
         assert call(app, "GET", "/api/session", headers=ada).json()["capabilities"]["machineTokens"]
+        assert call(app, "GET", "/api/session").json()["capabilities"]["machineTokens"] is False
         fork_id = post(app, "/api/forks", ada, {"publisher": "lab", "exp": "dots"}).json()["id"]
         post(app, "/api/forks", ben, {"publisher": "lab", "exp": "dots"})
         made = post(app, "/api/machines", ada, {"name": "Booth 2"}).json()

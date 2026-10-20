@@ -261,6 +261,14 @@ class PlatformApp:
             body,
         )
 
+    def _machine_caps(self, info: dict[str, Any], *, signed_in: bool) -> dict[str, Any]:
+        """The session answer with ``machineTokens``: true when this host keeps machine
+        tokens and someone is signed in to make them."""
+        caps = info.get("capabilities")
+        if isinstance(caps, dict):
+            caps["machineTokens"] = self.machines is not None and signed_in
+        return info
+
     def _machine(self, token: str) -> tuple[Principal, tuple[str, str]]:
         if self.machines is None:
             raise AuthError("This platform keeps no machine tokens")
@@ -361,7 +369,7 @@ class PlatformApp:
         if name == "login":
             body = request.json()
             info, headers = self.gate.login(request, body)
-            return self._json(200, info, headers)
+            return self._json(200, self._machine_caps(info, signed_in=True), headers)
         machine: tuple[str, str] | None = None
         principal: Principal | None
         bearer = request.header("Authorization") or ""
@@ -376,10 +384,7 @@ class PlatformApp:
         svc = self.service
         if name == "session":
             info = self.gate.session(request, principal)
-            caps = info.get("capabilities")
-            if isinstance(caps, dict):
-                caps["machineTokens"] = self.machines is not None and principal is not None
-            return self._json(200, info)
+            return self._json(200, self._machine_caps(info, signed_in=principal is not None))
         if name in ("machines", "machine_add", "machine_revoke", "machine_event"):
             return self._machines_route(name, request, principal, machine, args)
         if name == "logout":
