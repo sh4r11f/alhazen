@@ -25,7 +25,7 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.5.0 - 2026-10-19
 
 - **Dashboard: Shut down.** A Shut down button at the right of the top bar stops the
   server (`POST /api/shutdown`, token required) after an in-place confirmation, for a
