@@ -201,6 +201,15 @@ const RigEditor = (() => {
     return 'other';
   }
 
+  /** How many steps of a path its heading already says: one for Monitor
+   *  (monitor.width_px), two for Eye tracker (devices.eyetracker.host_ip). */
+  function sectionDepth(path) {
+    const section = sectionOf(path);
+    if (['eyetracker', 'reward', 'sync', 'devices'].includes(section)) return Math.min(2, path.length - 1);
+    if (section === 'data' || section === 'other') return 0;
+    return 1;
+  }
+
   /** Each leaf setting of `values` as {path, value}: sections are walked, a
    *  list or an empty section is a value. */
   function leaves(values, prefix = []) {
@@ -253,7 +262,10 @@ const RigEditor = (() => {
       const id = `rig-${number++}`;
       const lab = node('label', '', path.at(-1).replaceAll('_', ' '));
       lab.htmlFor = id;
-      if (path.length > 1) lab.append(node('small', '', path.slice(0, -1).join(' / ')));
+      // The groups below the heading's own: none for monitor.width_px under
+      // Monitor, "calibration_target" for one of the tracker's nested settings.
+      const group = path.slice(sectionDepth(path), -1);
+      if (group.length) lab.append(node('small', '', group.join(' / ')));
       const control = controlFor(path, value, id, {node, schema, rig, disabled, onChange});
       const cell = node('div', 'rig-value');
       cell.append(control);
@@ -391,7 +403,12 @@ const RigEditor = (() => {
       : 'No event goes out on a line.';
     head.append(node('p', 'rig-events-summary', summary));
     host.append(head);
-    if (rig.source?.label) host.append(node('p', 'help rig-events-source', `Started ${rig.source.label}.`));
+    if (rig.source?.label) {
+      const label = rig.source.kind === 'none' || rig.source.edited
+        ? rig.source.label.charAt(0).toUpperCase() + rig.source.label.slice(1)
+        : `Started ${rig.source.label}`;
+      host.append(node('p', 'help rig-events-source', `${label}.`));
+    }
     for (const note of rig.dropped || []) host.append(node('p', 'help rig-events-dropped', `Left out: ${note}.`));
     if (hasSync || hasDiode) {
       const lines = suggestedLines(values, rows);
@@ -465,14 +482,22 @@ const RigEditor = (() => {
         const wrap = node('label', 'rig-inline-field');
         wrap.append(node('span', '', label));
         const input = node('input');
-        input.type = numeric ? 'number' : 'text';
-        if (numeric) input.step = 'any';
+        // Text, so the placeholder can say what the default is; a number is
+        // still stored as a number.
+        input.type = 'text';
+        if (numeric) input.inputMode = 'decimal';
         const found = get(values, path);
         input.value = found.found && found.value != null ? found.value : '';
         input.placeholder = placeholder;
         input.disabled = disabled;
         input.addEventListener('change', () => {
           const text = input.value.trim();
+          input.setCustomValidity?.('');
+          if (numeric && text && !Number.isFinite(Number(text))) {
+            input.setCustomValidity?.('Enter a number of degrees');
+            input.reportValidity?.();
+            return;
+          }
           if (!text) remove(rig.current, path);
           else set(rig.current, path, numeric ? Number(text) : text);
           onChange();
@@ -480,8 +505,8 @@ const RigEditor = (() => {
         wrap.append(input);
         return wrap;
       };
-      if (tracker.backend === 'eyelink') extra.append(field('EDF file name', EDF, 'alhazen.EDF', false));
-      extra.append(field('Calibration limit (deg)', ACCURACY, '1.0', true));
+      if (tracker.backend === 'eyelink') extra.append(field('EDF file name', EDF, 'alhazen.EDF (default)', false));
+      extra.append(field('Calibration limit (deg)', ACCURACY, '1.0 (default)', true));
       host.append(extra);
     }
   }
@@ -524,7 +549,8 @@ const RigEditor = (() => {
       }
       from.append(group);
     }
-    const initial = status.suggested || templates[0]?.id || '';
+    const initial = status.suggested
+      || templates.find((t) => t.kind === 'experiment')?.id || templates[0]?.id || '';
     from.value = initial;
     const name = node('input');
     name.id = 'rig-setup-name';

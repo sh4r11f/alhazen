@@ -94,7 +94,7 @@
 .rig-event-name {
   font-family: var(--mono);
   font-size: 13px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .rig-event-table input:not([type=checkbox]) {
@@ -143,6 +143,12 @@
   font-size: 13px;
   font-weight: 600;
   color: var(--muted);
+}
+
+.rig-inline-field input::placeholder,
+.rig-event-table input::placeholder {
+  color: var(--muted);
+  font-family: inherit;
 }
 
 .rig-inline-field input {
