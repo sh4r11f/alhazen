@@ -148,7 +148,7 @@ function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHoo
     viewer: session.viewer || null,
     // A visitor of a public catalogue reads only: every change needs an account (the server
     // refuses them too; these flags keep the page from offering them).
-    capabilities: { ...(session.capabilities || {}), ...(visitor ? { fork: false, publish: false, uploadRevision: false, downloadRevision: false } : {}), changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, themeToggle: true },
+    capabilities: { ...(session.capabilities || {}), ...(visitor ? { fork: false, publish: false, uploadRevision: false, downloadRevision: false, machineTokens: false } : {}), changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, themeToggle: true },
     art: { url: transport.url('api/art/'), encodePath: (p) => String(p).split('/').map(enc).join('/'), error: null },
     fontStylesheet: null,
     inlineStyles: false,
@@ -166,6 +166,12 @@ function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHoo
     }, cb, onError),
     subscribeForks: (cb, onError) => (!visitor ? poller.subscribe(async () => (await request('GET', 'api/forks')).forks || {}, cb, onError) : (cb({}), () => undefined)),
     subscribeMachines: () => undefined,
+    // Machine tokens (design.md section 8a): the signed-in person's rigs and what they reported.
+    subscribeMachineTokens: (cb, onError) => (!visitor && (session.capabilities || {}).machineTokens
+      ? poller.subscribe(() => request('GET', 'api/machines'), cb, onError) : (cb(null), () => undefined)),
+    async createMachineToken(name) { const res = await request('POST', 'api/machines', { json: { name } }); await poller.refresh(); return res; },
+    async revokeMachineToken(id) { await request('DELETE', 'api/machines/' + enc(id)); await poller.refresh(); },
+    platformOrigin: platformBase().toString().replace(/\/$/, ''),
     subscribeDocs: (listing, cb, onError) => poller.subscribe(() => request('GET', 'api/catalogue/' + enc(listing.uid) + '/' + enc(listing.exp) + '/docs'), cb, onError),
     subscribeForkDocs: (fork, cb, onError) => poller.subscribe(async () => {
       let res;

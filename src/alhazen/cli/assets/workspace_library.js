@@ -18,12 +18,22 @@
  *
  * A registered copy is an ordinary experiment in the sidebar; the library
  * only adds what is not here yet. Nothing is downloaded without a click.
+ *
+ * The page keeps asking while no library is connected, so a connection made
+ * while it is open (alhazen library connect, the form below, or Mana's kit
+ * writing library.json) shows up without a reload; the server reads the list
+ * in the background the first time it sees a connection and says so
+ * (`refreshing`), and the page asks often until that read is done. Without a
+ * connection, the Experiments page offers the form: the platform's address
+ * and a machine token from its Machines page (POST /api/library/connect).
  */
 'use strict';
 
 (function () {
   const POLL_BUSY_MS = 1500;
   const POLL_IDLE_MS = 20000;
+  // No library yet: ask now and then whether one was connected meanwhile.
+  const POLL_UNCONNECTED_MS = 5000;
   const STAGE_WORDS = {
     checking: 'Checking this machine',
     fetching: 'Downloading the files',
@@ -39,6 +49,9 @@
   const asked = new Set();      // copies whose download this tab started
   const kept = new Set();       // conflicts the reader chose to leave as they are
   let refreshing = false;
+  let connectOpen = false;      // the connection form is shown
+  let connecting = false;
+  let connectError = '';
 
   function $(id) { return document.getElementById(id); }
 
@@ -67,6 +80,21 @@
 
   function sessions(n) { return `${n} saved session${n === 1 ? '' : 's'}`; }
 
+  /** How long until the page asks again (ms), from the last answer. */
+  function nextPoll(answer) {
+    if (!answer || !answer.configured) return POLL_UNCONNECTED_MS;
+    const busy = answer.refreshing || answer.items.some((x) => x.job && x.job.status === 'running');
+    return busy ? POLL_BUSY_MS : POLL_IDLE_MS;
+  }
+
+  /** The list just arrived (a background read finished, a connection
+   * appeared): copies on disk may have been registered meanwhile. */
+  function arrived(before, after) {
+    if (!after || !after.configured) return false;
+    if (!before || !before.configured) return !after.refreshing && after.fetched != null;
+    return !!before.refreshing && !after.refreshing;
+  }
+
   async function load() {
     data = await h.api('/api/library');
     draw();
@@ -93,18 +121,18 @@
 
   function schedule() {
     clearTimeout(timer);
-    if (!data || !data.configured) return;
-    const busy = data.items.some((x) => x.job && x.job.status === 'running');
     timer = setTimeout(() => {
-      const before = new Set(data.items.filter((x) => x.job && x.job.status === 'running').map((x) => x.id));
+      const previous = data;
+      const before = new Set((data && data.items || []).filter((x) => x.job && x.job.status === 'running').map((x) => x.id));
       h.api('/api/library').then((next) => {
         data = next;
         const finished = data.items.filter((x) => before.has(x.id) && x.job && x.job.status !== 'running');
         draw();
         schedule();
+        if (arrived(previous, data)) h.refresh();
         if (finished.length) whenFinished(finished);
       }).catch((e) => { h.error(e.message); schedule(); });
-    }, busy ? POLL_BUSY_MS : POLL_IDLE_MS);
+    }, nextPoll(data));
   }
 
   /* A download this tab asked for that finished: show the new experiment's
@@ -132,6 +160,82 @@
     data = await h.api('/api/library');
     draw();
     schedule();
+  }
+
+  async function connect(form) {
+    const url = form.querySelector('[name="url"]').value.trim();
+    const token = form.querySelector('[name="token"]').value.trim();
+    const label = form.querySelector('[name="label"]').value.trim();
+    if (!url) { connectError = 'Give the platform’s address.'; draw(); return; }
+    connecting = true;
+    connectError = '';
+    draw();
+    try {
+      data = await h.api('/api/library/connect', {url, token, label});
+      connectOpen = false;
+      formEl = null;
+      h.refresh();
+    } catch (e) {
+      connectError = e.message;
+    } finally {
+      connecting = false;
+    }
+    signature = '';
+    draw();
+    schedule();
+  }
+
+  /* The connection form: the platform's address and a machine token. One
+   * element while it is open, so a redraw (a poll, a download's progress)
+   * never clears what is being typed; only its message and button change. */
+  let formEl = null;
+  function connectForm() {
+    if (!formEl) formEl = buildForm();
+    const message = formEl.querySelector('.library-connect-message');
+    message.textContent = connectError;
+    message.hidden = !connectError;
+    const go = formEl.querySelector('button[type="submit"]');
+    go.textContent = connecting ? 'Connecting…' : 'Connect';
+    go.disabled = connecting;
+    return formEl;
+  }
+
+  function closeForm() { connectOpen = false; connectError = ''; formEl = null; draw(); }
+
+  function buildForm() {
+    const form = h.node('form', 'library-connect');
+    form.noValidate = true;
+    const field = (name, label, type, hint, placeholder) => {
+      const wrap = h.node('label', 'library-field');
+      const input = h.node('input', '');
+      input.name = name;
+      input.type = type;
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      if (placeholder) input.placeholder = placeholder;
+      wrap.append(h.node('span', 'library-field-label', label), input);
+      if (hint) wrap.append(h.node('span', 'library-field-hint', hint));
+      return wrap;
+    };
+    form.append(
+      field('url', 'Platform address', 'url', '', 'https://platform.example.org'),
+      field('token', 'Machine token', 'password', 'Make one on the platform’s Machines page. A local platform’s link with #token= needs none.', ''),
+      field('label', 'Name on this page', 'text', '', 'Library'),
+    );
+    const message = h.node('p', 'library-error library-connect-message', '');
+    message.setAttribute('role', 'alert');
+    message.hidden = true;
+    form.append(message);
+    const actions = h.node('div', 'library-connect-actions');
+    const go = h.node('button', 'primary', 'Connect');
+    go.type = 'submit';
+    const cancel = h.node('button', '', 'Cancel');
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => closeForm());
+    actions.append(go, cancel);
+    form.append(actions);
+    form.addEventListener('submit', (e) => { e.preventDefault(); connect(form); });
+    return form;
   }
 
   /* ---------------------------------------------------------------- sidebar */
@@ -260,21 +364,50 @@
     box.querySelector('button').focus();
   }
 
+  function drawUnconnected(home) {
+    const head = h.node('div', 'library-head');
+    const words = h.node('div', 'library-head-text');
+    words.append(
+      h.node('h2', '', 'Library'),
+      h.node('p', 'library-source', 'Connect this dashboard to your library on an Experiment Platform to list your copies here and download one when you run it.'),
+    );
+    head.append(words);
+    if (!connectOpen) {
+      const open = h.node('button', '', 'Connect a library');
+      open.type = 'button';
+      open.addEventListener('click', () => {
+        connectOpen = true;
+        draw();
+        home.querySelector('input[name="url"]')?.focus();
+      });
+      head.append(open);
+    }
+    home.replaceChildren(head, ...(connectOpen ? [connectForm()] : []));
+  }
+
   function drawHome() {
     const home = $('library-home');
     if (!home) return;
-    if (!data || !data.configured) { home.hidden = true; home.replaceChildren(); return; }
+    if (!data) { home.hidden = true; home.replaceChildren(); return; }
     home.hidden = false;
+    if (!data.configured) { drawUnconnected(home); return; }
     const head = h.node('div', 'library-head');
     const words = h.node('div', 'library-head-text');
     words.append(h.node('h2', '', 'Library'));
     if (data.source) words.append(h.node('p', 'library-source', `Your copies on ${data.source.label}. Downloads go to ${data.source.copies}.`));
-    const again = h.node('button', '', refreshing ? 'Refreshing…' : 'Refresh');
+    const busy = refreshing || data.refreshing;
+    const again = h.node('button', '', busy ? 'Refreshing…' : 'Refresh');
     again.type = 'button';
-    again.disabled = refreshing;
+    again.disabled = busy;
     again.addEventListener('click', () => refresh());
-    head.append(words, again);
+    const tools = h.node('div', 'library-head-actions');
+    const other = h.node('button', 'quiet', connectOpen ? 'Close' : 'Connect another');
+    other.type = 'button';
+    other.addEventListener('click', () => { if (connectOpen) closeForm(); else { connectOpen = true; draw(); } });
+    tools.append(other, again);
+    head.append(words, tools);
     const parts = [head];
+    if (connectOpen) parts.push(connectForm());
     if (data.error) parts.push(h.node('p', 'library-error', data.error));
     if (!data.items.length && !data.error) parts.push(h.node('p', 'library-empty', data.fetched ? 'Your library is empty. Add experiments to it on the platform.' : 'Loading the library…'));
     if (data.items.length) {
@@ -286,27 +419,40 @@
   }
 
   function draw() {
-    const next = JSON.stringify([data, [...kept], refreshing]);
+    const next = JSON.stringify([data, [...kept], refreshing, connectOpen, connecting, connectError]);
     if (next === signature) return;
     // Keep the reader's place: a redraw replaces the buttons.
     const focused = document.activeElement?.closest?.('[data-copy]')?.dataset.copy;
+    // A field of the connection form keeps its focus and caret across a redraw.
+    const typing = formEl && formEl.contains(document.activeElement) ? document.activeElement : null;
+    const caret = typing && typeof typing.selectionStart === 'number' ? [typing.selectionStart, typing.selectionEnd] : null;
     signature = next;
     drawNav();
     drawHome();
     if (focused) document.querySelector(`#library-home [data-copy="${CSS.escape(focused)}"] button`)?.focus({preventScroll: true});
+    if (typing && document.activeElement !== typing) {
+      typing.focus({preventScroll: true});
+      if (caret) { try { typing.setSelectionRange(...caret); } catch (e) { /* not a text field */ } }
+    }
   }
 
   window.WorkspaceLibrary = {
     /** Begin: read the library, ask the platform once, keep both places drawn. */
     start(helpers) {
       h = helpers;
-      load().then(() => { if (data && data.configured) refresh(); }).catch((e) => h.error(e.message));
+      // A connection read before (the server keeps its list) is asked again
+      // once; a new one the server is already reading in the background.
+      load().then(() => { if (data && data.configured && !data.refreshing) refresh(); }).catch((e) => { h.error(e.message); schedule(); });
     },
     /** workspace.js redrew the sidebar or the Experiments page: draw ours again. */
     redraw() { signature = ''; if (h && data) draw(); },
+    /** The connected library's name, or null (the Shut down panel says it is told). */
+    connected() { return data && data.configured && data.source ? data.source.label : null; },
     /* For tests. */
     _stateOf: stateOf,
     _actionOf: actionOf,
+    _nextPoll: nextPoll,
+    _arrived: arrived,
   };
   // workspace.js ran first (deferred scripts run in order): start with its helpers.
   if (typeof pageHelpers === 'function') window.WorkspaceLibrary.start(pageHelpers());

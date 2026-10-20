@@ -3212,9 +3212,11 @@ function setUpShutdown() {
   };
   const describe = () => {
     const running = Boolean(state?.active);
+    const library = window.WorkspaceLibrary?.connected?.();
     $('shutdown-detail').textContent = running
       ? 'A session is running. Stop it on its Run page first; shutting down never ends a session.'
-      : 'The server stops and this page stops working. Experiments, data and saved sessions are not touched.';
+      : 'The server stops and this page stops working. Experiments, data and saved sessions are not touched.'
+        + (library ? ` ${library} is told that this dashboard closed and which sessions it ran.` : '');
     confirmButton.disabled = running;
   };
   button.addEventListener('click', () => {

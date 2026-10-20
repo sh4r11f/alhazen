@@ -799,4 +799,12 @@ html,body{margin:0;padding:0;background:#fbf9f5}
 .eh-signin-card .field input{font-size:15px}
 .eh-signin-card .btn{width:100%;margin-top:22px}
 .eh-signin-error{margin:14px 0 0;padding:10px 12px;border-radius:8px;background:var(--bad-bg,#fbeaea);color:var(--bad-ink,#9b1c1c);font-size:13.5px}
+.eh-token-form h3,.eh-token-made h3{margin-top:0}
+.eh-token-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px}
+.eh-token-row .field{margin:0}
+.eh-token-made p{margin:0}
+.eh-token-made .eh-cmd{margin:12px 0 0}
+.eh-machine .eh-actions{align-items:center;gap:8px;flex-wrap:wrap}
+.btn.eh-revoke{background:var(--bad-ink,#9b1c1c);border-color:var(--bad-ink,#9b1c1c)}
+.eh-event-sessions{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:13.5px;line-height:1.55}
 @container (max-width: 560px){.eh-host-tools{margin-left:auto}.eh-viewer{display:none}}

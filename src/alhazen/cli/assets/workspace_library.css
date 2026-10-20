@@ -122,6 +122,27 @@
 .library-question-detail { margin: 6px 0 12px; color: var(--muted); font-size: 14px; }
 .library-question-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
+/* The connection form (no library yet, or Connect another). */
+.library-head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.library-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 560px;
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.library-field { display: flex; flex-direction: column; gap: 6px; }
+.library-field-label { font-size: 14px; font-weight: 700; color: var(--ink); }
+.library-field input { width: 100%; min-height: 40px; box-sizing: border-box; }
+.library-field-hint { font-size: 13.5px; color: var(--muted); }
+.library-connect .library-error { margin: 0; }
+.library-connect .library-error[hidden] { display: none; }
+.library-connect-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
 @media (max-width: 640px) {
   .library-row { grid-template-columns: minmax(0, 1fr); }
   .library-side { justify-content: space-between; }

@@ -6,7 +6,8 @@ handed to the browser in the URL fragment (never sent over the network, never lo
 every API request must carry it in ``X-Alhazen-Token``; the ``Host`` header must be the
 loopback address and port the server bound (so a web page cannot reach it by DNS
 rebinding), and a cross-site ``Origin`` is refused. There are no accounts: the person
-who started it is the only user, and nothing leaves the machine.
+who started it is the only user, and nothing leaves the machine. A rig's dashboard on this
+machine can also reach it with a machine token made on its Machines page (machines.py).
 
 It needs only the standard library: a rig or laptop with plain alhazen installed can
 browse, import, fork and change experiments offline.
@@ -26,6 +27,8 @@ from typing import Any
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from alhazen.experiment_platform.errors import AuthError, Forbidden
+from alhazen.experiment_platform.machines import FILE as MACHINES_FILE
+from alhazen.experiment_platform.machines import Machines
 from alhazen.experiment_platform.service import PlatformService, Principal
 from alhazen.experiment_platform.store import FileStore
 from alhazen.experiment_platform.webapp import PlatformApp, Request, capabilities
@@ -94,6 +97,9 @@ class LocalGate:
     def logout(self, request: Request) -> list[tuple[str, str]]:
         return []
 
+    def principal_for(self, uid: str) -> Principal | None:
+        return self.principal if uid == LOCAL_UID else None
+
 
 class _QuietHandler(WSGIRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
@@ -111,7 +117,9 @@ class LocalPlatform:
         self.token = secrets.token_urlsafe(32)
         self.service = PlatformService(store, public_catalogue=False)
         self._gate = LocalGate(0, self.token, name or default_name())
-        app = PlatformApp(self.service, self._gate)
+        # Machine tokens live in the store, so a rig stays connected across launches (the
+        # address changes with the port unless --port fixes it).
+        app = PlatformApp(self.service, self._gate, machines=Machines(store.root / MACHINES_FILE))
         self._server = make_server(
             "127.0.0.1", port, app, server_class=_ThreadingServer, handler_class=_QuietHandler
         )

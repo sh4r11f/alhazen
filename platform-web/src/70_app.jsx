@@ -23,12 +23,19 @@ function PlatformApp({ host }) {
   const [fileView, setFileView] = React.useState(null);
   const [draft, setDraft] = React.useState('');
   const [upload, setUpload] = React.useState({ file: null, message: '' });
+  // Machine tokens (standalone hosts): {machines, events} from /api/machines, and the token just
+  // made (shown once, never stored).
+  const [machineTokens, setMachineTokens] = React.useState(undefined);
+  const [madeToken, setMadeToken] = React.useState(null);
+  const [machineName, setMachineName] = React.useState('');
+  const [revoking, setRevoking] = React.useState('');
 
   React.useEffect(() => { const on = () => setRoute(readRoute()); window.addEventListener('popstate', on); return () => window.removeEventListener('popstate', on); }, []);
   React.useEffect(() => host.subscribeListings((v) => setPublished(v || {})), [host.key]);
   React.useEffect(() => host.subscribeAssets((v) => setAssets(v || {})), [host.key]);
   React.useEffect(() => host.subscribeForks((v) => setForks(v || {}), () => setForks({})), [host.key]);
   React.useEffect(() => { if (!caps.machines) return; return host.subscribeMachines((v) => setTermData(v), () => setTermData(null)); }, []);
+  React.useEffect(() => { if (!caps.machineTokens || !host.subscribeMachineTokens) return; return host.subscribeMachineTokens((v) => setMachineTokens(v || { machines: [], events: [] }), () => setMachineTokens(null)); }, [host.key]);
 
   const go = (r, replace) => { const next = { v: r.v || 'home', id: r.id || '', tab: r.tab || '', task:r.task || '', set:r.set || '' }; writeRoute(next, replace); setRoute(next); };
 
@@ -551,7 +558,7 @@ function PlatformApp({ host }) {
             <div className="panel"><h3>Current revision</h3>
               <dl className="kv"><dt>Saved</dt><dd>{revs[0] ? ago(revs[0].at) : '—'}</dd><dt>Message</dt><dd>{revs[0] ? revs[0].message : 'Not built yet'}</dd>{head ? <><dt>Revision</dt><dd className="mono">{head.id}</dd></> : null}<dt>Alhazen</dt><dd>{f.alhazen || '—'}</dd></dl></div>
             {caps.runOnMachines ? <div className="panel"><h3>Last run</h3>
-              {lastRun ? <dl className="kv"><dt>Status</dt><dd>{statusChip(lastRun.status)}</dd><dt>Started</dt><dd>{ago(lastRun.startedAt)}</dd>{lastRun.dir ? <><dt>Folder</dt><dd className="mono">{lastRun.dir}</dd></> : null}</dl> : <p>Not run yet. Run copies this revision to your rig and opens the alhazen dashboard there.</p>}</div>
+              {lastRun ? <dl className="kv"><dt>Status</dt><dd>{statusChip(lastRun.status)}</dd><dt>Started</dt><dd>{ago(lastRun.startedAt)}</dd>{lastRun.dir ? <><dt>Folder</dt><dd className="mono">{lastRun.dir}</dd></> : null}{lastRun.closedAt ? <><dt>Dashboard</dt><dd>Closed {ago(lastRun.closedAt)}{typeof lastRun.sessionsRecorded === 'number' ? ' · ' + lastRun.sessionsRecorded + ' session' + (lastRun.sessionsRecorded === 1 ? '' : 's') : ''}</dd></> : null}</dl> : <p>Not run yet. Run copies this revision to your rig and opens the alhazen dashboard there.</p>}</div>
               : <div className="panel"><h3>Running it</h3><p>Experiments run on your rig, not here. Download this revision, unpack it there and run the two commands under Run.</p></div>}
           </div>
       {caps.changeWithMana ? <div className="eh-actions"><button className="btn btn-line" disabled={!head} onClick={() => nav('changes')}>Change with Mana</button><button className="btn btn-line" onClick={() => nav('run')}>Runs</button></div>
@@ -590,7 +597,9 @@ function PlatformApp({ host }) {
             <p>Mana copies this revision to <span className="cmd">~/alhazen-experiments/{slug(f.title)}</span> on the rig, builds its Python environment with uv from the experiment's lock file (PsychoPy included), and starts the alhazen dashboard there, where you choose the rig, subject and task and run sessions. Your terminal asks you before each step that changes the machine. Data stays on the rig.</p>
             <div className="eh-actions" style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!head || !!busy} onClick={() => setDialog({ kind: 'run', f, machine: '' })}>Run on my machine</button></div></div>
           {runs.length ? <div className="list">{runs.map(jobRow)}</div> : null}
-          </> : <div className="panel eh-run-steps"><h3>Run it on a rig</h3>
+          </> : <>{caps.machineTokens ? <div className="panel" style={{ marginBottom: 20 }}><h3>From the rig's dashboard</h3>
+            <p>Connect the rig's alhazen dashboard to your library once: make a token for it under <button className="eh-inline-link" onClick={() => go({ v: 'machines' })}>Machines</button> and run the command it shows on the rig. The dashboard then lists {f.title} with your other copies, downloads it when you run it, builds its environment, and tells this platform when it closes.</p></div> : null}
+          <div className="panel eh-run-steps"><h3>{caps.machineTokens ? 'Or by hand' : 'Run it on a rig'}</h3>
             <p>The platform does not run experiments. On the rig (with <a href="https://docs.astral.sh/uv/" target="_blank" rel="noreferrer">uv</a> installed):</p>
             <ol className="eh-steps-list">
               <li><button className="eh-inline-link" disabled={!head} onClick={() => downloadRevision(f)}>Download this revision (.zip)</button> and unpack it. It unpacks into a folder named <span className="cmd">{f.id}</span>.</li>
@@ -599,7 +608,7 @@ function PlatformApp({ host }) {
             </ol>
             <p>Session data stays on the rig. To change the experiment, edit the unpacked folder and upload it under Changes.</p>
             <div className="eh-actions" style={{ marginTop: 12 }}><button className="btn btn-quiet btn-small" onClick={async () => { const r = await host.copyText('cd ' + f.id + '\nuv sync --locked --extra psychopy\nuv run alhazen dashboard --project .'); setFlash({ kind: r === 'failed' ? 'bad' : 'ok', text: r === 'failed' ? 'Could not copy.' : 'Copied the commands.' }); }}>Copy the commands</button></div>
-          </div>}
+          </div></>}
     </> : null;
     return <EHDocumentationBoundary key={f.id + ':' + (d ? (d.metadata && d.metadata.updatedAt) || d.__loadError || 'ready' : 'loading')}><EHExperimentPage L={L} d={d} route={route} art={art} actions={actions} renderTabs={tabs} renderFiles={(p) => (head ? filesTab(p) : <p className="eh-muted">No files yet: Mana is still building this experiment.</p>)} renderReplication={replication} go={go} onFile={onFile}
       nav={nav} crumb={crumb} sheetHead={sheetHead} extraTabs={[['changes', 'Changes'], ['run', 'Run'], ['files', 'Files']]} renderExtra={renderExtra} overviewExtra={overviewExtra} scopeNote={scopeNote} versionsView={versionsView} /></EHDocumentationBoundary>;
@@ -652,7 +661,75 @@ function PlatformApp({ host }) {
     return <div className="eh-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}><div className="eh-dialog" role="dialog" aria-modal="true">{body}</div></div>;
   }
 
-  const view = route.v === 'browse' ? Browse() : route.v === 'exp' ? Exp() : route.v === 'mine' ? Mine() : route.v === 'machines' && caps.machines ? Machines() : route.v === 'fork' ? Fork() : Home();
+  // ------------------------------------------------------------ Machines (standalone hosts)
+  // A machine token lets one rig's alhazen dashboard read this person's library and say when it
+  // closes (design.md section 8a). Shown once when made; revoking it cuts that rig off.
+  function MachineTokens() {
+    const data = machineTokens;
+    const origin = host.platformOrigin || '';
+    const command = madeToken ? 'alhazen library connect ' + origin + ' --token ' + madeToken.token + (madeToken.machine.name ? ' --machine "' + madeToken.machine.name.replace(/"/g, '') + '"' : '') : '';
+    const make = async (e) => {
+      e.preventDefault();
+      const name = machineName.trim(); if (!name) return;
+      setBusy('Making a token');
+      try { const res = await host.createMachineToken(name); setMadeToken(res); setMachineName(''); }
+      catch (err) { setFlash({ kind: 'bad', text: 'Could not make a token: ' + (err.message || err) }); }
+      finally { setBusy(''); }
+    };
+    const revoke = async (m) => {
+      setBusy('Revoking');
+      try { await host.revokeMachineToken(m.id); setRevoking(''); setFlash({ kind: 'ok', text: m.name + ' can no longer read your library.' }); }
+      catch (err) { setFlash({ kind: 'bad', text: 'Could not revoke: ' + (err.message || err) }); }
+      finally { setBusy(''); }
+    };
+    const copy = async (text, what) => { const r = await host.copyText(text); setFlash({ kind: r === 'failed' ? 'bad' : 'ok', text: r === 'failed' ? 'Could not copy.' : 'Copied the ' + what + '.' }); };
+    const sessionsLine = (ev) => { const n = (ev.sessions || []).length; return n ? n + ' session' + (n === 1 ? '' : 's') : 'no sessions'; };
+    return (
+      <>
+        <div className="eh-sechead" style={{ marginBottom: 6 }}><h1 style={{ fontSize: 34, fontWeight: 800 }}>Machines</h1></div>
+        <p className="eh-muted" style={{ margin: '0 0 24px', maxWidth: 720 }}>A machine token lets the alhazen dashboard on one rig list your library, download a copy when you run it, and tell this platform when it closes. Make one for each machine; revoke it when the machine is no longer yours to use.</p>
+        <form className="panel eh-token-form" style={{ marginBottom: 20 }} onSubmit={make}>
+          <h3>Connect a machine</h3>
+          <div className="eh-token-row">
+            <div className="field" style={{ flex: 1, minWidth: 220 }}><label htmlFor="eh-machine-name">Machine name</label><input id="eh-machine-name" value={machineName} maxLength={60} placeholder="Booth 2 rig" onChange={(e) => setMachineName(e.target.value)} /></div>
+            <button className="btn btn-primary" type="submit" disabled={!machineName.trim() || !!busy}>Make a token</button>
+          </div>
+        </form>
+        {madeToken ? <div className="panel eh-token-made" style={{ marginBottom: 20 }} role="status">
+          <h3>Token for {madeToken.machine.name}</h3>
+          <p>Copy it now: it is not shown again. On that machine, in the experiment's environment (or any alhazen 3.5 or later), run:</p>
+          <pre className="eh-cmd">{command}</pre>
+          <div className="eh-actions" style={{ marginTop: 12 }}>
+            <button className="btn btn-line btn-small" onClick={() => copy(command, 'command')}>Copy the command</button>
+            <button className="btn btn-quiet btn-small" onClick={() => copy(madeToken.token, 'token')}>Copy the token only</button>
+            <button className="btn btn-quiet btn-small" onClick={() => setMadeToken(null)}>Done</button>
+          </div>
+          <p className="eh-muted" style={{ marginTop: 12 }}>Or paste the address and the token into the Library section of the dashboard's Experiments page.</p>
+        </div> : null}
+        <h2 style={{ fontSize: 18, fontWeight: 800, margin: '8px 0 12px' }}>Connected machines</h2>
+        {data === undefined ? <p className="eh-muted">Loading…</p> : data === null ? <p className="eh-muted">The machines could not be read.</p>
+          : data.machines.length ? <div className="list" style={{ marginBottom: 28 }}>{data.machines.map((m) => (
+            <div key={m.id} className="row eh-machine">
+              <div className="row-main"><div className="row-title">{m.name}</div>
+                <div className="row-sub">{['made ' + ago(m.created), m.lastUsed ? 'last used ' + ago(m.lastUsed) : 'not used yet'].join(' · ')}</div></div>
+              {revoking === m.id ? <div className="eh-actions"><span className="eh-muted">Revoke this token?</span><button className="btn btn-line btn-small" onClick={() => setRevoking('')}>Keep</button><button className="btn btn-primary btn-small eh-revoke" disabled={!!busy} onClick={() => revoke(m)}>Revoke</button></div>
+                : <button className="btn btn-quiet btn-small" onClick={() => setRevoking(m.id)}>Revoke</button>}
+            </div>))}</div>
+          : <p className="eh-muted" style={{ marginBottom: 28 }}>No machine is connected yet.</p>}
+        <h2 style={{ fontSize: 18, fontWeight: 800, margin: '0 0 12px' }}>Recent activity</h2>
+        {data && data.events && data.events.length ? <div className="list">{data.events.map((ev) => (
+          <div key={ev.id} className="row">
+            <div className="row-main"><div className="row-title" style={{ fontWeight: 650 }}>{ev.machine || 'A machine'} closed its dashboard</div>
+              <div className="row-sub">{[ago(ev.at), sessionsLine(ev), ev.alhazen ? 'alhazen ' + ev.alhazen : ''].filter(Boolean).join(' · ')}</div>
+              {(ev.sessions || []).length ? <ul className="eh-event-sessions">{ev.sessions.map((x, i) => <li key={i}>{[x.experiment, x.task, x.status, Object.entries(x.outcomes || {}).map(([k, n]) => k + ' ' + n).join(', ')].filter(Boolean).join(' · ')}</li>)}</ul> : null}
+            </div>
+          </div>))}</div> : <p className="eh-muted">Nothing yet. A dashboard reports here when it closes.</p>}
+      </>
+    );
+  }
+
+  const machinesView = () => (caps.machines ? Machines() : caps.machineTokens ? MachineTokens() : Home());
+  const view = route.v === 'browse' ? Browse() : route.v === 'exp' ? Exp() : route.v === 'mine' ? Mine() : route.v === 'machines' ? machinesView() : route.v === 'fork' ? Fork() : Home();
   const navCur = route.v === 'exp' ? 'browse' : route.v === 'fork' ? 'mine' : route.v;
   return (
     <div className="eh w-full" data-eh-view={route.v} style={{ ...vars, colorScheme: theme === 'dark' ? 'dark' : 'light' }} onKeyDown={(e) => { if (e.key === 'Escape' && dialog) setDialog(null); }}>
@@ -664,7 +741,7 @@ function PlatformApp({ host }) {
           <span className="eh-word">Alhazen</span><span className="eh-sub">Experiment Platform</span>
         </button>
         <nav className="eh-nav" aria-label="Hub">
-          {[['home', 'Home'], ['browse', 'Browse'], ['mine', 'My experiments'], ['machines', 'My machines']].filter(([k]) => k !== 'machines' || caps.machines).map(([k, label]) => <button key={k} aria-current={navCur === k ? 'page' : undefined} onClick={() => go({ v: k })}>{label}{k === 'mine' && forkList.length ? <span className="eh-count">{forkList.length}</span> : null}{k === 'machines' && machines.sessions.length ? <span className="eh-count" title="Terminal windows open">{machines.sessions.length}</span> : null}</button>)}
+          {[['home', 'Home'], ['browse', 'Browse'], ['mine', 'My experiments'], ['machines', caps.machines ? 'My machines' : 'Machines']].filter(([k]) => k !== 'machines' || caps.machines || (caps.machineTokens && viewerUid)).map(([k, label]) => <button key={k} aria-current={navCur === k ? 'page' : undefined} onClick={() => go({ v: k })}>{label}{k === 'mine' && forkList.length ? <span className="eh-count">{forkList.length}</span> : null}{k === 'machines' && machines.sessions.length ? <span className="eh-count" title="Terminal windows open">{machines.sessions.length}</span> : null}</button>)}
         </nav>
         {caps.themeToggle || caps.signIn ? <div className="eh-host-tools">
           {caps.signIn && host.viewer ? <span className="eh-viewer">{host.viewer.name}</span> : null}

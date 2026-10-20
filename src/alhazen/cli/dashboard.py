@@ -35,7 +35,7 @@ from alhazen.cli.workspace import (
 )
 from alhazen.cli.workspace_data import DataView
 from alhazen.cli.workspace_estimate import DurationEstimator, EstimateRequest
-from alhazen.cli.workspace_library import Library
+from alhazen.cli.workspace_library import Library, session_summaries
 from alhazen.cli.workspace_manage import Management
 from alhazen.cli.workspace_upload import Uploads
 from alhazen.errors import AlhazenError
@@ -243,6 +243,10 @@ class DashboardServer(ThreadingHTTPServer):
         # Set once the page asked to shut down (request_shutdown); a launch
         # arriving after that is refused rather than started and then stopped.
         self.shutting_down = False
+        # When this server started, for the report it sends its library on
+        # closing (the sessions run since then), and why it closed.
+        self.started = now()
+        self.close_reason = "stopped"
         super().__init__(("127.0.0.1", port), Handler)
 
     def request_shutdown(self) -> None:
@@ -257,6 +261,7 @@ class DashboardServer(ThreadingHTTPServer):
             if self.shutting_down:
                 return
             self.shutting_down = True
+            self.close_reason = "shut down from the page"
         print("Shut down from the dashboard page.", flush=True)
         # shutdown() waits for serve_forever to return, so it cannot run on
         # this handler's thread; the short delay lets the answer go out.
@@ -498,6 +503,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.server.uploads.post(path.removeprefix("/api/upload/"), body))
             elif path == "/api/library/refresh":
                 self._json(self.server.library.refresh())
+            elif path == "/api/library/connect":
+                # The page's connection form: a platform address and a machine
+                # token (checked against the platform before it is saved).
+                if not isinstance(body.get("url"), str) or not isinstance(
+                    body.get("token", ""), str
+                ):
+                    raise ValueError("A platform address and a token are expected")
+                label = body.get("label")
+                self._json(
+                    self.server.library.connect(
+                        body["url"], body.get("token", ""), label if isinstance(label, str) else None
+                    )
+                )
+            elif path == "/api/library/disconnect":
+                self._json(self.server.library.disconnect())
             elif path == "/api/library/download":
                 if not isinstance(body.get("id"), str) or not isinstance(
                     body.get("replace", False), bool
@@ -629,10 +649,27 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
         # to stop the server, not a fault: the finally stops the active run
         # and releases the workspace lock, and a traceback here would read as
         # a crash to the person who just asked it to stop.
-        pass
+        server.close_reason = "interrupted (Ctrl+C)"
     finally:
         server.server_close()
         server.uploads.close()
-        server.library.close()
         workspace.close()
+        # After the active run (if any) has stopped, so the report lists how
+        # it ended. Bounded and never raising: a platform that cannot be
+        # reached costs the shutdown a few seconds at most.
+        _report_closed(server)
+        server.library.close()
     return 0
+
+
+def _report_closed(server: DashboardServer) -> None:
+    """Tell the connected library that this dashboard closed (workspace_library)."""
+    try:
+        sessions = session_summaries(server.workspace, server.started)
+        message = server.library.report_closed(
+            started=server.started, sessions=sessions, reason=server.close_reason
+        )
+    except Exception as exc:  # noqa: BLE001 - the shutdown goes on whatever happens here
+        message = f"The library was not told the dashboard closed: {exc}"
+    if message:
+        print(message, flush=True)

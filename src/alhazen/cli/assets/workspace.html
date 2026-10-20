@@ -141,8 +141,11 @@
            terminal. Confirmed in place; refused while a session runs
            (setUpShutdown() in workspace.js). -->
       <div class="topbar-actions">
-        <button type="button" id="shutdown" class="quiet shutdown-button"
-                aria-expanded="false" aria-controls="shutdown-confirm">Shut down</button>
+        <button type="button" id="shutdown" class="shutdown-button"
+                aria-expanded="false" aria-controls="shutdown-confirm"><svg class="shutdown-icon"
+                viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path
+                d="M8 1.75v5.5M4.4 3.9a5.25 5.25 0 1 0 7.2 0" fill="none" stroke="currentColor"
+                stroke-width="1.7" stroke-linecap="round"/></svg><span>Shut down</span></button>
         <div id="shutdown-confirm" class="shutdown-popover" role="dialog"
              aria-labelledby="shutdown-title" hidden>
           <p id="shutdown-title" class="shutdown-title">Shut down the dashboard?</p>

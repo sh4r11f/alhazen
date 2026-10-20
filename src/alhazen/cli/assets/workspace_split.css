@@ -625,15 +625,28 @@ main { padding: 0 32px; max-width: none; }
   flex: none;
 }
 
+/* Shut down: a plain bordered button with a power mark, always in the top
+ * bar's right corner, so a dashboard started in the background can be
+ * stopped without hunting for it. */
 .shutdown-button {
-  padding: 6px 10px;
-  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 650;
 }
+
+.shutdown-icon { color: var(--bad-ink); flex: none; }
 
 .shutdown-button:hover,
 .shutdown-button[aria-expanded="true"] {
-  color: var(--ink);
-  background: var(--accent-soft);
+  border-color: var(--bad-ink);
+  background: var(--surface-2);
 }
 
 .shutdown-popover {

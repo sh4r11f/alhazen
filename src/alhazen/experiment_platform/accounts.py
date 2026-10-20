@@ -202,6 +202,15 @@ class Accounts:
                     (username.strip().lower(),),
                 )
 
+    def principal(self, uid: str) -> Principal | None:
+        """The enabled user ``uid`` (for a machine token), or None."""
+        row = self._db().execute(
+            "SELECT name, disabled FROM users WHERE uid = ?", (str(uid),)
+        ).fetchone()
+        if row is None or row[1]:
+            return None
+        return Principal(str(uid), row[0])
+
     def users(self) -> list[dict[str, object]]:
         rows = self._db().execute(
             "SELECT uid, username, name, created, disabled FROM users ORDER BY username"
