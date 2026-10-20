@@ -9,6 +9,7 @@ its rig: the launcher must not redefine where real/rehearsal data goes.
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 import logging
@@ -22,6 +23,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
@@ -34,9 +36,10 @@ else:  # pragma: no cover - Python 3.10
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from alhazen.cli import machine_rig as mr
 from alhazen.cli.launch_failure import launch_failure
 from alhazen.cli.people import PeopleError, PeopleRegistry
-from alhazen.cli.workspace_schema import TASK_NAME_KEY
+from alhazen.cli.workspace_schema import EVENTS_KEY, TASK_NAME_KEY
 from alhazen.config.calibration_images import NAME_PATTERN
 from alhazen.config.experiment import experiment_stimuli, experiment_title
 from alhazen.config.loader import validate_rig
@@ -53,10 +56,12 @@ from alhazen.config.rigs import (
     MergedRig,
     RigRef,
     collecting_rigs,
+    experiment_rig_files,
     file_rig_name,
     list_rigs,
     rig_extends,
     rig_mapping,
+    shared_rig_files,
 )
 from alhazen.data.atomic import replace_atomically
 from alhazen.data.participants import check_participant
@@ -314,6 +319,14 @@ def records_demographics(project: dict[str, Any]) -> bool | None:
     if capabilities is None:
         return None
     return "subject-demographics" in capabilities
+
+
+def takes_rig_origin(project: dict[str, Any]) -> bool:
+    """Whether the project's alhazen records where a session's rig came from
+    (``--rig-origin``, the "rig-origin" capability). An older one runs the
+    session's rig file just the same; its session.json then says nothing of
+    the machine, and the workspace's run record still does."""
+    return "rig-origin" in _capabilities(project.get("capabilities"))
 
 
 def takes_live_streams(project: dict[str, Any]) -> bool:
@@ -1107,7 +1120,18 @@ class Launch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project: str
     mode: str
-    rig: str
+    # Empty (the Run page, always): this machine's rig (cli/machine_rig.py),
+    # changed for this session by ``rig_values``. A rig named here — an
+    # experiment rig's project-relative path, or ``alhazen/<name>`` — is how
+    # the workspace launched before it kept a machine rig, and still works
+    # for a client that sends one; the page no longer offers the choice.
+    rig: str = ""
+    # The session's rig settings, complete, as the Run page's Rig section
+    # left them: this machine's rig with the session's changes and its event
+    # lines. None runs the machine's rig with the event lines carried from
+    # the last session of the same experiment and task (``prefill``). Only
+    # with ``rig`` empty.
+    rig_values: dict[str, Any] | None = None
     parameters_yaml: str | None = None
     parameters: dict[str, Any] | None = None
     subject: str = ""
@@ -1247,6 +1271,11 @@ MODE_FLAGS = frozenset(
         "--no-gaze-traces",
         "--eye-camera",
         "--no-eye-camera",
+        # Sent with a session on this machine's rig, to a project whose
+        # alhazen takes it (rig-origin capability): the JSON file saying
+        # where the rig came from and what the session changed, recorded in
+        # session.json's rig.origin.
+        "--rig-origin",
     }
 )
 # The same for a standalone preview module: the flags `_script_command`
@@ -1442,8 +1471,13 @@ def _mode_command(
     training: tuple[str, str] | None = None,
     params_source: str | None = None,
     live_streams: LiveStreams | None = None,
+    rig_origin: Path | None = None,
 ) -> list[str]:
     """run.py's arguments for one of the modes: the launcher's flags, then the extras.
+
+    ``rig_origin`` is the run folder's rig-origin.json for a session on this
+    machine's rig, sent as ``--rig-origin``; None sends nothing (a rig named
+    by its file, or an alhazen that does not take the flag).
 
     ``live_streams`` is how the live monitor's gaze traces and eye camera
     start, sent as ``--[no-]gaze-traces`` and ``--[no-]eye-camera`` for a mode
@@ -1497,6 +1531,8 @@ def _mode_command(
     if task is not None:
         command += ["--task", task]
     command += ["--rig", rig]
+    if rig_origin is not None:
+        command += ["--rig-origin", str(rig_origin)]
     if training is not None:
         command += ["--ladder", training[0], "--stage", training[1]]
     # No seed typed, no --seed: the session draws its own and records it,
@@ -1611,6 +1647,104 @@ def _stimulus_preview_command(
         str(run_dir / "media"),
     ]
     return command + _extra_arguments(request.extra_args, SCRIPT_FLAGS | {"--project"})
+
+
+# The ``rig`` a run record carries for a session on this machine's rig, and
+# its ``rig_source`` (beside "experiment" and "alhazen" for a rig named by
+# an older client).
+MACHINE_SPEC = "machine"
+
+
+@dataclass
+class LaunchRig:
+    """The rig one launch runs on, resolved: what ``--rig`` is given, the
+    settings it will run with, and, for this machine's rig, what the session
+    changed and where its event lines came from.
+
+    ``source`` is "machine" for this machine's rig, else the named rig's
+    ("experiment" or "alhazen"). ``path`` is the file the child reads: the
+    session's own copy in the run folder (written by `write`), the machine's
+    file itself for Measure rig (which keeps what it measures beside it), or
+    a named rig's file. ``spec`` is what ``--rig`` gets."""
+
+    name: str
+    source: str
+    spec: str
+    path: Path
+    merged: MergedRig
+    ref: RigRef
+    machine: mr.Machine | None = None
+    changes: list[dict[str, Any]] | None = None
+    carried: dict[str, Any] | None = None
+    events_source: dict[str, Any] | None = None
+    # True when the session's copy is to be written into the run folder.
+    session_copy: bool = False
+
+    @property
+    def values(self) -> dict[str, Any]:
+        return self.merged.values
+
+    def origin(self, run_id: str) -> dict[str, Any] | None:
+        """session.json's ``rig.origin`` (``--rig-origin``): where the rig came
+        from and what this session changed; None for a named rig."""
+        if self.machine is None:
+            return None
+        found_lines, lines = mr.get_path(self.values, mr.EVENT_LINES)
+        found_diode, diode = mr.get_path(self.values, mr.PHOTODIODE_EVENTS)
+        return {
+            "kind": "machine",
+            "machine": self.machine.name,
+            "file": str(self.machine.path),
+            "sha256": self.machine.sha256,
+            "changes": self.changes or [],
+            "events": {
+                "source": self.events_source,
+                "event_lines": dict(lines) if found_lines and lines else {},
+                "photodiode_events": list(diode) if found_diode and diode else [],
+            },
+            "workspace_run": run_id,
+        }
+
+
+def _machine_real_data_refusal(mode: Mode, rig: RigConfig, launch_rig: LaunchRig) -> str | None:
+    """`real_data_refusal` for a session on this machine's rig: the same rule
+    and the same opening words, with remedies that name the machine's rig
+    rather than an experiment's files (docs/rigs.md §5, docs/workspace.md)."""
+    if not mode.drives_subject or rig.real_data:
+        return None
+    what = "records real data" if mode is Mode.RUN else "drives a real subject"
+    lines = [
+        f"{mode.value} mode {what}, and this machine's rig ({launch_rig.name}) is a development "
+        "rig: its settings say `real_data: false`. Nothing was started and nothing was written.",
+        "To try the session on this machine, use Test or Simulate; their data goes to the "
+        "rehearsal root.",
+        "If this machine is one subjects are recorded on, set `real_data: true` in this "
+        "machine's rig (an experiment's General page, This machine's rig), with a comment "
+        "saying why. A session cannot change it.",
+    ]
+    return "\n  ".join(lines)
+
+
+def _template_facts(path: Path, shared: dict[str, Path] | None) -> dict[str, Any]:
+    """What the set-up form says about a rig it offers as this machine's
+    starting point: the shared rig it extends, whether it collects real data,
+    and its screen and tracker in a few words; ``error`` when it cannot be
+    read (it is still listed, so the person sees why it cannot be chosen)."""
+    try:
+        merged = rig_mapping(path, shared=shared)
+        rig = validate_rig(merged, path)
+    except ConfigError as exc:
+        return {"extends": None, "real_data": None, "summary": None, "error": str(exc)}
+    m = rig.monitor
+    tracker = rig.devices.eyetracker.backend if rig.devices.eyetracker else "no eye tracker"
+    summary = f"{m.width_px} × {m.height_px} px · {m.refresh_rate_hz:g} Hz · {tracker}"
+    return {
+        "extends": merged.extends,
+        "real_data": rig.real_data,
+        "summary": summary,
+        "events": mr.event_names(merged.values),
+        "error": None,
+    }
 
 
 def _describe_rigs(root: Path, shared: dict[str, Path] | None) -> list[dict[str, Any]]:
@@ -1796,6 +1930,8 @@ class Workspace:
         self.projects: list[dict[str, Any]] = (
             _load_record(registry, list) if registry.exists() else []
         )
+        # This machine's rig: the one every session here runs on (machine_rig.py).
+        self.machine = mr.MachineRig(self.directory)
         self.runs: dict[str, dict[str, Any]] = {}
         for path in sorted((self.directory / "runs").glob("*/run.json")):
             run = _load_record(path, dict)
@@ -1974,6 +2110,9 @@ class Workspace:
             # page shows it under the heading. None when nothing is wrong.
             "title_error": naming.error,
             "rigs": _describe_rigs(root, shared),
+            # This machine's rig, which every session here runs on: its name,
+            # file and data_root; None before it is set up (machine_rig.py).
+            "machine_rig": self._machine_brief(),
             # Why the Rig menu offers no shared rigs, when that is because the
             # registration predates them; None otherwise.
             "rigs_note": REGISTER_AGAIN if shared is None else None,
@@ -2105,21 +2244,25 @@ class Workspace:
         run_dir: Path,
         experimenter: dict[str, Any] | None = None,
         demographics: dict[str, Any] | None = None,
+        launch_rig: LaunchRig | None = None,
     ) -> list[str]:
         """The child's argv: run.py in one of the six modes, or a standalone script.
 
         What both share — the project's interpreter, the rig checked for
         existence and validity — is settled here; the two argument lists have
-        nothing else in common and are built apart.
+        nothing else in common and are built apart. ``launch_rig`` is the rig
+        `start` resolved (`_resolve_rig`); None resolves it here.
         """
         project = self.project(request.project)
         root = Path(project["path"])
-        ref, shared = self._launch_rig(project, request.rig)
+        if launch_rig is None:
+            launch_rig = self._resolve_rig(project, request, run_dir)
+        ref, merged = launch_rig.ref, launch_rig.merged
+        shared = _shared_rigs(project)
         # Validated here, with the workspace's own loader, so a rig that
         # cannot run is refused before a run directory exists — merged over
         # the PROJECT's shared rig when it extends one, not the workspace's,
         # and read as the project's alhazen reads it (_as_the_project_reads_it).
-        merged = rig_mapping(ref.path, shared=shared)
         checked = validate_rig(
             _as_the_project_reads_it(merged, project.get("alhazen_version")), ref.path
         )
@@ -2135,9 +2278,15 @@ class Workspace:
         if request.mode == Mode.RUN.value or (
             request.mode == Mode.TRAINING.value and not request.rehearse
         ):
-            refusal = real_data_refusal(
-                Mode(request.mode), checked, ref, instead=lambda: _real_data_instead(root, shared)
-            )
+            if launch_rig.source == MACHINE_SPEC:
+                refusal = _machine_real_data_refusal(Mode(request.mode), checked, launch_rig)
+            else:
+                refusal = real_data_refusal(
+                    Mode(request.mode),
+                    checked,
+                    ref,
+                    instead=lambda: _real_data_instead(root, shared),
+                )
             if refusal is not None:
                 raise ValueError(refusal)
         self._check_registered_initials(root, request, checked)
@@ -2155,12 +2304,11 @@ class Workspace:
             launched = request.model_copy(
                 update={"headless": request.rehearse and request.headless}
             )
-            rig = ref.spec if ref.source == "alhazen" else str(ref.path)
             return base + _mode_command(
                 mode,
                 launched,
                 root,
-                rig,
+                launch_rig.spec,
                 run_dir,
                 no_browser_flag(project.get("alhazen_version")),
                 task=None,
@@ -2169,6 +2317,7 @@ class Workspace:
                 demographics=demographics,
                 training=training,
                 live_streams=self._live_streams(project, request),
+                rig_origin=self._rig_origin_path(project, launch_rig, run_dir),
             )
         if request.mode in {m.value for m in Mode}:
             # With a task chosen from the menu, `--task` is the form's too and
@@ -2183,13 +2332,13 @@ class Workspace:
             # The child resolves a shared rig by name, the way `--rig
             # alhazen/lab` typed at its terminal would, which also records in
             # its snapshot that the rig was alhazen's (sources["rig_source"]).
-            # An experiment rig goes as its file, as it always has.
-            rig = ref.spec if ref.source == "alhazen" else str(ref.path)
+            # An experiment rig goes as its file, as it always has; this
+            # machine's rig as the session's copy in the run folder.
             return base + _mode_command(
                 Mode(request.mode),
                 request,
                 root,
-                rig,
+                launch_rig.spec,
                 run_dir,
                 no_browser_flag(project.get("alhazen_version")),
                 task=task,
@@ -2199,11 +2348,12 @@ class Workspace:
                 demographics=demographics,
                 params_source=self._params_source(project, request),
                 live_streams=self._live_streams(project, request),
+                rig_origin=self._rig_origin_path(project, launch_rig, run_dir),
             )
         # A standalone script reads --rig with its own argparse and hands it
         # to load_rig, which takes a file: a shared rig goes as the file the
-        # probe recorded.
-        return base + _script_command(request, root, ref.path, run_dir)
+        # probe recorded, this machine's rig as the session's copy.
+        return base + _script_command(request, root, launch_rig.path, run_dir)
 
     def _training_launch(
         self, project: dict[str, Any], request: Launch
@@ -2463,6 +2613,391 @@ class Workspace:
             "live_streams": self._live_stream_defaults(key, spec, merged.values),
         }
 
+    # -- this machine's rig (cli/machine_rig.py) --------------------------------------
+
+    def _machine_brief(self) -> dict[str, Any] | None:
+        """This machine's rig in a line: name, file, data_root; None before it
+        is set up, or when its folder cannot be read (the pages say why from
+        /api/machine-rig)."""
+        try:
+            machine = self.machine.read()
+        except (mr.MachineRigError, ConfigError, OSError):
+            return None
+        if machine is None:
+            return None
+        return {
+            "name": machine.name,
+            "file": str(machine.path),
+            "data_root": machine.values.get("data_root"),
+        }
+
+    def machine_templates(self) -> list[dict[str, Any]]:
+        """The rigs this machine's rig can be set up from: the workspace's own
+        alhazen's shared rigs, then every registered experiment's own rigs
+        (merged over the shared rig each extends), each with a few facts."""
+        templates: list[dict[str, Any]] = []
+        try:
+            shared = shared_rig_files()
+        except ConfigError:
+            shared = {}
+        for name, path in shared.items():
+            templates.append(
+                {
+                    "id": f"{SHARED_PREFIX}{name}",
+                    "label": f"{SHARED_PREFIX}{name}",
+                    "kind": "shared",
+                    "name": name,
+                    **_template_facts(path, None),
+                }
+            )
+        for project in self.projects:
+            root = Path(project["path"])
+            if not root.is_dir():
+                continue
+            slug = experiment_title(root).slug
+            project_shared = _shared_rigs(project)
+            for name, path in experiment_rig_files(root):
+                relative = path.relative_to(root).as_posix()
+                templates.append(
+                    {
+                        "id": f"{project['id']}:{relative}",
+                        "label": f"{slug}/{name}",
+                        "kind": "experiment",
+                        "name": name,
+                        "project": project["id"],
+                        "path": relative,
+                        **_template_facts(path, project_shared),
+                    }
+                )
+        return templates
+
+    def _suggested_template(self, templates: list[dict[str, Any]]) -> str | None:
+        """The template matching the rig this workspace last launched with,
+        so a workspace from before the machine rig starts where it was."""
+        ids = {t["id"] for t in templates if not t.get("error")}
+        for run in sorted(self.runs.values(), key=lambda r: r["started"], reverse=True):
+            rig = run.get("rig") or ""
+            if run.get("rig_source") == MACHINE_SPEC or rig == MACHINE_SPEC:
+                continue
+            if rig.startswith(SHARED_PREFIX):
+                candidate = rig
+            else:
+                candidate = f"{run.get('project')}:{rig}"
+            if candidate in ids:
+                return candidate
+        return None
+
+    def machine_status(self) -> dict[str, Any]:
+        """This machine's rig for the pages: its file, settings and history,
+        or, before it is set up, the rigs it can be set up from."""
+        status = self.machine.status()
+        if status["configured"]:
+            status["reward_calibration"] = _reward_calibration_summary(Path(status["file"]))
+            return status
+        templates = self.machine_templates()
+        return {**status, "templates": templates, "suggested": self._suggested_template(templates)}
+
+    def _template_source(self, template: str) -> tuple[Path, dict[str, Path] | None, dict]:
+        """The file, the shared rigs to merge it over, and how to name it, for
+        a template id from `machine_templates`."""
+        if not isinstance(template, str) or not template:
+            raise ValueError("Choose the rig this machine starts from")
+        if template.startswith(SHARED_PREFIX):
+            name = template.removeprefix(SHARED_PREFIX)
+            files = shared_rig_files()
+            if name not in files:
+                raise ValueError(f"alhazen has no shared rig {name!r}")
+            return files[name], None, {"kind": "shared", "label": template}
+        project_id, _, relative = template.partition(":")
+        project = self.project(project_id)
+        root = Path(project["path"])
+        path = path_inside(root, relative)
+        found = {p.resolve() for _name, p in experiment_rig_files(root)}
+        if path.resolve() not in found:
+            raise ValueError(f"{relative} is not one of {project['name']}'s rig files")
+        label = f"{experiment_title(root).slug}/{file_rig_name(path)}"
+        meta = {"kind": "experiment", "label": label, "project": project["name"]}
+        return path, _shared_rigs(project), meta
+
+    def setup_machine(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Set this machine's rig up from a template (POST /api/machine-rig/setup)."""
+        if not isinstance(body, dict):
+            raise ValueError("Send the machine's name and the rig it starts from")
+        path, shared, meta = self._template_source(body.get("template"))
+        with self.lock:
+            status = self.machine.setup(body.get("name"), path, shared=shared, template=meta)
+        status["reward_calibration"] = _reward_calibration_summary(Path(status["file"]))
+        return status
+
+    def save_machine(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Save this machine's rig (POST /api/machine-rig/save): ``text`` from
+        the General page's editor, or ``values`` from the Run page's "Save to
+        this machine's rig"; ``sha256`` is the file as the page read it."""
+        if not isinstance(body, dict):
+            raise ValueError("Send the rig to save")
+        expected = body.get("sha256")
+        with self.lock:
+            if "text" in body:
+                status = self.machine.save_text(body["text"], expected, by="general page")
+            elif "values" in body:
+                status = self.machine.save_values(body["values"], expected, by="run page")
+            else:
+                raise ValueError("Send the rig's text or its settings")
+        status["reward_calibration"] = _reward_calibration_summary(Path(status["file"]))
+        return status
+
+    def check_machine(self, text: str) -> dict[str, Any]:
+        """Check edited machine-rig text without saving it."""
+        return self.machine.check_text(text)
+
+    def _events_task(self, project: dict[str, Any], request: Launch) -> str | None:
+        """The task whose events a launch's rig may name, as its run record
+        will name it: a training stage's task, the Task menu's, or None for
+        a one-task project (whose record names none) and a script."""
+        if request.mode not in {m.value for m in Mode}:
+            return None
+        if request.mode == Mode.TRAINING.value or request.stage or request.ladder:
+            return self._training_launch(project, request)[1].task
+        return self._task_for(project, request)
+
+    def _declared_events(self, project: dict[str, Any], task: str | None) -> list[str] | None:
+        """The events ``task`` declares (and the reserved ones every task
+        has), from its parameter schema read in the project's interpreter; None
+        when that alhazen does not say (one from before EVENTS_KEY) or the
+        schema cannot be read — the session itself then checks the names."""
+        declared = project_tasks(Path(project["path"]))
+        try:
+            schema = self.schema(project["id"], task if declared["tasks"] else None)
+        except ValueError:
+            return None
+        events = schema.get(EVENTS_KEY)
+        if not isinstance(events, list):
+            return None
+        return sorted(str(e) for e in events)
+
+    def _carried(
+        self, project: dict[str, Any], task: str | None, machine: mr.Machine
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """What a session of ``task`` starts with of the settings each
+        experiment adds (machine_rig.CARRIED_PATHS), and where from: the last
+        session of the same experiment and task on this machine, else the
+        experiment's own rig named like this machine, else nothing."""
+        runs = [
+            r
+            for r in self.runs.values()
+            if r.get("project") == project["id"]
+            and r.get("rig_source") == MACHINE_SPEC
+            and r.get("rig_name") == machine.name
+            and r.get("mode") in {m.value for m in Mode if m is not Mode.MEASURE}
+            and (r.get("task") or None) == (task or None)
+            and isinstance(r.get("rig_carried"), dict)
+        ]
+        if runs:
+            newest = max(runs, key=lambda r: r["started"])
+            return dict(newest["rig_carried"]), {
+                "kind": "last-session",
+                "run": newest["id"],
+                "started": newest["started"],
+                "mode": newest.get("mode"),
+                "label": f"as in the last session of this task on this machine "
+                f"({newest['started'][:10]}, {newest.get('mode')})",
+            }
+        root = Path(project["path"])
+        own = [p for name, p in experiment_rig_files(root) if name == machine.name]
+        if len(own) == 1:
+            try:
+                merged = rig_mapping(own[0], shared=_shared_rigs(project))
+            except ConfigError:
+                merged = None
+            if merged is not None:
+                carried: dict[str, Any] = {}
+                for path in mr.CARRIED_PATHS:
+                    found, value = mr.get_path(merged.values, path)
+                    if not found or value in (None, {}, []):
+                        continue
+                    in_machine, machine_value = mr.get_path(machine.values, path)
+                    if not in_machine or machine_value != value:
+                        carried[mr.dotted(path)] = value
+                if carried:
+                    relative = own[0].relative_to(root).as_posix()
+                    return carried, {
+                        "kind": "experiment-rig",
+                        "file": relative,
+                        "label": f"from this experiment's {relative} (no earlier session of "
+                        "this task on this machine)",
+                    }
+        return {}, {
+            "kind": "none",
+            "label": "no earlier session of this task on this machine, and no rig of this "
+            "machine's name in the experiment, so no event goes out on a line",
+        }
+
+    def _prefilled(
+        self,
+        project: dict[str, Any],
+        task: str | None,
+        machine: mr.Machine,
+        declared: list[str] | None,
+    ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+        """The settings a session of ``task`` starts from: this machine's rig
+        with the carried settings laid over it. Event names the task does not
+        declare are left out, and so is a setting the machine has no section
+        for; each is said in the third value."""
+        carried, source = self._carried(project, task, machine)
+        values = copy.deepcopy(machine.values)
+        dropped: list[str] = []
+        for text, value in carried.items():
+            path = tuple(text.split("."))
+            if declared is not None and path == mr.EVENT_LINES and isinstance(value, dict):
+                kept = {k: v for k, v in value.items() if k in declared}
+                dropped += [f"{k}: not an event of this task" for k in value if k not in kept]
+                value = kept
+            if declared is not None and path == mr.PHOTODIODE_EVENTS and isinstance(value, list):
+                kept_list = [e for e in value if e in declared]
+                dropped += [f"{e}: not an event of this task" for e in value if e not in kept_list]
+                value = kept_list
+            if not mr.set_path(values, path, value):
+                dropped.append(f"{text}: this machine's rig has no {'.'.join(path[:-1])}")
+        return values, source, dropped
+
+    def session_rig(self, key: str, task: str | None = None, mode: str | None = None) -> dict:
+        """What the Run page's Rig section starts from (GET /api/session-rig):
+        this machine's rig, the settings a session of ``task`` starts with,
+        the task's events and where the carried settings came from."""
+        project = self.project(key)
+        machine = self.machine.require()
+        task = task or None
+        is_mode = mode is None or mode in {m.value for m in Mode}
+        declared = self._declared_events(project, task) if is_mode else None
+        if mode == Mode.MEASURE.value:
+            values, source, dropped = copy.deepcopy(machine.values), None, []
+        else:
+            values, source, dropped = self._prefilled(project, task, machine, declared)
+        status = self.machine.status()
+        return {
+            "machine": {
+                "name": machine.name,
+                "file": str(machine.path),
+                "sha256": machine.sha256,
+                "values": machine.values,
+                "problem": status.get("problem"),
+            },
+            "values": values,
+            "events": declared,
+            "events_source": source,
+            "dropped": dropped,
+            "reward_calibration": _reward_calibration_summary(machine.path),
+            "live_streams": self._live_stream_defaults(key, MACHINE_SPEC, values),
+        }
+
+    def rig_schema(self) -> dict[str, Any]:
+        """RigConfig's JSON schema, as the workspace's alhazen has it: the Run
+        page's rig fields take their choices (enums, defaults) from it."""
+        return RigConfig.model_json_schema()
+
+    def _resolve_rig(self, project: dict[str, Any], request: Launch, run_dir: Path) -> LaunchRig:
+        """The rig this launch runs on; see LaunchRig. Every refusal comes
+        before anything is written."""
+        if request.rig:
+            if request.rig_values is not None:
+                raise ValueError(
+                    "Rig settings for a session go with this machine's rig, not with a rig "
+                    "named by its file"
+                )
+            ref, shared = self._launch_rig(project, request.rig)
+            merged = rig_mapping(ref.path, shared=shared)
+            spec = ref.spec if ref.source == "alhazen" else str(ref.path)
+            return LaunchRig(ref.name, ref.source, spec, ref.path, merged, ref)
+        machine = self.machine.require()
+        if request.mode == Mode.MEASURE.value:
+            if request.rig_values is not None:
+                session, _removed = mr.strip_events(request.rig_values)
+                if mr.rig_changes(machine.values, session):
+                    raise ValueError(
+                        "Measure rig measures this machine's rig as it is saved, and keeps what "
+                        "it measures beside it: save the changes to this machine's rig first, "
+                        "or reset them"
+                    )
+            ref = RigRef(machine.name, machine.path, "experiment")
+            merged = MergedRig(copy.deepcopy(machine.values), None, None)
+            return LaunchRig(
+                machine.name,
+                MACHINE_SPEC,
+                str(machine.path),
+                machine.path,
+                merged,
+                ref,
+                machine=machine,
+                changes=[],
+                # Nothing carried from a measurement: it runs no task.
+                carried=None,
+            )
+        task = self._events_task(project, request)
+        is_mode = request.mode in {m.value for m in Mode}
+        declared = self._declared_events(project, task) if is_mode else None
+        prefilled, source, _dropped = self._prefilled(project, task, machine, declared)
+        if request.rig_values is None:
+            values = prefilled
+        else:
+            if not isinstance(request.rig_values, dict):
+                raise ValueError("The session's rig settings must be a mapping")
+            values = copy.deepcopy(request.rig_values)
+            edited = any(
+                mr.get_path(values, path) != mr.get_path(prefilled, path) for path in mr.EVENT_PATHS
+            )
+            if edited:
+                source = {**source, "edited": True, "label": "chosen for this session"}
+        if "extends" in values:
+            raise ValueError("A session's rig is complete and extends nothing")
+        changes = mr.rig_changes(machine.values, values)
+        for change in changes:
+            if any(change["path"] == mr.dotted(p) for p in mr.MACHINE_ONLY):
+                raise ValueError(
+                    "Whether real data may be collected is this machine's, not a session's: "
+                    "change real_data in this machine's rig (an experiment's General page), "
+                    "or reset it on the Run page"
+                )
+        names = mr.event_names(values)
+        if declared is not None:
+            undeclared = [n for n in names if n not in declared]
+            if undeclared:
+                raise ValueError(
+                    f"This session's rig names events its task never declares: "
+                    f"{', '.join(undeclared)}. Its events: {', '.join(declared) or 'none'}. "
+                    "Clear those in the Rig section's Event lines (a pulse for an event that "
+                    "never fires is a TTL silently missing from the recording)"
+                )
+        carried: dict[str, Any] = {}
+        for path in mr.CARRIED_PATHS:
+            found, value = mr.get_path(values, path)
+            in_machine, machine_value = mr.get_path(machine.values, path)
+            if found and (not in_machine or value != machine_value):
+                carried[mr.dotted(path)] = value
+        path = run_dir / machine.path.name
+        ref = RigRef(machine.name, path, "experiment")
+        return LaunchRig(
+            machine.name,
+            MACHINE_SPEC,
+            str(path),
+            path,
+            MergedRig(values, None, None),
+            ref,
+            machine=machine,
+            changes=changes,
+            carried=carried,
+            events_source=source,
+            session_copy=True,
+        )
+
+    def _rig_origin_path(
+        self, project: dict[str, Any], launch_rig: LaunchRig, run_dir: Path
+    ) -> Path | None:
+        """Where `start` writes rig-origin.json for the child to record, when
+        the rig is this machine's and the project's alhazen takes the flag."""
+        if launch_rig.machine is None or not takes_rig_origin(project):
+            return None
+        return run_dir / "rig-origin.json"
+
     def _live_stream_key(self, key: str, spec: str) -> str:
         return f"{key}|{spec}"
 
@@ -2702,6 +3237,9 @@ class Workspace:
             demographics_in = _demographics_destination(
                 self.project(request.project), request, identity
             )
+            # The rig, resolved once: this machine's (with the session's
+            # changes and event lines) unless the client named another.
+            launch_rig = self._resolve_rig(self.project(request.project), request, run_dir)
             command = self._command(
                 request,
                 run_dir,
@@ -2709,6 +3247,7 @@ class Workspace:
                 demographics=(
                     _demographics(identity) if demographics_in == "session.json" else None
                 ),
+                launch_rig=launch_rig,
             )
             if request.parameters is not None and request.parameters_yaml is not None:
                 raise ValueError("Supply either parameter fields or YAML, not both")
@@ -2735,13 +3274,15 @@ class Workspace:
             else:
                 task = self._task_for(project, request)
                 self._check_parameter_set(project, request, task)
-            ref, shared = self._launch_rig(project, request.rig)
-            merged = rig_mapping(ref.path, shared=shared)
+            merged = launch_rig.merged
+            # What run.json and launch.json say was launched: "machine" for
+            # this machine's rig, else the named rig as the client sent it.
+            launched_rig = Path(request.rig).as_posix() if request.rig else MACHINE_SPEC
             # The Live monitor switches as launched become this rig's starting
             # position on the Run page next time (_live_stream_defaults).
             sent_streams = self._live_streams(project, request)
             if sent_streams is not None:
-                self._remember_live_streams(project["id"], request.rig, sent_streams)
+                self._remember_live_streams(project["id"], launched_rig, sent_streams)
             (run_dir / "media").mkdir(parents=True)
             started = now()
             # The launch as it was decided, written once and never again
@@ -2756,8 +3297,12 @@ class Workspace:
                 "task": task,
                 "parameter_set": request.parameter_set,
                 "training": training,
-                "rig": Path(request.rig).as_posix(),
-                "rig_name": ref.name,
+                "rig": launched_rig,
+                "rig_name": launch_rig.name,
+                "rig_source": launch_rig.source,
+                # For a session on this machine's rig: where it came from and
+                # what this session changed (rig-origin.json holds the same).
+                "rig_origin": launch_rig.origin(key),
                 "started": started,
                 "command": command,
                 "identity": identity,
@@ -2778,13 +3323,35 @@ class Workspace:
             # it is, comments and all. A file that extends a shared rig is
             # only half of what ran, so rig.yaml is the merged rig instead,
             # and the file as written is kept beside it as rig-source.yaml.
-            if merged.base is None:
-                (run_dir / "rig.yaml").write_bytes(ref.path.read_bytes())
+            # This machine's rig: the session's own file, rig-<name>.yaml,
+            # is what the child runs (with the machine's gamma and reward
+            # calibration beside it), and rig.yaml the same bytes, for the
+            # record; Measure rig runs the machine's file itself.
+            if launch_rig.machine is not None:
+                if launch_rig.session_copy:
+                    session_file = mr.write_session_rig(
+                        run_dir,
+                        launch_rig.machine,
+                        merged.values,
+                        launch_rig.origin(key) or {},
+                        self.machine.companions(launch_rig.machine),
+                    )
+                    (run_dir / "rig.yaml").write_bytes(session_file.read_bytes())
+                else:
+                    (run_dir / "rig.yaml").write_bytes(launch_rig.machine.path.read_bytes())
+                origin_path = self._rig_origin_path(project, launch_rig, run_dir)
+                if origin_path is not None:
+                    origin_path.write_text(
+                        json.dumps(launch_rig.origin(key), indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+            elif merged.base is None:
+                (run_dir / "rig.yaml").write_bytes(launch_rig.path.read_bytes())
             else:
                 (run_dir / "rig.yaml").write_text(
                     _merged_rig_text(request.rig, merged), encoding="utf-8"
                 )
-                (run_dir / "rig-source.yaml").write_bytes(ref.path.read_bytes())
+                (run_dir / "rig-source.yaml").write_bytes(launch_rig.path.read_bytes())
             run = {
                 "id": key,
                 "project": project["id"],
@@ -2801,13 +3368,33 @@ class Workspace:
                 "training": training,
                 # What was launched: a project-relative path, stored as posix
                 # whatever the client typed so run.json reads the same on
-                # every OS, or `alhazen/<name>` for a shared rig. The rig
-                # itself was resolved above.
-                "rig": Path(request.rig).as_posix(),
+                # every OS, or `alhazen/<name>` for a shared rig; "machine"
+                # for this machine's rig. The rig itself was resolved above.
+                "rig": launched_rig,
                 # Which rig that is, for the history (which shows the name,
                 # not the file) and for anyone reading run.json.
-                "rig_name": ref.name,
-                "rig_source": ref.source,
+                "rig_name": launch_rig.name,
+                "rig_source": launch_rig.source,
+                # This machine's rig only: what the session changed from it
+                # ({path, machine, session}), the settings each experiment
+                # adds as this session had them (carried to the next session
+                # of the same experiment and task here), and where its event
+                # lines came from.
+                **(
+                    {
+                        "rig_changes": launch_rig.changes,
+                        "rig_carried": launch_rig.carried
+                        if launch_rig.carried is not None
+                        else None,
+                        "rig_events_source": launch_rig.events_source,
+                        "machine_rig": {
+                            "file": str(launch_rig.machine.path),
+                            "sha256": launch_rig.machine.sha256,
+                        },
+                    }
+                    if launch_rig.machine is not None
+                    else {}
+                ),
                 "started": started,
                 "finished": None,
                 "status": "running",

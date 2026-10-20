@@ -35,6 +35,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from alhazen.cli.machine_rig import write_session_rig
 from alhazen.cli.workspace import (
     MODE_FLAGS,
     CalibrationChoice,
@@ -46,7 +47,6 @@ from alhazen.cli.workspace import (
     parse_parameters,
     script_actions,
 )
-from alhazen.config.rigs import rig_mapping
 from alhazen.modes import Mode, flag_refusal
 
 CAPABILITY = "duration-estimate"
@@ -83,7 +83,10 @@ class EstimateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project: str
     mode: str
-    rig: str
+    # Empty: this machine's rig, with ``rig_values`` the session's settings
+    # (Launch has the same two fields); a named rig as before.
+    rig: str = ""
+    rig_values: dict[str, Any] | None = None
     task: str | None = None
     parameter_set: str | None = None
     parameters_yaml: str | None = None
@@ -211,9 +214,13 @@ class DurationEstimator:
             project=request.project,
             mode=request.mode,
             rig=request.rig,
+            rig_values=request.rig_values,
             task=request.task,
             parameter_set=request.parameter_set,
             extra_args=request.extra_args,
+            ladder=request.ladder,
+            stage=request.stage,
+            rehearse=request.rehearse,
         )
         if training is not None:
             # The stage names its task and its params.
@@ -228,8 +235,23 @@ class DurationEstimator:
             if task is None:
                 task = workspace._one_task(project, launch)
         extra = _extra_arguments(request.extra_args, reserved)
-        ref, shared = workspace._launch_rig(project, request.rig)
-        rig = ref.spec if ref.source == "alhazen" else str(ref.path)
+        # The rig as the launch would resolve it. A session on this
+        # machine's rig runs its own copy; the estimate gets one too, under
+        # the workspace's state folder, named by its settings.
+        values_key = hashlib.sha256(
+            json.dumps(request.rig_values, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+        scratch = workspace.directory / "estimate-rigs" / values_key
+        launch_rig = workspace._resolve_rig(project, launch, scratch)
+        if launch_rig.session_copy and launch_rig.machine is not None:
+            write_session_rig(
+                scratch,
+                launch_rig.machine,
+                launch_rig.values,
+                launch_rig.origin("estimate") or {},
+                workspace.machine.companions(launch_rig.machine),
+            )
+        rig = launch_rig.spec
 
         if request.parameters is not None and request.parameters_yaml is not None:
             raise ValueError("Supply either parameter fields or YAML, not both")
@@ -258,7 +280,7 @@ class DurationEstimator:
         command += _calibration_arguments(request.calibration_target)
         command += extra
 
-        merged = rig_mapping(ref.path, shared=shared)
+        merged = launch_rig.merged
         key = hashlib.sha256(
             json.dumps(
                 {

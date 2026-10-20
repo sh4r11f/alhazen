@@ -128,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
     from alhazen.cli.workspace_library import add_parser as add_library_parser
 
     add_library_parser(sub)
+    # `alhazen rig init|show`: this machine's rig for the dashboard
+    # (alhazen.cli.machine_rig_cli).
+    from alhazen.cli.machine_rig_cli import add_parser as add_rig_parser
+
+    add_rig_parser(sub)
     calibrate = sub.add_parser("calibrate", help="check a monitor's geometry and gamma")
     calibrate_sub = calibrate.add_subparsers(dest="calibration")
     ruler = calibrate_sub.add_parser(
@@ -544,6 +549,15 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="the experimenter's record id (with --experimenter), recorded beside the name",
     )
+    # Where the rig came from, when the experiment workspace launched the
+    # session on its machine rig: a JSON file it wrote into its run folder,
+    # recorded in session.json as rig.origin. Not for typing by hand.
+    parser.add_argument(
+        "--rig-origin",
+        default=None,
+        help="a JSON file saying where the rig came from (the experiment workspace writes "
+        "it), recorded in session.json as rig.origin",
+    )
     # The subject's age and sex: recorded in session.json and session.log
     # (and in participants.tsv with a new subject), never in a path. Optional
     # everywhere; the experiment workspace sends a registered subject's.
@@ -849,6 +863,13 @@ def _run_session(
         args.experimenter_record = Experimenter.parse(
             getattr(args, "experimenter", None), getattr(args, "experimenter_id", None)
         )
+    except ValueError as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        return 2
+    # Where the rig came from (--rig-origin), read now: a file that is not a
+    # JSON object is a usage error before anything loads.
+    try:
+        args.rig_origin_record = _read_rig_origin(getattr(args, "rig_origin", None))
     except ValueError as exc:
         print(f"INVALID: {exc}", file=sys.stderr)
         return 2
@@ -1602,6 +1623,28 @@ def _movie_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> i
         return 1
 
 
+# The most a --rig-origin file may hold: a record, not a data file.
+MAX_RIG_ORIGIN_BYTES = 256 * 1024
+
+
+def _read_rig_origin(path: str | None) -> dict[str, Any] | None:
+    """The JSON object in a --rig-origin file, or None for none given."""
+    if path is None:
+        return None
+    file = Path(path)
+    try:
+        if file.stat().st_size > MAX_RIG_ORIGIN_BYTES:
+            raise ValueError(f"--rig-origin {path} is larger than 256 KiB")
+        data = json.loads(file.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"--rig-origin {path} cannot be read: {exc.strerror or exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--rig-origin {path} is not JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"--rig-origin {path} must hold a JSON object")
+    return data
+
+
 def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, mode: Mode) -> int:
     """run, test and simulate: the three modes that put trials on screen."""
     from alhazen.modes.session import build_mode_session
@@ -1684,6 +1727,13 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             # The training-ladder stage (--stage), resolved by _run_session;
             # passed only when there is one.
             **({"training": args.training} if getattr(args, "training", None) is not None else {}),
+            # Where the rig came from (--rig-origin), for session.json;
+            # passed only when given.
+            **(
+                {"rig_origin": args.rig_origin_record}
+                if getattr(args, "rig_origin_record", None) is not None
+                else {}
+            ),
         )
     except (ConfigError, DataError, DisplayError) as e:
         # DataError: what is already on disk refuses the session — a used run
@@ -1946,6 +1996,12 @@ def _library(args: argparse.Namespace) -> int:
     return run(args)
 
 
+def _machine_rig(args: argparse.Namespace) -> int:
+    from alhazen.cli.machine_rig_cli import run
+
+    return run(args)
+
+
 def _platform(args: argparse.Namespace) -> int:
     from alhazen.experiment_platform.cli import run
 
@@ -1958,6 +2014,7 @@ _COMMANDS: dict[str, Handler] = {
     "library": lambda args, parser: _library(args),
     "validate": _validate,
     "rigs": _rigs,
+    "rig": lambda args, parser: _machine_rig(args),
     "preview": _preview,
     "new": _new,
     "run": lambda args, parser: _run_session(_with_explicit_flags(args)),

@@ -233,6 +233,9 @@ class RunIdentity:
     - ``training`` — the training-ladder stage the session runs
       (``alhazen.training.ladder.ResolvedStage.record``), or None for any
       session that is not one: the card's ``training`` is then null.
+    - ``rig_origin`` — where the rig came from, for a session the experiment
+      workspace launched on its machine rig (``--rig-origin``); the card's
+      ``rig.origin``, null for any other session.
     """
 
     experiment: Experiment
@@ -249,6 +252,11 @@ class RunIdentity:
     # alhazen.modes.simulation.SimulateChoice), or None when every device
     # was the rig's own: the card's ``simulated`` is then null.
     simulated: dict[str, Any] | None = None
+    # Where the rig came from when the experiment workspace launched the
+    # session on its machine rig (``--rig-origin``): the machine, its file
+    # and hash, what this session changed, where its event lines came from.
+    # None for a session started any other way.
+    rig_origin: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         # The two rig records come as a pair: rig.yaml (the complete rig)
@@ -648,6 +656,14 @@ def session_card(
             "name": sources.get("rig_name"),
             "source": sources.get("rig_source"),
             "file": str(identity.rig_file.path) if identity.rig_file is not None else None,
+            # For a session the experiment workspace launched on its machine
+            # rig: {kind: "machine", machine, file, sha256, changes, events,
+            # workspace_run} — the machine's rig it started from, each
+            # setting this session changed ({path, machine, session}), and
+            # its event lines and where they came from. Null for any other
+            # session. Added after 3.4.1 without a schema bump: a new key,
+            # which a reader of schema 1 ignores.
+            "origin": identity.rig_origin,
         },
         "params_file": (
             str(identity.params_file.path) if identity.params_file is not None else None

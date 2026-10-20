@@ -20,6 +20,9 @@ before a launch, what an older one will not record.
   ``--eye-camera``/``--no-eye-camera``, how the live monitor's two
   switchable streams start (the rig's ``live_monitor.gaze_traces`` and
   ``.camera`` otherwise).
+- ``rig-origin``: ``--rig-origin``, a JSON file saying where the session's
+  rig came from (the workspace's machine rig, what the session changed),
+  recorded in session.json as ``rig.origin``.
 - ``training-mode``: ``--mode training`` with ``--ladder``/``--stage``, a
   stage of a training ladder run.py registers (``LADDERS``), filed under the
   stage's training root (alhazen.training.ladder); test and simulate take
@@ -37,6 +40,7 @@ CAPABILITIES: frozenset[str] = frozenset(
         "experimenter",
         "live-streams",
         "params-source",
+        "rig-origin",
         "subject-demographics",
         "training-mode",
     }
