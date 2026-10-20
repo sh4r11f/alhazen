@@ -7,10 +7,11 @@ module hides both sides of that:
 
 - the **platform side**: where the connection is kept (``library.json`` in the dashboard's
   state folder, readable by its owner only, never in an experiment folder) and the client of
-  the two requests a rig needs from the platform's JSON API (design.md Appendix A):
-  ``GET /api/forks`` and ``GET /api/bundles/<handle>/archive``. The same client talks to
-  ``alhazen platform local`` (its ``#token=`` URL) and to Mana's library service (a bearer
-  token); a lab server's cookie sessions are not supported yet.
+  the three requests a rig makes of the platform's JSON API (design.md Appendix A):
+  ``GET /api/forks``, ``GET /api/bundles/<handle>/archive`` and, when the dashboard closes,
+  ``POST /api/machines/events``. The same client talks to ``alhazen platform local`` (its
+  ``#token=`` URL, or a machine token), a lab's ``alhazen platform serve`` (a machine token
+  made on its Machines page) and Mana's library service (a bearer token).
 - the **disk side**: the marker every download writes (``.alhazen-hub/source.json``: which
   copy and which revision the folder holds), the session data a folder holds, and the rule
   that a folder holding data is never overwritten unasked (:class:`CopyConflict`).
@@ -55,6 +56,10 @@ SESSION_FILES = ("session.json", "config_snapshot.yaml")
 _SCAN_DIRS = 20_000
 _SCAN_DEPTH = 8
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+# A run job named in the connection (Mana writes the job a run belongs to, so the report a
+# closing dashboard sends can say which job it finishes).
+_JOB_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+MAX_RUN_JOBS = 50
 
 
 class LibraryError(Exception):
@@ -90,7 +95,9 @@ class LibrarySource:
     ``token`` is sent (``alhazen-token``: the X-Alhazen-Token header of a local platform;
     ``bearer``: an Authorization header); ``label`` names the source on the page;
     ``copies`` is the folder downloads go into, one subfolder per copy; ``extras`` are the
-    optional dependency groups installed when an experiment declares them."""
+    optional dependency groups installed when an experiment declares them; ``machine`` is
+    this machine's name as the platform knows it (a report names it), and ``run_jobs`` the
+    platform's run jobs this dashboard serves (Mana's kit writes them)."""
 
     url: str
     token: str
@@ -99,6 +106,8 @@ class LibrarySource:
     copies: Path = field(default_factory=lambda: Path.home() / "alhazen-experiments")
     extras: tuple[str, ...] = ("psychopy",)
     expires: int | None = None
+    machine: str | None = None
+    run_jobs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         parts = urllib.parse.urlsplit(self.url)
@@ -117,6 +126,22 @@ class LibrarySource:
             raise LibraryError("The copies folder must be an absolute path")
         if not all(isinstance(x, str) and is_id(x) for x in self.extras):
             raise LibraryError("Extras must be names of optional dependency groups")
+        if self.machine is not None and (
+            not isinstance(self.machine, str) or not 0 < len(self.machine) <= 80
+        ):
+            raise LibraryError("The machine name must be 1 to 80 characters")
+        if len(self.run_jobs) > MAX_RUN_JOBS or not all(
+            isinstance(x, str) and _JOB_ID.match(x) for x in self.run_jobs
+        ):
+            raise LibraryError("The run jobs must be short ids")
+
+    @property
+    def fingerprint(self) -> str:
+        """Which library this is (address and credential): a change means the copies listed
+        so far belong to another connection."""
+        import hashlib
+
+        return hashlib.sha256(f"{self.url}\n{self.auth}\n{self.token}".encode()).hexdigest()[:16]
 
     @property
     def origin(self) -> str:
@@ -146,6 +171,10 @@ class LibrarySource:
         }
         if self.expires is not None:
             record["expires"] = self.expires
+        if self.machine is not None:
+            record["machine"] = self.machine
+        if self.run_jobs:
+            record["runJobs"] = list(self.run_jobs)
         return record
 
     @classmethod
@@ -161,6 +190,8 @@ class LibrarySource:
                 copies=Path(str(record.get("copies") or Path.home() / "alhazen-experiments")),
                 extras=tuple(record.get("extras", ("psychopy",))),
                 expires=int(record["expires"]) if record.get("expires") is not None else None,
+                machine=str(record["machine"])[:80] if record.get("machine") else None,
+                run_jobs=tuple(record.get("runJobs") or ()),
             )
         except KeyError as error:
             raise LibraryError(f"The library connection file has no {error}") from error
@@ -246,12 +277,23 @@ class LibraryClient:
         self.timeout = timeout
 
     def _get(self, path: str, limit: int) -> tuple[bytes, str]:
+        return self._send("GET", path, limit)
+
+    def _send(
+        self, method: str, path: str, limit: int, body: dict[str, Any] | None = None
+    ) -> tuple[bytes, str]:
         headers = {"Accept": "application/json, application/zip", "User-Agent": "alhazen-dashboard"}
         if self.source.auth == "alhazen-token":
             headers["X-Alhazen-Token"] = self.source.token
         else:
             headers["Authorization"] = f"Bearer {self.source.token}"
-        request = urllib.request.Request(self.source.url + path, headers=headers, method="GET")
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            self.source.url + path, data=data, headers=headers, method=method
+        )
         try:
             with self._open(request, timeout=self.timeout) as response:
                 data = response.read(limit + 1)
@@ -301,6 +343,17 @@ class LibraryClient:
         return {
             k: v for k, v in forks.items() if is_id(k) and isinstance(v, dict) and v.get("title")
         }
+
+    def report(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Tell the platform what happened on this machine (``POST /api/machines/events``):
+        the platform's answer, ``{}`` when it sent none. A platform without the route answers
+        404, raised as a LibraryError like any refusal."""
+        data, _ = self._send("POST", "/api/machines/events", 64 * 1024, event)
+        try:
+            answer = json.loads(data or b"{}")
+        except ValueError:
+            return {}
+        return answer if isinstance(answer, dict) else {}
 
     def archive(self, handle: str) -> bytes:
         """A revision's files as a zip (everything under one folder)."""

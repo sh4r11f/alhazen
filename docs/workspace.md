@@ -18,22 +18,57 @@ while the running dashboard carries on as if nothing happened. Started with
 `python -m`, the dashboard holds only `python.exe`, which a reinstall never
 touches.
 
+**One server per workspace.** Starting `alhazen dashboard` while another
+already serves the same workspace (`--state-dir`) does not start a second one:
+it prints which process holds the workspace, opens that dashboard's page in the
+browser (unless `--no-browser`), and exits with code 1.
+
+**Stopping it.** Ctrl+C in its terminal stops the server and any active run.
+**Shut down**, at the right of the page's top bar, does the same for a server
+started where nobody has its terminal (in the background, or by a tool): after
+an in-place confirmation the server answers, stops serving and releases the
+workspace, and the page says it has shut down. It is refused while a session
+is running, so a click never ends one; stop the session on its Run page first.
+The workspace's `server.json` names the holder's `pid`, its page `url`, the
+`alhazen` version it runs, and `shutdown: true` when it accepts
+`POST /api/shutdown` (with the page token), so a tool that started it can stop
+it the same way. When a library is connected, a closing dashboard (Shut down or
+Ctrl+C) tells it so: which machine, which alhazen, and the sessions run since it
+started, with how each ended and its outcome counts. That takes at most a few
+seconds and never stops the shutdown; the console says whether it was told, and
+`<state>/library/reports.log` keeps every report.
+
 ## Your library
 
 A dashboard can list the experiments in your library on an Experiment Platform (your copies,
 "Add to library" on the platform) and download each one only when you want to run it:
 
 ```bash
-alhazen library connect "http://127.0.0.1:8123/#token=..."      # the URL `alhazen platform local` printed
-alhazen library connect https://lab.example --token-file ~/token  # a platform reached over https
+alhazen library connect "http://127.0.0.1:8123/#token=..."            # the URL `alhazen platform local` printed
+alhazen library connect https://lab.example/platform --token alm_...  # a machine token from the platform
+alhazen library connect https://lab.example/platform --token-file ~/token
 ```
 
+A **machine token** connects one rig to your library on a platform (`alhazen platform serve`
+for a lab, or `alhazen platform local`): make it on the platform's **Machines** page, where it
+is shown once, and revoke it there when the machine should no longer read your library. The
+same page lists what your machines reported when their dashboards closed. Without the command
+line, paste the platform's address and the token into **Connect a library** on the dashboard's
+Experiments page; the connection is checked by listing your copies before it is saved.
+
 Options: `--copies` (where downloads go, default `~/alhazen-experiments`), `--label` (the
-library's name on the page), `--extras` (optional dependencies installed when an experiment
-declares them; default `psychopy`, empty for none), `--state-dir` (the dashboard's state
-folder, as for `alhazen dashboard`). `alhazen library show` and `alhazen library disconnect`
-say which library is connected and forget it. When Mana runs an experiment on your machine
-it connects Mana's dashboard there to your Mana library by itself.
+library's name on the page), `--machine` (this machine's name in its reports, default its
+host name), `--extras` (optional dependencies installed when an experiment declares them;
+default `psychopy`, empty for none), `--state-dir` (the dashboard's state folder, as for
+`alhazen dashboard`). `--token` puts the token in your shell's history; `--token-file` or
+`$ALHAZEN_LIBRARY_TOKEN` do not. `alhazen library show` and `alhazen library disconnect` say
+which library is connected and forget it. When Mana runs an experiment on your machine it
+connects Mana's dashboard there to your Mana library by itself.
+
+A connection made while the dashboard is open shows up without a reload: the page keeps
+asking while no library is connected, and the dashboard reads the list in the background
+the first time it sees a new connection (a failure is shown on the Experiments page, and
+*Refresh* tries again).
 
 The sidebar then lists every copy that is not registered here, with *Download*; the
 Experiments page shows the whole library and what is on this machine. Downloading fetches the

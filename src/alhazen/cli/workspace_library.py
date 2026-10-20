@@ -14,13 +14,24 @@ built environment are registered when the library is refreshed, so their data sh
 
 The decision this module hides is how a download runs beside the page: one background job
 per copy, its stage and outcome kept in memory for the page to poll, its uv output in
-``<state>/library/logs/<id>.log``.
+``<state>/library/logs/<id>.log``. The list itself is read in the background too: the first
+time the page asks after a connection appears or changes (``library.json`` written while the
+dashboard runs, as Mana's kit does when it joins an open dashboard), so the page never has to
+know that a refresh is due, and a failure is kept for the page to show.
+
+When the dashboard closes it tells the platform (:meth:`Library.report_closed`): which
+machine, which alhazen, and the sessions run since it started. That is best effort with a
+short deadline; a platform that cannot be reached never holds the shutdown up.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +57,15 @@ else:  # pragma: no cover - exercised on the 3.10 CI job
 # A copy's environment build is the slow part (PsychoPy and its wheels); past this the
 # job is reported failed and uv is stopped.
 SYNC_TIMEOUT_S = 1800
+# A failed background read of the list is tried again when the page next asks, at most
+# this often (the Refresh button asks at once).
+RETRY_S = 60
+# How long a closing dashboard waits for the platform to take its report.
+REPORT_TIMEOUT_S = 5.0
+# The line a session ends its console with (session/runner.py, _log_session_end).
+# The first parenthesis holds the counts (a FAILED line's exception text follows it).
+SESSION_END = re.compile(r"session end: (\w+)[^\n(]*\(([^()\n]*)\)")
+OUTCOME_COUNT = re.compile(r"([A-Za-z0-9_.-]+) (\d+)")
 STAGES = ("checking", "fetching", "writing", "building", "registering")
 
 
@@ -114,6 +134,10 @@ def default_sync(root: Path, extras: list[str], log: Path) -> None:
 Sync = Callable[[Path, list[str], Path], None]
 
 
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
 class Library:
     """The library of one dashboard workspace. ``client`` and ``sync`` are replaceable
     (tests pass fakes); by default they follow ``library.json`` and run uv."""
@@ -135,6 +159,12 @@ class Library:
         self._error: str | None = None
         self._jobs: dict[str, dict[str, Any]] = {}
         self._threads: list[threading.Thread] = []
+        # Which connection the list belongs to, whether a background read is under way and
+        # when the last one was tried; the run jobs every connection seen so far named.
+        self._seen: str | None = None
+        self._refreshing = 0
+        self._tried: float | None = None
+        self._run_jobs: dict[str, None] = {}
 
     # ------------------------------------------------------------------ reading
     def source(self) -> LibrarySource | None:
@@ -148,10 +178,13 @@ class Library:
             return {"configured": True, "error": str(error), "items": []}
         if source is None:
             return {"configured": False, "items": []}
+        if self._due(source):
+            self._refresh_in_background()
         with self._lock:
             forks = dict(self._forks)
             jobs = {k: dict(v) for k, v in self._jobs.items()}
             fetched, problem = self._fetched, self._error
+            refreshing = self._refreshing > 0
         registered = {str(Path(p["path"]).resolve()): p["id"] for p in self.workspace.projects}
         items = [
             self._item(source, fid, fork, registered, jobs.get(fid)) for fid, fork in forks.items()
@@ -167,8 +200,43 @@ class Library:
             },
             "fetched": fetched,
             "error": problem,
+            "refreshing": refreshing,
             "items": items,
         }
+
+    def _due(self, source: LibrarySource) -> bool:
+        """Note the connection the page sees; True when its list should be read now: a
+        connection not read yet (new, or changed since: the old list is dropped), or a
+        failed read older than RETRY_S."""
+        with self._lock:
+            for job in source.run_jobs:
+                self._run_jobs.setdefault(job, None)
+            if source.fingerprint != self._seen:
+                if self._seen is not None:
+                    self._forks, self._fetched, self._error = {}, None, None
+                self._seen, self._tried = source.fingerprint, None
+            if self._refreshing:
+                return False
+            if self._tried is None:
+                return True
+            return self._fetched is None and time.time() - self._tried > RETRY_S
+
+    def _refresh_in_background(self) -> None:
+        with self._lock:
+            if self._refreshing:
+                return
+            # Counted before the thread starts, so the answer that started it says so.
+            self._refreshing += 1
+            self._tried = time.time()
+
+        def work() -> None:
+            # Any failure is kept in _error by refresh, for the page to show.
+            with contextlib.suppress(Exception):
+                self.refresh(counted=True)
+
+        thread = threading.Thread(target=work, daemon=True, name="library-refresh")
+        self._threads.append(thread)
+        thread.start()
 
     def _item(
         self,
@@ -196,20 +264,47 @@ class Library:
         }
 
     # ------------------------------------------------------------------ refreshing
-    def refresh(self) -> dict[str, Any]:
+    def refresh(self, *, counted: bool = False) -> dict[str, Any]:
         """Ask the platform for the copies again, then register copies already on disk
-        that hold data and have an environment (so their data shows)."""
-        source = self.source()
-        if source is None:
-            raise LibraryError("No library is connected (alhazen library connect)")
+        that hold data and have an environment (so their data shows). Any failure is kept
+        for the page (``error``) as well as raised."""
+        if not counted:
+            with self._lock:
+                self._refreshing += 1
+                self._tried = time.time()
         try:
+            self._refresh()
+        finally:
+            with self._lock:
+                self._refreshing -= 1
+        return self.get()
+
+    def _refresh(self) -> None:
+        try:
+            source = self.source()
+            if source is None:
+                raise LibraryError("No library is connected (alhazen library connect)")
+            with self._lock:
+                for job in source.run_jobs:
+                    self._run_jobs.setdefault(job, None)
             forks = self._client_factory(source).forks()
         except LibraryError as error:
             with self._lock:
                 self._error = str(error)
             raise
+        except Exception as error:  # noqa: BLE001 - the page must hear of every failure
+            message = f"The library could not be read: {error}"
+            with self._lock:
+                self._error = message
+            raise LibraryError(message) from error
+        self._accept(source, forks)
+
+    def _accept(self, source: LibrarySource, forks: dict[str, dict[str, Any]]) -> None:
+        """Keep ``forks`` as the list of ``source``, and register copies already on disk
+        that hold data and have an environment."""
         with self._lock:
             self._forks, self._fetched, self._error = forks, time.time(), None
+            self._seen = source.fingerprint
         registered = {str(Path(p["path"]).resolve()) for p in self.workspace.projects}
         for fork_id, fork in forks.items():
             root = source.copy_dir(fork_id)
@@ -228,7 +323,105 @@ class Library:
                             "message": f"Could not register the copy on disk: {error}",
                             "at": time.time(),
                         }
+
+    # ------------------------------------------------------------------ connecting
+    def connect(self, url: str, token: str, label: str | None = None) -> dict[str, Any]:
+        """Connect to a library from the page: the platform's address and a machine token
+        (or a local platform's ``#token=`` link). The connection is checked by listing the
+        copies before it is saved, so a wrong token never replaces a working connection."""
+        if not isinstance(url, str) or not url.strip():
+            raise LibraryError("Give the platform's address")
+        current = None
+        try:
+            current = self.source()
+        except LibraryError:
+            current = None  # an unreadable file is replaced by the new connection
+        fields: dict[str, Any] = {"label": (label or "").strip()[:60] or "Library"}
+        if current is not None:
+            fields.update(copies=current.copies, extras=current.extras, machine=current.machine)
+        source = LibrarySource.from_url(url, (token or "").strip() or None, **fields)
+        forks = self._client_factory(source).forks()
+        library.save_source(self.directory, source)
+        self._accept(source, forks)
+        with self._lock:
+            self._tried = time.time()
         return self.get()
+
+    def disconnect(self) -> dict[str, Any]:
+        library.forget_source(self.directory)
+        with self._lock:
+            self._forks, self._fetched, self._error = {}, None, None
+            self._seen, self._tried = None, None
+        return self.get()
+
+    # ------------------------------------------------------------------ closing
+    def report_closed(
+        self,
+        *,
+        started: str,
+        sessions: list[dict[str, Any]],
+        reason: str,
+        timeout: float = REPORT_TIMEOUT_S,
+    ) -> str:
+        """Tell the connected platform this dashboard closed: the machine, its alhazen, when
+        it ran, the sessions run meanwhile and the run jobs it served. Never raises and never
+        waits much longer than ``timeout``; what happened is returned (empty when no library
+        is connected), printed by the caller and appended to ``<state>/library/reports.log``."""
+        from alhazen import __version__
+
+        try:
+            source = self.source()
+        except LibraryError as error:
+            return self._log_report(None, f"Not reported: {error}")
+        if source is None:
+            return ""  # nothing is connected, so there is no one to tell
+        with self._lock:
+            jobs = list(dict.fromkeys([*self._run_jobs, *source.run_jobs]))
+        event = {
+            "event": "dashboard-closed",
+            "machine": source.machine or platform.node() or "this machine",
+            "alhazen": __version__,
+            "startedAt": started,
+            "closedAt": _now(),
+            "reason": reason,
+            "jobs": jobs,
+            "sessions": sessions,
+        }
+        outcome: list[str] = []
+
+        def send() -> None:
+            try:
+                client = self._client_factory(source)
+                if hasattr(client, "timeout"):
+                    client.timeout = timeout
+                client.report(event)
+                n = len(sessions)
+                outcome.append(
+                    f"Told {source.label} the dashboard closed "
+                    f"({n} session{'' if n == 1 else 's'} since it started)."
+                )
+            except Exception as error:  # noqa: BLE001 - a report must never stop a shutdown
+                outcome.append(f"Could not tell {source.label} the dashboard closed: {error}")
+
+        thread = threading.Thread(target=send, daemon=True, name="library-report")
+        thread.start()
+        thread.join(timeout + 1)
+        message = (
+            outcome[0]
+            if outcome
+            else f"{source.label} did not answer within {timeout:g} s; the report was not sent."
+        )
+        return self._log_report(event, message)
+
+    def _log_report(self, event: dict[str, Any] | None, message: str) -> str:
+        try:
+            folder = self.directory / "library"
+            folder.mkdir(parents=True, exist_ok=True)
+            with (folder / "reports.log").open("a", encoding="utf-8") as out:
+                out.write(json.dumps({"at": _now(), "message": message, "event": event}) + "\n")
+        except OSError:
+            pass  # the message is still printed; the log is a convenience
+        return message
 
     # ------------------------------------------------------------------ downloading
     def download(self, fork_id: str, replace: bool = False) -> dict[str, Any]:
@@ -327,6 +520,69 @@ class Library:
             thread.join(timeout)
 
 
+# ---------------------------------------------------------------------- the closing report
+def session_summaries(workspace: Any, since: str) -> list[dict[str, Any]]:
+    """The sessions launched from this dashboard since ``since`` (an ISO time), as a closing
+    report lists them: experiment, the library copy it is (when it is one), task, mode,
+    start, end, how it ended, and the outcome counts its console's last line gives."""
+    try:
+        start = _parse_time(since)
+    except ValueError:
+        return []
+    with workspace.lock:
+        runs = [dict(r) for r in workspace.runs.values()]
+    out = []
+    for run in sorted(runs, key=lambda r: str(r.get("started") or "")):
+        try:
+            if _parse_time(str(run.get("started"))) < start:
+                continue
+        except ValueError:
+            continue
+        cwd = Path(str(run.get("cwd") or ""))
+        marker = library.read_marker(cwd) if run.get("cwd") else None
+        status, outcomes = _session_end(
+            Path(workspace.directory) / "runs" / str(run.get("id")) / "console.log"
+        )
+        out.append(
+            {
+                "experiment": run.get("name"),
+                "copy": (marker or {}).get("id"),
+                "revision": (marker or {}).get("bundle"),
+                "task": run.get("task"),
+                "mode": run.get("mode"),
+                "startedAt": run.get("started"),
+                "endedAt": run.get("finished"),
+                "status": run.get("status"),
+                "session": status,
+                "outcomes": outcomes,
+            }
+        )
+    return out
+
+
+def _parse_time(text: str) -> float:
+    from datetime import datetime
+
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def _session_end(console: Path) -> tuple[str | None, dict[str, int]]:
+    """How a session's console says it ended (complete, cancelled, FAILED) and its rows'
+    outcome counts; (None, {}) for a console without that line."""
+    try:
+        with console.open("rb") as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 64 * 1024))
+            tail = stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None, {}
+    found = list(SESSION_END.finditer(tail))
+    if not found:
+        return None, {}
+    status, counts = found[-1].groups()
+    return status, {name: int(n) for name, n in OUTCOME_COUNT.findall(counts)}
+
+
 # ---------------------------------------------------------------------- the command line
 def default_state_dir() -> Path:
     return Path.home() / ".alhazen" / "dashboard"
@@ -340,7 +596,16 @@ def add_parser(sub: Any) -> None:
         "url", help="the platform's address; a local platform's URL carries #token="
     )
     connect.add_argument(
+        "--token",
+        default=None,
+        help="the machine token the platform's Machines page showed (a shell may keep it in its "
+        "history; --token-file or $ALHAZEN_LIBRARY_TOKEN do not)",
+    )
+    connect.add_argument(
         "--token-file", default=None, help="file holding the token (else $ALHAZEN_LIBRARY_TOKEN)"
+    )
+    connect.add_argument(
+        "--machine", default=None, help="this machine's name in reports (default: its host name)"
     )
     connect.add_argument("--label", default=None, help="the library's name on the page")
     connect.add_argument(
@@ -366,13 +631,15 @@ def run(args: argparse.Namespace) -> int:
     state = Path(args.state_dir).expanduser() if args.state_dir else default_state_dir()
     try:
         if args.library_action == "connect":
-            token = None
+            token = args.token
             if args.token_file:
                 token = Path(args.token_file).expanduser().read_text(encoding="utf-8").strip()
             token = token or os.environ.get("ALHAZEN_LIBRARY_TOKEN")
             fields: dict[str, Any] = {}
             if args.label:
                 fields["label"] = args.label
+            if args.machine:
+                fields["machine"] = args.machine
             fields["extras"] = tuple(x.strip() for x in args.extras.split(",") if x.strip())
             if args.copies:
                 fields["copies"] = Path(args.copies).expanduser().absolute()

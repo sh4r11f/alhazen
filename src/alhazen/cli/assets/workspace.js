@@ -2868,9 +2868,11 @@ async function refresh() {
 /** The 1.5 s polling loop. A failed poll shows the error and keeps trying:
  *  the launcher may only be restarting. */
 async function poll() {
+  if (shutDown) return;
   try {
     await refresh();
   } catch (e) {
+    if (shutDown) return;
     $('connection').textContent = 'Connection unavailable';
     connectionError = true;
     error(e.message);
@@ -3188,5 +3190,63 @@ if (window.DurationEstimate) {
   $('launch-form').addEventListener('input', () => durationEstimate.update());
   $('launch-form').addEventListener('change', () => durationEstimate.update());
 }
+
+/* ------------------------------------------------------------------ */
+/* Shut down                                                           */
+/* ------------------------------------------------------------------ */
+
+/* Set once the server has agreed to stop: polling ends and the page shows
+ * #shutdown-screen instead of connection errors. */
+let shutDown = false;
+
+/** The topbar's Shut down: a confirmation in place, refused while a session
+ *  runs (the server refuses too, so a stale page cannot end one). */
+function setUpShutdown() {
+  const button = $('shutdown');
+  const panel = $('shutdown-confirm');
+  const confirmButton = $('shutdown-confirmed');
+  const close = (refocus = true) => {
+    panel.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+    if (refocus) button.focus();
+  };
+  const describe = () => {
+    const running = Boolean(state?.active);
+    const library = window.WorkspaceLibrary?.connected?.();
+    $('shutdown-detail').textContent = running
+      ? 'A session is running. Stop it on its Run page first; shutting down never ends a session.'
+      : 'The server stops and this page stops working. Experiments, data and saved sessions are not touched.'
+        + (library ? ` ${library} is told that this dashboard closed and which sessions it ran.` : '');
+    confirmButton.disabled = running;
+  };
+  button.addEventListener('click', () => {
+    if (!panel.hidden) return close();
+    $('shutdown-error').hidden = true;
+    describe();
+    panel.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    $('shutdown-cancel').focus();
+  });
+  $('shutdown-cancel').addEventListener('click', () => close());
+  panel.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') close();
+  });
+  confirmButton.addEventListener('click', async () => {
+    confirmButton.disabled = true;
+    try {
+      await api('/api/shutdown', {});
+      shutDown = true;
+      close(false);
+      $('shutdown-screen').hidden = false;
+      document.title = 'Alhazen · Shut down';
+    } catch (e) {
+      $('shutdown-error').textContent = e.message;
+      $('shutdown-error').hidden = false;
+      describe();
+    }
+  });
+}
+
+setUpShutdown();
 
 poll();

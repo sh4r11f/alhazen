@@ -3,7 +3,9 @@
 The application serves the compiled web app and the JSON API of design.md Appendix A.
 It knows nothing about who may do what (``PlatformService`` does) or how identity is
 proven (a ``Gate`` does): the local host's gate checks a per-launch token, the server's
-checks a session cookie and a CSRF token. Every response carries a strict
+checks a session cookie and a CSRF token. A request carrying ``Authorization: Bearer`` is a
+rig's dashboard with a machine token (machines.py): it may use MACHINE_ROUTES only, on its
+owner's own copies. Every response carries a strict
 Content-Security-Policy and no-sniff headers; API responses are never cached.
 """
 
@@ -32,6 +34,7 @@ from alhazen.experiment_platform.errors import (
     PlatformError,
     StoreError,
 )
+from alhazen.experiment_platform.machines import Machines
 from alhazen.experiment_platform.service import PlatformService, Principal
 
 log = logging.getLogger("alhazen.experiment_platform")
@@ -84,6 +87,15 @@ class Gate(Protocol):
     ) -> tuple[dict[str, Any], list[tuple[str, str]]]: ...
 
     def logout(self, request: Request) -> list[tuple[str, str]]: ...
+
+    def principal_for(self, uid: str) -> Principal | None:
+        """The person a machine token belongs to, or None when they may no longer act (a
+        disabled account, a user this host does not know)."""
+
+
+# What a machine token may ask (machines.py): its owner's library, revisions of their own
+# copies, and reports from the machine.
+MACHINE_ROUTES = {"forks", "bundle_archive", "machine_event"}
 
 
 class Request:
@@ -176,6 +188,10 @@ _ROUTES: list[tuple[str, re.Pattern[str], str]] = [
         ("POST", r"/api/forks/(?P<fork>[^/]+)/unpublish", "unpublish"),
         ("DELETE", r"/api/forks/(?P<fork>[^/]+)", "remove"),
         ("GET", r"/api/art/(?P<name>[^/]+)", "art"),
+        ("GET", r"/api/machines", "machines"),
+        ("POST", r"/api/machines", "machine_add"),
+        ("POST", r"/api/machines/events", "machine_event"),
+        ("DELETE", r"/api/machines/(?P<machine>[^/]+)", "machine_revoke"),
     ]
 ]
 
@@ -190,9 +206,11 @@ class PlatformApp:
         *,
         max_upload: int = 64 * 1024 * 1024,
         web_dir: Path | None = None,
+        machines: Machines | None = None,
     ) -> None:
         self.service = service
         self.gate = gate
+        self.machines = machines
         self.max_upload = max_upload
         self.web_dir = web_dir or _web_dir()
         assets = self.web_dir / "assets.json"
@@ -242,6 +260,61 @@ class PlatformApp:
             ],
             body,
         )
+
+    def _machine_caps(self, info: dict[str, Any], *, signed_in: bool) -> dict[str, Any]:
+        """The session answer with ``machineTokens``: true when this host keeps machine
+        tokens and someone is signed in to make them."""
+        caps = info.get("capabilities")
+        if isinstance(caps, dict):
+            caps["machineTokens"] = self.machines is not None and signed_in
+        return info
+
+    def _machine(self, token: str) -> tuple[Principal, tuple[str, str]]:
+        if self.machines is None:
+            raise AuthError("This platform keeps no machine tokens")
+        found = self.machines.authenticate(token)
+        if found is None:
+            raise AuthError(
+                "This machine token is not valid here (it was revoked, or made on another "
+                "platform). Make a new one on the Machines page"
+            )
+        uid, machine_id, machine_name = found
+        principal = self.gate.principal_for(uid)
+        if principal is None:
+            raise AuthError("The account this machine token belongs to cannot sign in any more")
+        return principal, (machine_id, machine_name)
+
+    def _machines_route(
+        self,
+        name: str,
+        request: Request,
+        principal: Principal | None,
+        machine: tuple[str, str] | None,
+        args: dict[str, str],
+    ) -> tuple[int, list[tuple[str, str]], bytes]:
+        if self.machines is None:
+            raise NotFound("This platform keeps no machine tokens")
+        if name == "machine_event":
+            if machine is None or principal is None:
+                raise Forbidden("Only a machine reports its events, with its machine token")
+            kept = self.machines.record(principal.uid, machine[0], machine[1], request.json())
+            return self._json(200, {"ok": True, "event": kept})
+        if principal is None:
+            raise AuthError("Sign in to manage your machines")
+        if name == "machines":
+            return self._json(
+                200,
+                {
+                    "machines": self.machines.active(principal.uid),
+                    "events": self.machines.events(principal.uid),
+                },
+            )
+        if name == "machine_add":
+            body = request.json()
+            record, token = self.machines.create(principal.uid, str(body.get("name", "")))
+            return self._json(200, {"machine": record, "token": token})
+        self.machines.revoke(principal.uid, args["machine"])
+        return self._json(200, {})
 
     def _error(self, error: PlatformError) -> tuple[int, list[tuple[str, str]], bytes]:
         status = (
@@ -296,11 +369,24 @@ class PlatformApp:
         if name == "login":
             body = request.json()
             info, headers = self.gate.login(request, body)
-            return self._json(200, info, headers)
-        principal = self.gate.admit(request)
+            return self._json(200, self._machine_caps(info, signed_in=True), headers)
+        machine: tuple[str, str] | None = None
+        principal: Principal | None
+        bearer = request.header("Authorization") or ""
+        if bearer.startswith("Bearer "):
+            principal, machine = self._machine(bearer[7:].strip())
+            if name not in MACHINE_ROUTES:
+                raise Forbidden("A machine token reads its library and reports; it cannot do this")
+            if name == "bundle_archive" and not args["handle"].startswith("F~"):
+                raise Forbidden("A machine token downloads revisions of your own copies only")
+        else:
+            principal = self.gate.admit(request)
         svc = self.service
         if name == "session":
-            return self._json(200, self.gate.session(request, principal))
+            info = self.gate.session(request, principal)
+            return self._json(200, self._machine_caps(info, signed_in=principal is not None))
+        if name in ("machines", "machine_add", "machine_revoke", "machine_event"):
+            return self._machines_route(name, request, principal, machine, args)
         if name == "logout":
             return self._json(200, {}, self.gate.logout(request))
         if name == "assets":
@@ -386,5 +472,6 @@ def capabilities(*, sign_in: bool) -> dict[str, bool]:
         "runOnMachines": False,
         "newWithMana": False,
         "machines": False,
+        "machineTokens": False,
         "signIn": sign_in,
     }

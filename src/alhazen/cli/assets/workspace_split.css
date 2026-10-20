@@ -615,3 +615,91 @@ main { padding: 0 32px; max-width: none; }
   .launch-footer:has(> .launch-failure:not([hidden])) { position: relative; }
   .launch-failure p { max-height: none; overflow-y: visible; }
 }
+
+/* ---- Shut down (topbar) ---------------------------------------------------- */
+/* The control sits at the topbar's right edge; its confirmation opens under it
+ * as a small sheet, inside the page, and the shut-down screen replaces the
+ * page once the server has stopped. */
+.topbar-actions {
+  position: relative;
+  flex: none;
+}
+
+/* Shut down: a plain bordered button with a power mark, always in the top
+ * bar's right corner, so a dashboard started in the background can be
+ * stopped without hunting for it. */
+.shutdown-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.shutdown-icon { color: var(--bad-ink); flex: none; }
+
+.shutdown-button:hover,
+.shutdown-button[aria-expanded="true"] {
+  border-color: var(--bad-ink);
+  background: var(--surface-2);
+}
+
+.shutdown-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: min(340px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px var(--shadow);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.shutdown-popover[hidden] { display: none; }
+.shutdown-popover p { margin: 0 0 10px; }
+.shutdown-popover .shutdown-title { font-weight: 700; }
+.shutdown-popover #shutdown-detail { color: var(--muted); }
+.shutdown-error { color: var(--bad-ink); }
+
+.shutdown-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.shutdown-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.shutdown-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.shutdown-screen[hidden] { display: none; }
+
+.shutdown-card {
+  max-width: 460px;
+  padding: 28px 30px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.shutdown-card h1 { margin: 0 0 12px; font-size: 22px; }
+.shutdown-card p { margin: 0 0 8px; color: var(--muted); line-height: 1.5; }

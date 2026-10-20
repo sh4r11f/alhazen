@@ -2,8 +2,10 @@
 
 ``alhazen platform serve --config platform.toml`` serves the same application as the
 local host to several people, with accounts (``alhazen platform users ...``), sessions in
-an HttpOnly cookie and a CSRF token on every change. It runs the platform only: no
-experiment code runs on the server, and rigs still run sessions themselves.
+an HttpOnly cookie and a CSRF token on every change. Rigs reach it with machine tokens each
+person makes on the Machines page (machines.py; bearer tokens, so no cookie and no CSRF). It
+runs the platform only: no experiment code runs on the server, and rigs still run sessions
+themselves.
 
 Configuration (TOML, ``[server]`` table)::
 
@@ -42,6 +44,8 @@ from urllib.parse import urlsplit
 
 from alhazen.experiment_platform.accounts import Accounts
 from alhazen.experiment_platform.errors import AuthError, Forbidden, InvalidRequest
+from alhazen.experiment_platform.machines import FILE as MACHINES_FILE
+from alhazen.experiment_platform.machines import Machines
 from alhazen.experiment_platform.service import PlatformService, Principal
 from alhazen.experiment_platform.store import FileStore
 from alhazen.experiment_platform.webapp import PlatformApp, Request, capabilities
@@ -233,6 +237,9 @@ class ServerGate:
         }
         return info, [self._cookie(token, self.accounts.session_seconds)]
 
+    def principal_for(self, uid: str) -> Principal | None:
+        return self.accounts.principal(uid)
+
     def logout(self, request: Request) -> list[tuple[str, str]]:
         if self._session(request) is None:
             raise AuthError("Not signed in")
@@ -245,7 +252,10 @@ def build_app(config: ServerConfig) -> PlatformApp:
     accounts = Accounts(config.store / ACCOUNTS_FILE, session_days=config.session_days)
     service = PlatformService(store, public_catalogue=config.public_catalogue)
     return PlatformApp(
-        service, ServerGate(config, accounts), max_upload=config.max_upload_mb * 1024 * 1024
+        service,
+        ServerGate(config, accounts),
+        max_upload=config.max_upload_mb * 1024 * 1024,
+        machines=Machines(config.store / MACHINES_FILE),
     )
 
 
