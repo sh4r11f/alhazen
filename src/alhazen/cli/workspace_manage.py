@@ -373,6 +373,12 @@ class Management:
                     "parameter_set": run.get("parameter_set"),
                     "training": run.get("training"),
                     "rig": run.get("rig_name") or run.get("rig"),
+                    # "machine" for a session on this machine's rig, with what
+                    # it changed ({path, machine, session}) and where its event
+                    # lines came from; absent for a rig named by its file.
+                    "rig_source": run.get("rig_source"),
+                    "rig_changes": run.get("rig_changes"),
+                    "rig_events_source": run.get("rig_events_source"),
                     "status": run["status"],
                     "started": run["started"],
                     "finished": run.get("finished"),

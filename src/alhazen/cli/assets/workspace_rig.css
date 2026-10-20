@@ -1,0 +1,349 @@
+/* Alhazen experiment workspace — this machine's rig (workspace_rig.js).
+ *
+ * The Run page's Rig section: the heading with the machine's name, the
+ * summary (workspace.css .rig-summary), the Event lines table, and the
+ * settings fold, whose rows reuse the task parameters' (.parameter-row,
+ * .parameter-section) so the two editors read as one; a row the session
+ * changed is marked by an accent bar and carries a reset button. Then the
+ * set-up card and the General page's panel. Only tokens, never a colour.
+ */
+
+.rig-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 2px;
+}
+
+.rig-heading .section-title {
+  margin: 0;
+}
+
+.rig-machine {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.rig-machine-edit {
+  margin-left: auto;
+  font-size: 13.5px;
+  padding: 4px 10px;
+}
+
+/* ---- Event lines ---- */
+
+.rig-events {
+  margin-top: 16px;
+}
+
+.rig-events-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+.rig-subtitle {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.rig-events-summary {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.rig-events-source,
+.rig-events-dropped {
+  margin: 4px 0 0;
+  font-size: 13.5px;
+}
+
+.rig-event-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.rig-event-table th {
+  text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0 8px 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.rig-event-table td {
+  padding: 5px 8px 5px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.rig-event-table td:last-child,
+.rig-event-table th:last-child {
+  padding-right: 0;
+}
+
+.rig-event-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.rig-event-table input:not([type=checkbox]) {
+  width: 100%;
+  min-width: 9em;
+  font: 13px var(--mono);
+  padding: 5px 8px;
+}
+
+.rig-event-on .rig-event-name {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.rig-event-undeclared .rig-event-name,
+.rig-event-flag {
+  color: var(--accent);
+}
+
+.rig-event-flag {
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.rig-event-more {
+  margin-top: 8px;
+}
+
+.rig-event-more summary {
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+
+.rig-tracker-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin-top: 12px;
+}
+
+.rig-inline-field {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.rig-inline-field input::placeholder,
+.rig-event-table input::placeholder {
+  color: var(--muted);
+  font-family: inherit;
+}
+
+.rig-inline-field input {
+  width: 12em;
+  font: 13px var(--mono);
+  padding: 5px 8px;
+  color: var(--ink);
+}
+
+/* ---- The settings, for this session ---- */
+
+.rig-edit {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.rig-edit > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+  list-style-position: outside;
+}
+
+.rig-edit-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.rig-edit-count {
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.rig-edit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0 4px;
+}
+
+.rig-edit-bar input[type=search] {
+  flex: 1 1 14em;
+  min-width: 0;
+}
+
+.rig-edit-bar button {
+  font-size: 13.5px;
+  padding: 6px 12px;
+}
+
+#rig-fields {
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 7px;
+  scrollbar-width: thin;
+}
+
+.rig-row .rig-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rig-row .rig-value > input:not([type=checkbox]),
+.rig-row .rig-value > select,
+.rig-row .rig-value > textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rig-row .rig-value > input[type=checkbox] {
+  margin-left: auto;
+}
+
+.rig-row.changed {
+  box-shadow: inset 3px 0 0 var(--accent);
+  padding-left: 10px;
+}
+
+.rig-row.changed label {
+  font-weight: 650;
+}
+
+.rig-reset {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.rig-section-changed {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.rig-fixed,
+.rig-removed {
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.rig-save-confirm {
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 14px;
+}
+
+.rig-save-confirm p {
+  margin: 0 0 6px;
+}
+
+.rig-change-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font: 13px var(--mono);
+}
+
+.rig-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rig-confirm-actions .primary {
+  font-size: 14px;
+  padding: 8px 14px;
+}
+
+/* ---- Set-up card ---- */
+
+.rig-setup {
+  margin-top: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.rig-setup .help {
+  margin: 6px 0 12px;
+}
+
+.rig-setup-form {
+  display: grid;
+  gap: 10px;
+  max-width: 34rem;
+}
+
+.rig-setup-row {
+  display: grid;
+  gap: 5px;
+}
+
+.rig-setup-row label {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.rig-setup-facts {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.rig-setup-form .primary {
+  justify-self: start;
+  font-size: 14.5px;
+  padding: 9px 16px;
+}
+
+.rig-problem {
+  color: var(--accent);
+  font-size: 14px;
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .rig-machine-edit {
+    margin-left: 0;
+  }
+  .rig-event-table input:not([type=checkbox]) {
+    min-width: 0;
+  }
+}

@@ -291,7 +291,7 @@
       experimentPanel(p),
       subjectsPanel(container, p, people),
       experimentersPanel(container, p, people),
-      rigsPanel(p),
+      machinePanel(p),
     );
   }
 
@@ -812,126 +812,145 @@
     return box;
   }
 
-  /* -- rigs ----------------------------------------------------------------------- */
+  /* -- this machine's rig --------------------------------------------------------- */
 
-  function rigsPanel(p) {
+  /** The rig every session on this machine runs on (alhazen/cli/machine_rig.py):
+   *  its facts and its file, with an editor; the set-up card before it exists.
+   *  An experiment's own rig files are not listed: on this machine they are
+   *  a starting point at set-up and the event lines a session may start from. */
+  function machinePanel(p) {
     const aside = el('div', 'm-panel-actions');
-    const box = panel('MACHINES', 'Rigs', aside);
+    const box = panel('THIS MACHINE', 'This machine’s rig', aside);
+    box.id = 'm-machine';
+    box.append(el('p', 'm-hint', 'Every session this workspace launches, of every experiment, '
+      + 'runs on this rig. A session can change it for itself on the Run page; change it here '
+      + 'to change it for every session.'));
+    const body = el('div');
     const editor = el('div');
-    const wrap = el('div', 'm-table-wrap');
-    /** After a save: the table again from the workspace's fresh state, and
-     *  the saved file open for editing. */
-    const saved = async (path) => {
-      await h.refresh();
-      const fresh = h.state().projects.find((x) => x.id === p.id) || p;
-      drawRows(fresh);
-      await rigEditor(editor, fresh, path, null, saved, `Saved ${path}.`);
-    };
-    aside.append(button('＋ New rig', 'primary', () => rigEditor(editor, p, null, null, saved)));
-    box.append(el('p', 'm-hint', 'Rigs stay YAML files: the experiment’s own in configs/, and '
-      + 'the shared rigs its alhazen ships, read only. Change a shared rig by making a local rig '
-      + 'that extends it. Calibration and gamma results are written by Measure rig, not here.'));
-    function drawRows(project) {
-      const t = el('table', 'm-table');
-      const head = el('tr');
-      for (const c of ['Rig', 'Whose', 'Builds on', 'File', '']) head.append(el('th', '', c));
-      t.append(head);
-      for (const r of project.rigs) {
-        const tr = el('tr', r.shadowed ? 'm-archived' : '');
-        const acts = actionCell();
-        const path = r.source === 'alhazen' ? `alhazen/${r.name}` : r.path;
-        acts.box.append(button(r.source === 'alhazen' ? 'View' : 'Edit', 'quiet m-small',
-          () => rigEditor(editor, project, path, null, saved)));
-        if (r.source === 'alhazen' && !r.shadowed) {
-          acts.box.append(button('Make local', 'quiet m-small', () => rigEditor(editor, project,
-            null, r.name, saved)));
-        }
-        tr.append(
-          el('td', 'm-mono', r.source === 'alhazen' ? `alhazen/${r.name}`
-            : `${h.slugOf(project)}/${r.name}`),
-          el('td', '', r.source === 'alhazen' ? (r.shadowed ? 'shared (hidden by local)'
-            : 'shared') : 'experiment'),
-          el('td', 'm-mono', r.error ? `cannot be read: ${r.error}` : r.extends || '—'),
-          el('td', 'm-mono m-cell-path', r.source === 'alhazen' ? 'alhazen installation'
-            : r.path),
-          acts,
-        );
-        t.append(tr);
+    box.append(body);
+    const draw = async (notice = '') => {
+      body.replaceChildren(el('p', 'm-loading', 'Reading this machine’s rig…'));
+      let status;
+      try {
+        status = await h.api('/api/machine-rig');
+      } catch (e) {
+        body.replaceChildren(message('error', e.message));
+        return;
       }
-      wrap.replaceChildren(t);
-    }
-    drawRows(p);
-    if (p.rigs_note) box.append(message('note', p.rigs_note));
-    box.append(wrap, editor);
+      aside.replaceChildren();
+      if (!status.configured) {
+        if (window.RigEditor) {
+          window.RigEditor.setupCard(body, status, {
+            node: h.node, api: h.api,
+            onDone: async () => {
+              await h.refresh();
+              await draw('This machine’s rig is set up.');
+            },
+          });
+        } else {
+          body.replaceChildren(message('note', status.error
+            || 'This machine has no rig yet: run `alhazen rig init` in a terminal.'));
+        }
+        return;
+      }
+      aside.append(button('Edit', 'primary', () => machineEditor(editor, status, draw)));
+      body.replaceChildren();
+      if (notice) body.append(message('ok', notice));
+      if (status.problem) body.append(message('error', `It does not load: ${status.problem}`));
+      body.append(machineFacts(status, p), editor);
+    };
+    draw();
     return box;
   }
 
-  async function rigEditor(where, p, path, base = null, onSaved = null, notice = '') {
-    where.replaceChildren(el('p', 'm-loading', 'Opening…'));
-    let file = null;
-    if (path) {
-      try {
-        file = await h.api(`/api/manage/rig-file?project=${encodeURIComponent(p.id)}`
-          + `&path=${encodeURIComponent(path)}`);
-      } catch (e) {
-        where.replaceChildren(message('error', e.message));
-        return;
-      }
+  /** This machine's rig in a few lines: what the Run page will start from. */
+  function machineFacts(status, p) {
+    const v = status.values || {};
+    const m = v.monitor || {};
+    const devices = v.devices || {};
+    const facts = el('dl', 'm-facts');
+    const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value ?? '—'));
+    add('Machine', status.name);
+    add('Screen', `${m.width_px ?? '?'} × ${m.height_px ?? '?'} px · ${m.refresh_rate_hz ?? '?'} Hz · `
+      + `${m.width_cm ?? '?'} cm wide, ${m.distance_cm ?? '?'} cm away`);
+    add('Display', v.display?.backend || 'psychopy');
+    add('Eye tracker', devices.eyetracker?.backend || 'none');
+    add('Reward', devices.reward ? `${devices.reward.backend}${devices.reward.device ? ` · ${devices.reward.device}` : ''}` : 'none');
+    add('Sync', devices.sync ? devices.sync.backend : 'none');
+    add('Live monitor', v.live_monitor?.enabled ? 'on' : 'off');
+    add('Real data', v.real_data === false ? 'refused: a development rig (real_data: false)' : 'collected');
+    const root = v.data_root;
+    add('Data folder', root ? `${root}${/^([A-Za-z]:|\/|~)/.test(root) ? '' : ` (inside each experiment’s folder: ${p.path}/${root})`}` : 'none');
+    const made = status.template?.label;
+    add('Set up from', made ? `${made}${status.created ? ` on ${when(status.created)}` : ''}` : (status.created ? when(status.created) : null));
+    const last = (status.saves || []).at(-1);
+    if (last && last.by !== 'setup') {
+      add('Last saved', `${when(last.at)} from the ${last.by}${last.changes?.length ? ` (${last.changes.join(', ')})` : ''}`);
     }
+    const file = el('dd', 'm-mono m-cell-path', status.file);
+    facts.append(el('dt', '', 'File'), file);
+    return facts;
+  }
+
+  /** This machine's rig as YAML: check, then save (the file as read must
+   *  not have changed meanwhile; the previous one is kept beside it). */
+  function machineEditor(where, status, after) {
     const box = el('div', 'm-preview');
-    const editable = !file || file.editable;
-    box.append(el('h3', 'm-preview-title', file
-      ? `${file.path}${editable ? '' : ' (read only)'}` : 'New rig'));
-    if (file) box.append(el('p', 'm-hint m-mono', file.file));
+    box.append(el('h3', 'm-preview-title', `rig-${status.name}.yaml`));
     const form = el('form', 'm-form m-form-wide');
-    const name = input(base || '', {maxlength: '64', placeholder: 'e.g. lab2'});
-    let template = 'extends: laptop\n';
-    if (base) {
-      template = `# A local rig for this experiment: alhazen's shared '${base}', with the lines\n`
-        + `# below merged over it. Change only what differs on this machine.\nextends: ${base}\n`;
-    }
-    const text = textarea(file ? file.text : template, 14);
+    const text = textarea(status.text, 18);
     text.className = 'm-code';
     text.spellcheck = false;
-    text.readOnly = !editable;
-    if (!file) {
-      form.append(field('Name', name, 'Saved as configs/rig-<name>.yaml, never over an '
-        + 'existing file.'));
-    }
-    form.append(field('YAML', text));
+    form.append(field('YAML', text, 'One complete rig: no extends, and no event names (a '
+      + 'session assigns its task’s events to lines on the Run page).'));
     const result = el('div');
-    if (notice) result.append(message('ok', notice));
     const actions = el('div', 'm-form-actions');
-    actions.append(button('Close', 'quiet', () => { clean('rig'); where.replaceChildren(); }));
-    if (editable) {
-      actions.append(button('Check', 'quiet', async () => {
-        const answer = await attempt(result, () => h.api('/api/manage/rig-check',
-          {project: p.id, text: text.value, path: file?.path}));
-        if (answer) {
-          result.replaceChildren(message('ok', `Valid${answer.extends
-            ? `, building on alhazen/${answer.extends}` : ''}.`));
-        }
-      }));
-      const save = button('Save rig', 'primary');
-      save.type = 'submit';
-      actions.append(save);
-    }
+    actions.append(button('Close', 'quiet', () => { clean('machine'); where.replaceChildren(); }));
+    actions.append(button('Check', 'quiet', async () => {
+      const answer = await attempt(result, () => h.api('/api/machine-rig/check', {text: text.value}));
+      if (answer) {
+        result.replaceChildren(message('ok', answer.changes.length
+          ? `Valid. Changes: ${answer.changes.map((c) => c.path).join(', ')}.`
+          : 'Valid, and the same as the saved rig.'));
+      }
+    }));
+    const save = button('Save', 'primary');
+    save.type = 'submit';
+    actions.append(save);
     form.append(result, actions);
-    watch(form, 'rig');
+    watch(form, 'machine');
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const body = file
-        ? {project: p.id, path: file.path, text: text.value, sha256: file.sha256}
-        : {project: p.id, name: name.value, text: text.value};
-      const answer = await attempt(result, () => h.api('/api/manage/rig-save', body),
-        () => rigEditor(where, p, file?.path || null, base, onSaved));
+      const answer = await attempt(result,
+        () => h.api('/api/machine-rig/save', {text: text.value, sha256: status.sha256}),
+        () => after());
       if (answer) {
-        clean('rig');
-        if (onSaved) await onSaved(answer.path);
+        clean('machine');
+        where.replaceChildren();
+        await h.refresh();
+        await after('Saved this machine’s rig. Sessions launched from now on start from it.');
       }
     });
     box.append(form);
     where.replaceChildren(box);
+  }
+
+  /** What a session changed of this machine's rig, one line per setting. */
+  function rigChangesText(changes) {
+    const shown = (changes || []).filter((c) => !c.path.startsWith('devices.sync.event_lines')
+      && !c.path.startsWith('display.photodiode.events'));
+    if (!shown.length) return 'nothing';
+    const value = (v) => (v === undefined ? 'not set' : (typeof v === 'string' ? v : JSON.stringify(v)));
+    return shown.map((c) => `${c.path}: ${value(c.absent === 'machine' ? undefined : c.machine)} → `
+      + `${value(c.absent === 'session' ? undefined : c.session)}`).join('; ');
+  }
+
+  /** A session's event lines in one line: "FIX_ON → Dev1/port0/line0, …". */
+  function eventLinesText(events) {
+    const lines = Object.entries(events?.event_lines || {}).map(([e, l]) => `${e} → ${l}`);
+    const diode = (events?.photodiode_events || []).length
+      ? [`photodiode: ${events.photodiode_events.join(', ')}`] : [];
+    return [...lines, ...diode].join(', ') || 'none';
   }
 
   /* ---------------------------------------------------------------- */
@@ -1219,7 +1238,11 @@
     add('Date', s.date);
     add('Task', s.task);
     add('Mode', s.mode ? h.label(s.mode) : `not recorded (${s.root_kind} folder)`);
-    add('Rig', s.rig);
+    add('Rig', s.rig_origin ? `${s.rig} (this machine’s rig)` : s.rig);
+    if (s.rig_origin) {
+      add('Rig changes', rigChangesText(s.rig_origin.changes));
+      add('Event lines', eventLinesText(s.rig_origin.events));
+    }
     add('Experimenter', experimenterText(s.experimenter));
     add('Age, sex', s.demographics?.recorded
       ? (h.demographicsText(s.demographics) || 'not recorded (session.json says none)')
@@ -1287,7 +1310,11 @@
     const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value ?? '—'));
     add('Status', l.status + (l.active ? ' (in progress)' : ''));
     add('Task', l.parameter_set ? `${l.parameter_set}${l.task ? ` (${l.task})` : ''}` : l.task);
-    add('Rig', l.rig);
+    add('Rig', l.rig_source === 'machine' ? `${l.rig} (this machine’s rig)` : l.rig);
+    if (l.rig_source === 'machine') {
+      add('Rig changes', rigChangesText(l.rig_changes));
+      if (l.rig_events_source?.label) add('Event lines from', l.rig_events_source.label);
+    }
     let subject = null;
     if (l.subject) {
       subject = `sub-${l.subject}${l.initials ? ` · ${l.initials}` : ''}`

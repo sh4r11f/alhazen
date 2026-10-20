@@ -131,6 +131,15 @@ let editProject = null;
  * previous rig, parameter file or task would land on top of the current one. */
 let configEpoch = 0;
 let rigEpoch = 0;
+/* This machine's rig as the Run page's Rig section holds it (loadRig):
+ * {machine: {name, file, sha256, values, problem}, prefill, current, events,
+ *  taskEvents, source, dropped, rewardCalibration, key} — `current` is what a
+ * launch sends as `rig_values`. Null before it is read, or while the machine
+ * has no rig (the set-up card shows then). */
+let sessionRig = null;
+/* RigConfig's JSON schema (GET /api/machine-rig/schema), read once, for the
+ * rig settings' choices; null until read, or when it cannot be. */
+let rigSchema = null;
 let schemaEpoch = 0;
 /* The open experiment's people (GET /api/manage/people): its subjects,
  * its experimenters and the CSV copies' state; null until loaded. The Run
@@ -505,19 +514,11 @@ function groupedOptions(select, groups, previous) {
 /* Rigs                                                                */
 /* ------------------------------------------------------------------ */
 
-/* A project's `rigs` are {name, source, path, shadowed, extends}: its own
- * rigs (source 'experiment', path relative to the project) and then the
- * shared rigs its alhazen ships (source 'alhazen'). A rig's name is its file
- * name without rig- and .yaml — `lab` for configs/rig-lab.yaml. The page
- * shows every rig with its owner in front, <experiment slug>/<name> or
- * alhazen/<name>, which --rig takes as well as the bare name (docs/rigs.md). */
-
-/** What the Rig menu sends for rig `r`: an experiment rig's project-relative
- *  path, or alhazen/<name> for a shared rig — the spelling that names the
- *  shared one even when the experiment has a rig of the same name. */
-function rigValue(r) {
-  return r.source === 'alhazen' ? `alhazen/${r.name}` : r.path;
-}
+/* Every session the workspace launches runs on this machine's rig
+ * (alhazen/cli/machine_rig.py; a project's `machine_rig` is {name, file,
+ * data_root}, null before it is set up). Runs launched before it named an
+ * experiment's rig or a shared one, which the history still shows by their
+ * qualified names (rigName). */
 
 /** Rig `name`'s qualified name: `alhazen/<name>` for a shared rig
  *  (`source` 'alhazen'), `<slug>/<name>` for one of experiment `slug`'s own
@@ -527,55 +528,15 @@ function rigName(name, source, slug) {
   return `${source === 'alhazen' ? 'alhazen' : slug}/${name}`;
 }
 
-/** A rig's text in the menu: its qualified name, never its file, and
- *  nothing more, so it fits the closed menu (the shared rig it extends is in
- *  the summary under it, loadRig). One whose name two of the experiment's
- *  files share (`duplicates`) carries its file, since its name alone would
- *  not say which it is. */
-function rigLabel(r, duplicates, slug) {
-  const text = rigName(r.name, r.source, slug);
-  return r.source === 'experiment' && duplicates.has(r.name) ? `${text} (${r.path})` : text;
-}
-
-/** Fill the Rig menu for project `p`: the experiment's own rigs, then the
- *  shared ones, as two groups, each sorted by name. A shared rig the experiment's own rig of the
- *  same name hides (`shadowed`) is left out: the experiment's is the one that
- *  name means, and the command line still reaches the shared one as
- *  alhazen/<name>. The menu opens on the laptop, at the owner's request
- *  (2026-10-02): the laptop rig is the development machine, where an
- *  experiment is written and tried (docs/rigs.md), and it has a window and
- *  no devices, so a launch nobody re-pointed cannot reach for hardware that
- *  is not there. (It used to open on the mac, the same kind of machine for
- *  someone working on a Mac, who now chooses it from the menu.)
- *  The experiment's own laptop when it has one — it shadows the shared
- *  laptop, which the menu then leaves out — else alhazen's shared laptop,
- *  else the first rig listed. */
-function rigMenu(p) {
-  const slug = slugOf(p);
-  const rigs = p.rigs || [];
-  const own = rigs.filter((r) => r.source === 'experiment');
-  const shared = rigs.filter((r) => r.source === 'alhazen' && !r.shadowed);
-  const seen = new Set();
-  const duplicates = new Set();
-  for (const r of own) {
-    if (seen.has(r.name)) duplicates.add(r.name);
-    seen.add(r.name);
-  }
-  // The experiment's own laptop is looked for first: the shared one of that
-  // name is shadowed by it, so it is not in `shared` to be found anyway.
-  const laptop = own.find((r) => r.name === 'laptop') || shared.find((r) => r.name === 'laptop');
-  const first = laptop || own[0] || shared[0];
-  // Each group sorted by name (byName), at the owner's request (2026-10-06).
-  const items = (list) => list.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])
-    .sort((a, b) => byName(a[1], b[1]));
-  groupedOptions($('rig'), [
-    ['This experiment', items(own)],
-    ['Shared (alhazen)', items(shared)],
-  ], first ? rigValue(first) : '');
-  // Said under the menu when the registration predates shared rigs, so a
-  // menu without them is explained rather than mistaken for "there are none".
-  $('rig-note').textContent = p.rigs_note || '';
-  $('rig-note').hidden = !p.rigs_note;
+/** The Rig section's heading for project `p`: this machine's rig by name,
+ *  with the way to edit it, or the set-up card while the machine has none.
+ *  There is no menu: every session here runs on this machine's rig. */
+function machineHeader(p) {
+  const machine = p?.machine_rig;
+  $('rig-machine').textContent = machine ? `This machine · ${machine.name}` : 'This machine has no rig yet';
+  $('rig-machine-edit').hidden = !machine;
+  $('rig-note').textContent = '';
+  $('rig-note').hidden = true;
 }
 
 /**
@@ -653,6 +614,13 @@ function rewardFact(reward, calibration) {
  *  its file name (rig-lab.yaml is lab), and is the experiment's unless it
  *  was launched as alhazen/<name>. */
 function runRig(run, slug) {
+  // A session on this machine's rig: the machine's name, and that the
+  // session changed it when it did.
+  if (run.rig_source === 'machine') {
+    const changed = (run.rig_changes || []).filter((c) => !c.path.startsWith('devices.sync.event_lines')
+      && !c.path.startsWith('display.photodiode.events')).length;
+    return changed ? `${run.rig_name} (${changed} changed)` : run.rig_name;
+  }
   if (run.rig_name) return rigName(run.rig_name, run.rig_source, slug);
   const name = run.rig.split('/').pop().replace(/\.ya?ml$/, '').replace(/^rig-/, '');
   return rigName(name, run.rig.startsWith('alhazen/') ? 'alhazen' : 'experiment', slug);
@@ -794,14 +762,15 @@ function psychopyWarning(p, mode, backend, headless) {
 function developmentRigWarning(mode, name) {
   if (mode === 'training' && !rehearsing() && name) {
     return `${label('training')} drives a real subject, and ${name} is a development rig `
-      + '(real_data: false): this launch will be refused before anything is written. Choose '
-      + 'the rig the monkey works on, or tick Rehearse to try the stage on this machine.';
+      + '(real_data: false): this launch will be refused before anything is written. Tick '
+      + 'Rehearse to try the stage on this machine, or set real_data: true in this machine’s '
+      + 'rig if the monkey works here.';
   }
   if (mode !== 'run' || !name) return null;
   return `${label('run')} records real data, and ${name} is a development rig `
-    + '(real_data: false): this launch will be refused before anything is written. Choose '
-    + `a rig that collects real data, or ${label('test')} or ${label('simulate')} to try `
-    + 'the session on this machine.';
+    + '(real_data: false): this launch will be refused before anything is written. Use '
+    + `${label('test')} or ${label('simulate')} to try the session on this machine, or set `
+    + 'real_data: true in this machine’s rig if subjects are recorded here.';
 }
 
 /**
@@ -831,9 +800,10 @@ function launchSummary() {
     if (training.stage) parts.push(`stage ${training.stage.number} ${training.stage.title}`);
     if (training.rehearse) parts.push('rehearsal');
   }
-  const rig = [...$('rig').querySelectorAll('option')]
-    .find((o) => o.value === $('rig').value)?.textContent;
-  if (rig) parts.push(rig);
+  if (sessionRig) {
+    const changed = RigEditorOr()?.settingChanges(sessionRig).length || 0;
+    parts.push(changed ? `${sessionRig.machine.name} (${changed} changed)` : sessionRig.machine.name);
+  }
   if (['run', 'test', 'simulate', 'training'].includes(mode)) {
     const subject = chosenSubject()?.code || $('subject').value.trim();
     if (subject) parts.push(`sub-${subject}`);
@@ -1071,7 +1041,6 @@ function launchDraft() {
     // task and folder keep the task's own name. None for a launch that
     // takes no parameters.
     parameter_set: !isScript && usesParameters() ? (selectedSet()?.label ?? null) : null,
-    rig: $('rig').value,
     trials: Number($('trials').value),
     // Options are sent only for the mode that shows them: a hidden checkbox
     // keeps its state across mode changes and must not leak into a launch.
@@ -1097,6 +1066,9 @@ function launchDraft() {
   // own (renderCalibration).
   const calibrationTarget = calibrationToSend();
   if (calibrationTarget) draft.calibration_target = calibrationTarget;
+  // The rig: this machine's, as the Rig section left it for this session
+  // (its changes and event lines); the server records what differs.
+  if (sessionRig) draft.rig_values = sessionRig.current;
   // Parameters travel as the editor shows them: the raw text from the text
   // editor (the server parses and validates it) or the edited values from
   // the fields. Modes that take no parameters send neither.
@@ -1112,7 +1084,7 @@ function launchDraft() {
  * launch draft, or why there is none to ask about yet. */
 function estimateDraft() {
   const p = project();
-  if (!p || !p.available || !p.rigs.length || p.tasks_error) return null;
+  if (!p || !p.available || !p.machine_rig || !sessionRig || p.tasks_error) return null;
   if (usesParameters() && (loadingConfig || loadingSchema)) {
     return {waiting: 'Waiting for the task parameters…'};
   }
@@ -1129,7 +1101,8 @@ function updateLaunch() {
   const p = project();
   const waitingForParameters = usesParameters() && (loadingConfig || loadingSchema);
   $('launch').disabled = !!state.active
-    || !p?.rigs.length
+    || !p?.machine_rig
+    || !sessionRig
     || launching
     || waitingForParameters
     || !p?.available
@@ -1150,7 +1123,9 @@ function updateLaunch() {
     mode, p ? rigDevelopment[`${p.id}:${$('rig').value}`] : null,
   );
   let note;
-  if (p?.tasks_error) {
+  if (p && !p.machine_rig) {
+    note = 'Set up this machine’s rig first, in the Rig section: every session here runs on it.';
+  } else if (p?.tasks_error) {
     // Before the active-run note: this one asks the reader to fix run.py,
     // which a finished run does not change.
     note = 'Nothing can be launched until run.py’s task table (TASKS) can be read: '
@@ -1188,6 +1163,7 @@ function updateLaunch() {
   $('launch-note').classList.toggle(
     'launch-warning',
     note === development || note === psychopy || note === calibrationProblem()
+      || (p && !p.machine_rig)
       || note === identityProblem() || note === trainingProblem(),
   );
 }
@@ -1307,6 +1283,9 @@ function modeChanged() {
   renderLiveStreams();
   // The calibration target applies to run and test only (renderCalibration).
   if (calibration) renderCalibration();
+  // The Rig section: read again for another kind of launch or task, else
+  // redrawn (Measure rig runs the machine's rig as saved, read only).
+  maybeReloadRig();
   // Extra arguments are offered for every mode and script; only the words
   // change. A script's help lists the flags it declares, less the ones the
   // launcher sets itself, which are not offered for retyping. A mode's says
@@ -1352,6 +1331,7 @@ async function chooseProject(id, nextView = null) {
     fillMenu($('subject-record'), [['', 'Loading…']], '');
     fillMenu($('experimenter'), [['', 'Loading…']], '');
   }
+  if (selected !== id) sessionRig = null;
   selected = id;
   localStorage.setItem('alhazen-workspace-project', id || '');
   // Every list belongs to the previous project: force each to redraw.
@@ -1383,8 +1363,8 @@ async function chooseProject(id, nextView = null) {
     ...p.scripts.map((s) => [s.id, s.label]),
   ].sort((a, b) => byName(a[1], b[1]));
   options($('mode'), modes, preview ? preview.id : 'simulate');
-  // Rigs by name, the experiment's own and then the shared ones (rigMenu).
-  rigMenu(p);
+  // This machine's rig, by name (machineHeader); loadRig reads it below.
+  machineHeader(p);
   // The Task parameters entries by name, each pairing a file with the task
   // it runs, opening on the default task's own file (presetMenu).
   presetMenu(p);
@@ -1485,6 +1465,8 @@ async function parameterSetChanged() {
   const loads = [loadConfig()];
   if (selectedTask() !== schemaTask) loads.push(loadSchema(p.id));
   await Promise.all(loads);
+  // Another task: its event lines and carried settings (loadRig).
+  maybeReloadRig();
 }
 
 /* The modes whose session opens a live monitor (workspace.py LIVE_STREAM_MODES). */
@@ -1503,49 +1485,98 @@ function renderLiveStreams() {
   $('live-streams-field').hidden = !sendsLiveStreams();
 }
 
+/** workspace_rig.js's RigEditor, or null when that script did not load (the
+ *  page then shows the rig's summary and launches it unchanged). */
+function RigEditorOr() {
+  return typeof RigEditor === 'undefined' ? null : RigEditor;
+}
+
+/** The task whose events and carried settings the Rig section starts from,
+ *  and the kind of launch: a session, a measurement or a script. Read again
+ *  only when this changes (maybeReloadRig). */
+function rigKey() {
+  const mode = $('mode').value;
+  const p = project();
+  const isScript = !!p?.scripts.some((s) => s.id === mode);
+  let task = null;
+  if (mode === 'training') task = trainingChoice()?.stage?.task ?? null;
+  else if (!isScript && mode !== 'measure') task = selectedTask();
+  const kind = mode === 'measure' ? 'measure' : (isScript ? 'script' : 'session');
+  const sent = isScript ? mode : (kind === 'measure' ? 'measure' : mode);
+  return {task, mode: sent, text: `${p?.id}|${kind}|${task ?? ''}`};
+}
+
 /**
- * Read the selected rig and summarise its monitor, and say whose rig it is.
- * The server answers with the rig as it would run — merged over the shared
- * rig it extends, when it extends one (/api/rig) — so a rig whose own file
- * says nothing about the live monitor still reports the shared rig's setting.
- * The epoch drops the answer for a rig that is no longer the selected one.
+ * Read this machine's rig for the open experiment (GET /api/session-rig):
+ * the machine's settings, what a session of the chosen task starts from
+ * (the event lines and settings carried from its last session here), and
+ * the task's events. Until the machine has a rig, the set-up card stands in
+ * for the whole section. The person's own changes to the settings are kept
+ * across a change of task or mode (RigEditor.carryChanges); the event lines
+ * start over for the new task. The epoch drops a stale answer.
  */
 async function loadRig() {
   const epoch = ++rigEpoch;
   const p = project();
-  const value = $('rig').value;
-  $('rig-summary').textContent = value
-    ? 'Reading rig…'
-    : 'No rigs: none in this experiment’s configs/ (rig-<name>.yaml), and none '
-      + 'shared by its alhazen.';
-  if (!value) return;
-  const query = `project=${encodeURIComponent(p.id)}&rig=${encodeURIComponent(value)}`;
-  const data = await api(`/api/rig?${query}`);
+  if (!p) return;
+  machineHeader(p);
+  const editor = RigEditorOr();
+  if (!p.machine_rig) {
+    sessionRig = null;
+    $('rig-summary').hidden = true;
+    $('rig-events').hidden = true;
+    $('rig-edit').hidden = true;
+    $('rig-setup').hidden = false;
+    $('rig-setup').replaceChildren(node('p', 'help', 'Reading the rigs this machine can start from…'));
+    setCalibrationRig(p, {});
+    measureRig = null;
+    updateLaunch();
+    const status = await api('/api/machine-rig');
+    if (epoch !== rigEpoch) return;
+    if (status.configured) {
+      // Set up meanwhile, from another page or a terminal.
+      await refresh();
+      return;
+    }
+    if (editor) {
+      editor.setupCard($('rig-setup'), status, {
+        node, api,
+        onDone: async () => {
+          await refresh();
+          await loadRig();
+        },
+      });
+    } else {
+      $('rig-setup').replaceChildren(node('p', 'help', 'This machine has no rig yet: run '
+        + '`alhazen rig init` in a terminal.'));
+    }
+    return;
+  }
+  $('rig-setup').hidden = true;
+  $('rig-summary').hidden = false;
+  if (!sessionRig) $('rig-summary').textContent = 'Reading this machine’s rig…';
+  const key = rigKey();
+  const query = new URLSearchParams({project: p.id, mode: key.mode});
+  if (key.task) query.set('task', key.task);
+  const data = await api(`/api/session-rig?${query}`);
   if (epoch !== rigEpoch) return;
-  const rig = data.values;
-  // Whose rig this is, by the qualified name the menu shows and the command
-  // line takes, then where it comes from and the shared rig it extends.
-  // (A shared rig the experiment's own hides is not in the menu, so it is
-  // never summarised here: rigMenu.)
-  const name = rigName(data.name, data.source, slugOf(p));
-  const origin = data.source === 'alhazen'
-    ? [name, 'alhazen’s shared rig']
-    : [name, `this experiment’s ${value}`];
-  if (data.extends) origin.push(`extends alhazen/${data.extends}`);
-  const m = rig.monitor || {};
-  // The live monitor is opt-in (LiveMonitorConfig.enabled defaults to false),
-  // so a rig without the block, or without the key, has it off. Remembered
-  // for the Live monitor tab, which cannot re-read the YAML on every poll.
-  // `dashboard:` is the same section as alhazen spelled it before 1.9. It
-  // stays here although alhazen 2.0 refuses it, because the rig is read by
-  // the PROJECT's alhazen, not this one: a project still on 1.x (before 1.9
-  // it is the only spelling there is; 1.9 and 1.10 read either) says it, its
-  // session reads it, and the workspace launches it (/api/rig is the rig
-  // file unvalidated; workspace.py _as_the_project_reads_it). The page must
-  // agree with that session about whether a monitor is coming. A project on
-  // 2.0 that still says it is refused at launch, naming `live_monitor:`.
-  const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
-  rigMonitor[`${p.id}:${value}`] = monitorOn;
+  const next = {
+    project: p.id,
+    key: key.text,
+    machine: data.machine,
+    prefill: data.values,
+    current: JSON.parse(JSON.stringify(data.values)),
+    events: data.events ?? null,
+    taskEvents: data.task_events ?? null,
+    source: data.events_source ?? null,
+    dropped: data.dropped || [],
+    rewardCalibration: data.reward_calibration ?? null,
+  };
+  if (editor && sessionRig && sessionRig.project === p.id
+      && sessionRig.machine.sha256 === next.machine.sha256) {
+    editor.carryChanges(sessionRig, next);
+  }
+  sessionRig = next;
   // The Live monitor switches start where this rig was last launched from
   // here, else at its own live_monitor settings (server: _live_stream_defaults).
   const streams = data.live_streams || { gaze_traces: true, camera: true };
@@ -1556,33 +1587,183 @@ async function loadRig() {
   $('live-streams-help').textContent = streams.problem
     ? 'Started from the rig: ' + streams.problem + '.' : '';
   $('live-streams-help').hidden = !streams.problem;
+  setCalibrationRig(p, sessionRig.current);
+  measureRig = sessionRig.current;
+  renderMeasurements();
+  if (editor && rigSchema === null) loadRigSchema();
+  renderRig();
+}
+
+/* Why the rig settings' choices could not be read, said under them; null. */
+let rigSchemaError = null;
+
+/** RigConfig's schema, once, for the settings' choices. The fields work
+ *  without it (a free-text field where a menu would be), so a failure does
+ *  not stop a launch: it is said under the settings, and asked again when
+ *  the Rig section is next read. */
+async function loadRigSchema() {
+  rigSchema = false;
+  try {
+    rigSchema = await api('/api/machine-rig/schema');
+    rigSchemaError = null;
+  } catch (e) {
+    rigSchema = null;
+    rigSchemaError = e.message;
+  }
+  if (sessionRig) renderRig();
+}
+
+/** Read the Rig section again when the task or the kind of launch changed,
+ *  else only redraw it (a mode change can make it read only). */
+function maybeReloadRig() {
+  if (!sessionRig || sessionRig.project !== selected) return;
+  if (sessionRig.key !== rigKey().text) guard(loadRig)();
+  else renderRig();
+}
+
+/**
+ * Draw the Rig section from `sessionRig`: the summary of the rig as this
+ * session will run it, the Event lines, and the settings with what the
+ * session changed. `fields` false redraws all but the settings, for an edit
+ * still being typed (a redraw would take the field from under the cursor).
+ */
+function renderRig({fields = true} = {}) {
+  const p = project();
+  if (!p || !sessionRig) return;
+  describeRig(p, sessionRig);
+  const editor = RigEditorOr();
+  if (!editor) {
+    $('rig-events').hidden = true;
+    $('rig-edit').hidden = true;
+    updateLaunch();
+    return;
+  }
+  const mode = $('mode').value;
+  const measuring = mode === 'measure';
+  const isScript = p.scripts.some((s) => s.id === mode);
+  $('rig-events').hidden = measuring || isScript;
+  if (!$('rig-events').hidden && fields) {
+    editor.renderEvents($('rig-events'), sessionRig, {node, onChange: rigChanged});
+  }
+  $('rig-edit').hidden = false;
+  if (fields) {
+    editor.renderFields($('rig-fields'), sessionRig, {
+      node, schema: rigSchema || null, query: $('rig-search').value, disabled: measuring,
+      onChange: rigChanged,
+    });
+  }
+  const changed = editor.settingChanges(sessionRig).length;
+  $('rig-edit-count').textContent = changed ? `${changed} changed` : 'as saved';
+  $('rig-save').disabled = measuring || !changed;
+  $('rig-reset-all').disabled = measuring
+    || (!changed && editor.same(sessionRig.current, sessionRig.prefill));
+  $('rig-edit-help').textContent = measuring
+    ? 'Measure rig measures this machine’s rig as it is saved, and keeps what it measures '
+      + 'beside it, so it runs without this session’s changes.'
+    : 'Changes here are for this session only and are recorded with it. Save to this '
+      + 'machine’s rig to keep them for every later session on this machine.';
+  if (rigSchemaError) {
+    $('rig-edit-help').textContent += ` The settings’ choices could not be read (${rigSchemaError}), `
+      + 'so every value is typed.';
+  }
+  updateLaunch();
+}
+
+/** An edit in the Rig section: redraw it (quietly while a field is typed in). */
+function rigChanged(options = {}) {
+  $('rig-save-confirm').hidden = true;
+  renderRig({fields: !options.quiet});
+}
+
+/**
+ * The summary under the Rig heading, of the rig as this session will run
+ * it — this machine's rig with the session's changes: its screen, display,
+ * live monitor, reward line, and whether it collects real data. Also kept
+ * for the rest of the page: whether a live monitor is coming, the display
+ * backend (the PsychoPy warning) and whether it is a development rig.
+ */
+function describeRig(p, rigState) {
+  const rig = rigState.current;
+  const value = $('rig').value;
+  const m = rig.monitor || {};
+  // The live monitor is opt-in (LiveMonitorConfig.enabled defaults to false),
+  // so a rig without the block, or without the key, has it off. `dashboard:`
+  // is the same section as alhazen spelled it before 1.9, which a project on
+  // an older alhazen may still read.
+  const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
+  rigMonitor[`${p.id}:${value}`] = monitorOn;
   renderLiveStreams();
   // The display backend, for the launch footer's PsychoPy warning. A rig
   // that does not say gets the model's default (DisplayConfig.backend).
   rigBackend[`${p.id}:${value}`] = rig.display?.backend || 'psychopy';
-  // Whether real data may be collected on it. The model's default is true,
-  // so only an explicit false — in the file or the shared rig it extends,
-  // the answer already merged here — makes a development rig.
+  // Whether real data may be collected on it: only an explicit false makes a
+  // development rig (the model's default is true).
   const development = rig.real_data === false;
+  const name = `this machine’s rig (${rigState.machine.name})`;
   rigDevelopment[`${p.id}:${value}`] = development ? name : null;
-  // '?' rather than 'undefined' for a field the YAML leaves to its default.
-  setCalibrationRig(p, rig);
-  measureRig = rig;
-  renderMeasurements();
-  rigFacts([
+  const editor = RigEditorOr();
+  const changed = editor ? editor.settingChanges(rigState).length : 0;
+  const origin = [rigState.machine.name, changed ? `${changed} changed for this session` : 'as saved'];
+  const facts = [
     ['Screen', [`${m.width_px ?? '?'} × ${m.height_px ?? '?'} px`, `${m.refresh_rate_hz ?? '?'} Hz`]],
     ['Size', [`${m.width_cm ?? '?'} cm wide`, `${m.distance_cm ?? '?'} cm away`]],
     ['Display', [rig.display?.backend || 'default display']],
     ['Live monitor', [monitorOn ? 'on' : 'off']],
-    // Shown only for a development rig: every other rig collects, as every
-    // rig did before the setting existed, and a line saying so on each
-    // would be noise.
+    // Shown only for a development rig: every other rig collects, and a line
+    // saying so on each would be noise.
     ...(development ? [['Real data', ['refused', 'a development rig (real_data: false)']]] : []),
-    ...rewardFact(rig.devices?.reward, data.reward_calibration),
+    ...rewardFact(rig.devices?.reward, rigState.rewardCalibration),
     ['Rig', origin],
-  ]);
-  // The footer's warning depends on the backend just learned.
-  updateLaunch();
+  ];
+  rigFacts(facts);
+  if (rigState.machine.problem) {
+    $('rig-note').textContent = `This machine’s rig does not load: ${rigState.machine.problem}`;
+    $('rig-note').hidden = false;
+  }
+}
+
+/** Ask, in place, before a session's changes become this machine's. */
+function askSaveRig() {
+  const editor = RigEditorOr();
+  if (!editor || !sessionRig) return;
+  const changes = editor.settingChanges(sessionRig);
+  if (!changes.length) return;
+  const box = $('rig-save-confirm');
+  box.replaceChildren();
+  box.append(node('p', '', `Save ${changes.length} change${changes.length === 1 ? '' : 's'} to `
+    + `this machine’s rig (${sessionRig.machine.name})? Every later session on this machine, of `
+    + 'every experiment, starts from it. Event lines stay with this session.'));
+  const list = node('ul', 'rig-change-list');
+  for (const c of changes) {
+    list.append(node('li', '', `${c.path}: ${editor.show(c.absent === 'machine' ? undefined : c.machine)} → `
+      + `${editor.show(c.absent === 'session' ? undefined : c.session)}`));
+  }
+  const actions = node('div', 'rig-confirm-actions');
+  const yes = node('button', 'primary', 'Save to this machine’s rig');
+  yes.type = 'button';
+  const no = node('button', 'quiet', 'Cancel');
+  no.type = 'button';
+  no.addEventListener('click', () => { box.hidden = true; });
+  yes.addEventListener('click', guard(async () => {
+    yes.disabled = true;
+    try {
+      const answer = await api('/api/machine-rig/save', {
+        values: sessionRig.current, sha256: sessionRig.machine.sha256,
+      });
+      sessionRig.machine = {
+        name: answer.name, file: answer.file, sha256: answer.sha256, values: answer.values,
+        problem: answer.problem,
+      };
+      sessionRig.rewardCalibration = answer.reward_calibration ?? sessionRig.rewardCalibration;
+      box.hidden = true;
+      renderRig();
+    } finally {
+      yes.disabled = false;
+    }
+  }));
+  actions.append(yes, no);
+  box.append(list, actions);
+  box.hidden = false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2631,11 +2812,13 @@ function renderMonitor(run, active) {
       node('code', '', 'figures/dashboard.html'),
       ' by an alhazen before 2.0).',
     );
-  } else if (rigMonitor[`${run.project}:${run.rig}`] === false) {
+  } else if (rigMonitor[`${run.project}:${run.rig_source === 'machine' ? $('rig').value : run.rig}`]
+      === false) {
     setMonitorNote(
       'This rig has ',
       node('code', '', 'live_monitor.enabled: false'),
-      '; set it to true in the rig YAML to watch the session here.',
+      '; set it to true in the rig YAML (this machine’s rig, or the Rig section’s settings for '
+        + 'a session) to watch the session here.',
     );
   } else {
     // The rig has it on, or this page has not read that rig's YAML.
@@ -2862,6 +3045,13 @@ async function refresh() {
     return;
   }
   renderState();
+  // This machine's rig set up, edited or saved on another page or in a
+  // terminal: the Run page reads it again.
+  const machine = project()?.machine_rig;
+  if (selected && view === 'run' && (!!machine !== !!sessionRig
+      || (machine && sessionRig && machine.sha256 !== sessionRig.machine.sha256))) {
+    await loadRig();
+  }
   if (selected) await refreshRun();
 }
 
@@ -2948,7 +3138,19 @@ $('project-settings').addEventListener('click', () => openProject(true));
 $('close-dialog').addEventListener('click', () => $('project-dialog').close());
 $('close-image').addEventListener('click', () => $('image-dialog').close());
 $('mode').addEventListener('change', modeChanged);
-$('rig').addEventListener('change', guard(loadRig));
+// This machine's rig: the settings' search, Reset all, Save to this
+// machine's rig (asked in place first), and the way to its own editor.
+$('rig-search').addEventListener('input', () => renderRig());
+$('rig-reset-all').addEventListener('click', () => {
+  if (!sessionRig || !RigEditorOr()) return;
+  RigEditor.resetAll(sessionRig);
+  rigChanged();
+});
+$('rig-save').addEventListener('click', askSaveRig);
+$('rig-machine-edit').addEventListener('click', guard(async () => {
+  await navigate(selected, 'general');
+  document.getElementById('m-machine')?.scrollIntoView?.({block: 'start'});
+}));
 // Headless simulate opens no window, so the PsychoPy warning follows it.
 $('headless').addEventListener('change', updateLaunch);
 // Mouse as gaze takes the tracker away, and with it the calibration choice.

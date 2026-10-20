@@ -762,6 +762,9 @@ class TestCommandContract:
         # The training flags: emitted for a Training launch by a project whose
         # run.py registers a ladder (tests/unit/test_workspace_training.py).
         emitted.update({"--ladder", "--stage"})
+        # --rig-origin: emitted for a session on this machine's rig by a
+        # project whose alhazen takes it (tests/unit/test_machine_rig.py).
+        emitted.update({"--rig-origin"})
         assert emitted == MODE_FLAGS
 
 

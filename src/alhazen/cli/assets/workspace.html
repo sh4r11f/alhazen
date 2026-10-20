@@ -43,6 +43,10 @@
   <!-- The juice a session delivered (History's session details). -->
   <link rel="stylesheet" href="/workspace_juice.css">
   <script src="/workspace_juice.js" defer></script>
+  <!-- This machine's rig (the Run page's Rig section, General's panel):
+       window.RigEditor, which workspace.js and workspace_manage.js use. -->
+  <link rel="stylesheet" href="/workspace_rig.css">
+  <script src="/workspace_rig.js" defer></script>
   <script src="/workspace.js" defer></script>
   <!-- The Data view: its stylesheet, then the view itself.
        workspace_data.js defines window.WorkspaceData = {show, hide};
@@ -387,19 +391,44 @@
               </div>
             </section>
 
-            <!-- Rig: its own section, directly above the task parameters.
-                 The menu names every rig with its owner (amodal-averaging/lab,
-                 alhazen/mac) and leaves out a shared rig the experiment's own
-                 rig of that name hides (rigMenu() in workspace.js); the
-                 summary under it is the rig as it would run (loadRig()). -->
+            <!-- Rig: this machine's rig, which every session here runs on
+                 (alhazen/cli/machine_rig.py), directly above the task
+                 parameters. There is no menu: the rig is the machine the
+                 dashboard runs on. The summary is the rig as this session
+                 will run it; Event lines assigns the task's events to sync
+                 lines; the settings below change it for this session only
+                 (loadRig() and renderRig() in workspace.js, workspace_rig.js).
+                 Until the machine has a rig, the set-up card stands in. -->
             <section id="rig-section" class="form-section stage">
-              <h3 class="section-title"><label for="rig">Rig</label></h3>
-              <select id="rig" required></select>
+              <div class="rig-heading">
+                <h3 class="section-title">Rig</h3>
+                <span id="rig-machine" class="rig-machine"></span>
+                <button type="button" id="rig-machine-edit" class="quiet rig-machine-edit" hidden>
+                  Edit this machine’s rig
+                </button>
+              </div>
+              <!-- What a launch sends as `rig`: empty, this machine's rig. -->
+              <input type="hidden" id="rig" value="">
+              <div id="rig-setup" hidden></div>
               <div id="rig-summary" class="rig-summary"></div>
-              <!-- What the menu leaves out and why: shared rigs hidden by the
-                   experiment's own, and all of them when the project's
-                   registration predates shared rigs; hidden otherwise. -->
               <p id="rig-note" class="help" hidden></p>
+              <div id="rig-events" class="rig-events" hidden></div>
+              <details id="rig-edit" class="rig-edit" hidden>
+                <summary>
+                  <span class="rig-edit-title">Rig settings for this session</span>
+                  <span id="rig-edit-count" class="rig-edit-count"></span>
+                </summary>
+                <div class="rig-edit-bar">
+                  <input id="rig-search" type="search" aria-label="Filter rig settings"
+                         placeholder="Search rig settings…">
+                  <button type="button" id="rig-reset-all" class="quiet">Reset all</button>
+                  <button type="button" id="rig-save" class="quiet">Save to this machine’s rig</button>
+                </div>
+                <!-- "Save to this machine's rig" asks first, here. -->
+                <div id="rig-save-confirm" class="inline-confirm rig-save-confirm" hidden></div>
+                <p id="rig-edit-help" class="help"></p>
+                <div id="rig-fields"></div>
+              </details>
               <!-- The calibration target, for a rig whose tracker draws one
                    (an EyeLink or a TRACKPixx3): what it looks like and
                    whether it pulsates, over the rig's own setting, for this

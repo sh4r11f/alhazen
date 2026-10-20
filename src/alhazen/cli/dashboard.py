@@ -67,6 +67,10 @@ PAGE_ASSETS = {
     # The juice a session delivered, on History's session details.
     "/workspace_juice.js": ("workspace_juice.js", "text/javascript; charset=utf-8"),
     "/workspace_juice.css": ("workspace_juice.css", "text/css; charset=utf-8"),
+    # This machine's rig: the Run page's Rig section and the General page's
+    # panel (workspace_rig.js; /api/machine-rig, /api/session-rig).
+    "/workspace_rig.js": ("workspace_rig.js", "text/javascript; charset=utf-8"),
+    "/workspace_rig.css": ("workspace_rig.css", "text/css; charset=utf-8"),
     "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts/Manrope-latin.woff2": ("fonts/Manrope-latin.woff2", "font/woff2"),
@@ -378,6 +382,24 @@ class Handler(BaseHTTPRequestHandler):
                 # it extends a shared one (Workspace.rig). `rig` is the menu's
                 # value — a project-relative path, or alhazen/<name>.
                 self._json(workspace.rig(query.get("project", [""])[0], query.get("rig", [""])[0]))
+            elif path == "/api/machine-rig":
+                # This machine's rig (Workspace.machine_status): its file and
+                # settings, or the rigs it can be set up from.
+                self._json(workspace.machine_status())
+            elif path == "/api/machine-rig/schema":
+                # RigConfig's JSON schema, for the Run page's rig fields.
+                self._json(workspace.rig_schema())
+            elif path == "/api/session-rig":
+                # What the Run page's Rig section starts from for one task
+                # (Workspace.session_rig): the machine's rig, the carried
+                # event lines and settings, and the task's events.
+                self._json(
+                    workspace.session_rig(
+                        query.get("project", [""])[0],
+                        query.get("task", [None])[0] or None,
+                        query.get("mode", [None])[0] or None,
+                    )
+                )
             elif path.startswith("/api/runs/"):
                 self._json(workspace.detail(path.removeprefix("/api/runs/")))
             elif path.startswith("/media/"):
@@ -484,6 +506,14 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.shutting_down:
                     raise Conflict("The dashboard is shutting down; start it again to run.")
                 self._json(workspace.start(Launch.model_validate(body)), 201)
+            elif path == "/api/machine-rig/setup":
+                self._json(workspace.setup_machine(body), 201)
+            elif path == "/api/machine-rig/save":
+                self._json(workspace.save_machine(body))
+            elif path == "/api/machine-rig/check":
+                if not isinstance(body.get("text"), str):
+                    raise ValueError("The rig must be text")
+                self._json(workspace.check_machine(body["text"]))
             elif path == "/api/estimate":
                 self._json(self.server.estimates.estimate(EstimateRequest.model_validate(body)))
             elif path == "/api/stop":

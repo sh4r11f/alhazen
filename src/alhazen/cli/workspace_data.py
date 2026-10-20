@@ -155,6 +155,14 @@ def data_roots(described: dict[str, Any]) -> tuple[list[DataRoot], list[DataRoot
     # same as the menu. The slug is the pyproject's [project] name (describe()
     # reads it); a record without one falls back to the registry's name.
     owner = described.get("slug") or described.get("name")
+    # This machine's rig first: every session the dashboard launches runs on
+    # it (machine_rig.py), so its data_root is where they file. The
+    # experiment's own rigs and the shared ones follow, for data recorded
+    # with them from the command line or before the machine rig.
+    machine = described.get("machine_rig")
+    if machine:
+        label = f"this machine ({machine['name']})"
+        _add_root(found, problems, project_dir, machine.get("data_root"), label)
     for entry in described.get("rigs", []):
         if entry.get("shadowed"):
             # A shared rig hidden by the experiment's own rig of the same name
@@ -178,28 +186,40 @@ def data_roots(described: dict[str, Any]) -> tuple[list[DataRoot], list[DataRoot
         except (AlhazenError, OSError) as exc:
             problems.append(f"Rig {label} cannot be read: {exc}")
             continue
-        raw = values.get("data_root")
-        if not isinstance(raw, str) or not raw.strip():
-            problems.append(f"Rig {label} names no data_root, so it has no data folder")
-            continue
-        real = Path(raw).expanduser()
-        if not real.is_absolute():
-            real = project_dir / real
-        # Resolved so two spellings of one folder ("data", "./data") are one
-        # entry, and so the id is the folder's, not the spelling's.
-        real = real.resolve()
-        for path, kind in (
-            (real, "real"),
-            (rehearsal_root(real), "rehearsal"),
-            *_training_stage_roots(real),
-        ):
-            root = found.setdefault((path, kind), DataRoot(_root_id(path), path, kind))
-            if label not in root.rigs:
-                root.rigs.append(label)
+        _add_root(found, problems, project_dir, values.get("data_root"), label)
     roots = sorted(found.values(), key=lambda r: (str(r.path), r.kind))
     existing = [root for root in roots if root.path.is_dir()]
     missing = [root for root in roots if not root.path.is_dir()]
     return existing, missing, problems
+
+
+def _add_root(
+    found: dict[tuple[Path, str], DataRoot],
+    problems: list[str],
+    project_dir: Path,
+    raw: Any,
+    label: str,
+) -> None:
+    """Add one rig's data_root — its real folder, its rehearsal sibling and
+    any training stage folders beside it — to ``found``, listing ``label``
+    among the rigs that write there; a rig naming none is a problem."""
+    if not isinstance(raw, str) or not raw.strip():
+        problems.append(f"Rig {label} names no data_root, so it has no data folder")
+        return
+    real = Path(raw).expanduser()
+    if not real.is_absolute():
+        real = project_dir / real
+    # Resolved so two spellings of one folder ("data", "./data") are one
+    # entry, and so the id is the folder's, not the spelling's.
+    real = real.resolve()
+    for path, kind in (
+        (real, "real"),
+        (rehearsal_root(real), "rehearsal"),
+        *_training_stage_roots(real),
+    ):
+        root = found.setdefault((path, kind), DataRoot(_root_id(path), path, kind))
+        if label not in root.rigs:
+            root.rigs.append(label)
 
 
 def _training_stage_roots(real: Path) -> list[tuple[Path, str]]:
@@ -357,6 +377,16 @@ def _summary(root: Path, folder: Path, found: RunFolder) -> dict[str, Any]:
             row["rig"] = rig.get("name") or (
                 file_rig_name(Path(rig["file"])) if rig.get("file") else None
             )
+            # Where the rig came from, for a session the workspace launched on
+            # its machine rig (session.json's rig.origin): its changes and
+            # event lines, for the History page.
+            origin = rig.get("origin")
+            if isinstance(origin, dict):
+                row["rig_origin"] = {
+                    "machine": origin.get("machine"),
+                    "changes": origin.get("changes") or [],
+                    "events": origin.get("events") or {},
+                }
     elif (folder / "config_snapshot.yaml").is_file():
         # A pre-2.0 run (or a 2.0 run whose card is missing): what the
         # snapshot says. It has no mode; the folder's kind says real or

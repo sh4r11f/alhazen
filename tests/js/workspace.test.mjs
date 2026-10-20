@@ -35,6 +35,7 @@ const PROJECT = Object.freeze({
   id: 'p', name: 'demo-folder', title: 'Demo task', slug: 'demo', title_error: null,
   path: 'C:/projects/demo', python: 'python', available: true,
   rigs: [rigEntry('mac')], rigs_note: null, configs: ['configs/task.yaml'], scripts: [],
+  /* This machine's rig (Workspace.describe's machine_rig): the mac, set up. */
   /* The Task parameters menu as Workspace.describe derives it for a run.py
    * with one task and no PARAMETERS: each file by its short name. */
   parameter_sets: [{ label: 'task', task: null, params: 'configs/task.yaml' }],
@@ -63,7 +64,8 @@ function rig(dashboardEnabled, oldKey = false, about = {}) {
 /* A run as /api/runs/<id> returns it, running by default. */
 function runDetail(overrides) {
   return {
-    id: 'r1', project: 'p', name: 'Demo task', mode: 'simulate', rig: 'configs/rig-mac.yaml',
+    id: 'r1', project: 'p', name: 'Demo task', mode: 'simulate', rig: 'machine',
+    rig_name: 'mac', rig_source: 'machine', rig_changes: [],
     started: '2026-09-25T10:00:00', finished: null, status: 'running', returncode: null,
     command: ['python', 'run.py', '--mode', 'simulate'], cwd: 'C:/projects/demo',
     directory: 'C:/state/runs/r1', log: 'starting\n', artifacts: [], monitor: null,
@@ -110,7 +112,12 @@ async function pageWith({
     'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } },
     ...configs,
   };
-  app.server.rigs = { 'configs/rig-mac.yaml': rig(dashboardEnabled, oldKey), ...rigs };
+  /* The rigs the test lists come first: the first is this machine's rig
+   * (load_workspace.mjs sessionRigFrom); the mac follows, as before. */
+  app.server.rigs = { ...rigs };
+  if (!('configs/rig-mac.yaml' in app.server.rigs)) {
+    app.server.rigs['configs/rig-mac.yaml'] = rig(dashboardEnabled, oldKey);
+  }
   app.server.schemas = schemas;
   await app.run('refresh()');
   await settle();
@@ -399,11 +406,8 @@ describe('the run history', () => {
     assert.equal(badge(rows[1]).className, 'status completed');
     assert.equal(rows[0].querySelector('strong').textContent, 'Simulate');
     assert.equal(rows[1].querySelector('strong').textContent, 'Record movies');
-    /* The rig by its qualified name, not its file: this record predates
-     * runs keeping the name, so the page takes it from rig-mac.yaml, and
-     * the experiment's slug is its owner (was the bare "mac" before the
-     * owner asked for qualified names). */
-    assert.match(rows[1].textContent, / · demo\/mac/);
+    /* A session on this machine's rig: the machine's name, never a file. */
+    assert.match(rows[1].textContent, / · mac/);
     assert.doesNotMatch(rows[1].textContent, /rig-mac|\.yaml/);
     assert.equal(app.byId('run-status').textContent, 'FAILED');
     assert.equal(app.byId('run-status').className, 'status failed');
@@ -440,7 +444,7 @@ describe('launching a run', () => {
       await launch(app);
       assert.deepEqual(launched(app), {
         /* task is null: this project's run.py declares one task the old way. */
-        project: 'p', mode: 'simulate', task: null, rig: 'configs/rig-mac.yaml', subject: 's01',
+        project: 'p', mode: 'simulate', task: null, subject: 's01',
         /* Initials are optional in simulate; left blank, they are sent blank. */
         initials: '',
         session: 2, seed: 7, trials: 3,
@@ -450,6 +454,8 @@ describe('launching a run', () => {
         /* The Task parameters entry it was launched from, for the history. */
         parameter_set: 'task',
         parameters: { trials: 4 },
+        /* This machine's rig as the Rig section holds it: unchanged here. */
+        rig_values: rig(true).values,
       });
       /* The token travels in a header, as JSON, and the page moved on to the
        * new run. */
@@ -879,7 +885,7 @@ describe('the subject’s initials', () => {
      * ran with; this run passed none, and its console has not said which it
      * drew). */
     assert.match(
-      row.querySelector('small').textContent, / · demo\/mac · sub-s01 · HD · seed new$/,
+      row.querySelector('small').textContent, / · mac · sub-s01 · HD · seed new$/,
     );
     assert.match(app.byId('run-info').textContent, /^Run experiment · sub-s01 · HD · /);
   });
@@ -1047,255 +1053,181 @@ describe('a request the launcher refuses', () => {
     });
 });
 
-describe('the Rig menu', () => {
-  /* An experiment like amodal-averaging after it moved to shared rigs: its
-   * own lab extends alhazen's lab (and so hides it from `--rig lab`), its own
-   * laptop is a whole file, and its alhazen ships lab, mac and vpixx. */
-  const RIGGED = Object.freeze({
-    ...PROJECT,
-    rigs: [
-      rigEntry('lab', { extends: 'lab' }),
-      rigEntry('laptop'),
-      sharedEntry('lab', { shadowed: true }),
-      sharedEntry('mac'),
-      sharedEntry('vpixx'),
-    ],
-  });
-  /* What /api/rig answers for each of them: the merged rig. */
-  const RIGS = {
-    'configs/rig-lab.yaml': rig(true, false, { name: 'lab', extends: 'lab' }),
-    'configs/rig-laptop.yaml': rig(false, false, { name: 'laptop' }),
-    'alhazen/lab': rig(true, false, { name: 'lab', source: 'alhazen' }),
-    'alhazen/mac': rig(false, false, { name: 'mac', source: 'alhazen' }),
-    'alhazen/vpixx': rig(true, false, { name: 'vpixx', source: 'alhazen' }),
+describe('this machine’s rig in the Rig section', () => {
+  /* Every session runs on this machine's rig (alhazen/cli/machine_rig.py):
+   * there is no menu. The section names the machine, summarises the rig as
+   * this session will run it, assigns the task's events to lines and lets
+   * the settings be changed for this session only, each change marked. */
+  const LAB = {
+    monitor: { width_px: 1920, height_px: 1080, refresh_rate_hz: 120, width_cm: 52, distance_cm: 57 },
+    display: { backend: 'psychopy', photodiode: { corner: 'br', size_px: 60 } },
+    live_monitor: { enabled: true },
+    devices: { eyetracker: { backend: 'eyelink', host_ip: '100.1.1.1' }, sync: { backend: 'nidaq' } },
+    data_root: 'data',
+    real_data: true,
   };
-
-  /** The menu as groups: [label, [[value, text], ...]], in order. */
-  function menu(app) {
-    return app.byId('rig').children.map((group) => [
-      group.label, group.children.map((option) => [option.value, option.textContent]),
-    ]);
+  function labRig(overrides = {}) {
+    const values = JSON.parse(JSON.stringify(LAB));
+    const prefill = JSON.parse(JSON.stringify(LAB));
+    prefill.devices.sync.event_lines = { FIX_ON: 'Dev1/port0/line0' };
+    return {
+      machine: { name: 'lab', file: 'C:/state/machine-rig/rig-lab.yaml', sha256: 'sha-lab', values, problem: null },
+      values: prefill,
+      events: ['FIX_ON', 'PAUSED', 'TRIAL_END', 'TRIAL_START'],
+      task_events: ['FIX_ON', 'TRIAL_END'],
+      events_source: { kind: 'last-session', label: 'as in the last session of this task on this machine (2026-10-18, test)' },
+      dropped: [],
+      reward_calibration: null,
+      live_streams: { gaze_traces: true, camera: true },
+      ...overrides,
+    };
   }
-
-  /** Choose rig `value` as the reader would, and let the summary load. */
-  async function chooseRig(app, value) {
-    app.byId('rig').value = value;
-    app.byId('rig').fire('change');
+  async function labPage(overrides = {}) {
+    const project = { ...PROJECT, machine_rig: { name: 'lab', file: 'C:/state/machine-rig/rig-lab.yaml', sha256: 'sha-lab', data_root: 'data' } };
+    const app = loadWorkspace({});
+    app.server.state = { projects: [project], runs: [], active: null };
+    app.server.details = { launched: runDetail({ id: 'launched', log: '' }) };
+    app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+    app.server.sessionRig = labRig(overrides);
+    await app.run('refresh()');
     await settle();
+    return app;
   }
+  const rowsOf = (app) => app.byId('rig-events').querySelectorAll('tr')
+    .filter((r) => r.children[0].localName === 'td')
+    .map((r) => [r.children[0].textContent, r.children[1].querySelector('input').value,
+      r.children[2].querySelector('input').checked]);
 
-  it('names each rig with its owner, never its file, in a group for the experiment and one '
-    + 'for alhazen, leaving out the shared rig the experiment hides', async () => {
-    const app = await pageWith({ project: RIGGED, rigs: RIGS });
-    /* Changed at the owner's request: every rig is <owner>/<name> (the
-     * experiment's slug for its own, alhazen for a shared one), and the
-     * shared lab — hidden from `--rig lab` by the experiment's own lab — is
-     * no longer offered at all (it used to be "alhazen/lab (hidden by this
-     * experiment’s lab)"). The shared rig an experiment rig extends is said
-     * in the summary, not the menu, whose options it made too long. */
-    assert.deepEqual(plain(menu(app)), [
-      ['This experiment', [
-        ['configs/rig-lab.yaml', 'demo/lab'],
-        ['configs/rig-laptop.yaml', 'demo/laptop'],
-      ]],
-      ['Shared (alhazen)', [
-        ['alhazen/mac', 'alhazen/mac'],
-        ['alhazen/vpixx', 'alhazen/vpixx'],
-      ]],
-    ]);
-    for (const [, options] of menu(app)) {
-      for (const [, text] of options) assert.doesNotMatch(text, /rig-|\.ya?ml/);
-    }
-    /* Left out without a note (the owner's call): only a registration that
-     * predates shared rigs is explained under the menu. */
-    assert.equal(app.byId('rig-note').hidden, true);
+  it('names the machine, with no menu, and summarises the rig as the session will run it', async () => {
+    const app = await labPage();
+    assert.equal(app.byId('rig-machine').textContent, 'This machine · lab');
+    assert.equal(app.byId('rig-machine-edit').hidden, false);
+    assert.equal(app.byId('rig').localName, 'input');
+    assert.equal(facts(app).Rig, 'lab · as saved');
+    assert.equal(facts(app).Screen, '1920 × 1080 px · 120 Hz');
+    assert.ok(app.server.sessionRigQueries.some((q) => q.project === 'p' && q.mode === 'simulate'));
   });
 
-  it('leaves out every shared rig the experiment hides, and the group they were in',
-    async () => {
-      const app = await pageWith({
-        project: {
-          ...RIGGED,
-          rigs: [...RIGGED.rigs, rigEntry('vpixx'), rigEntry('mac')].map((r) => (
-            r.source === 'alhazen' ? { ...r, shadowed: true } : r)),
-        },
-        rigs: RIGS,
-      });
-      assert.deepEqual(plain(menu(app).map(([label]) => label)), ['This experiment']);
-      assert.equal(app.byId('rig-note').hidden, true);
-    });
-
-  it('opens on the experiment’s own laptop, else the shared laptop, else the first rig',
-    async () => {
-      /* Changed at the owner's request (2026-10-02): the menu used to open
-       * on the experiment's own mac, else the shared mac. It opens on the
-       * laptop now, and a mac is no longer preferred to any other rig. */
-      const withoutOwnLaptop = RIGGED.rigs.filter((r) => r.name !== 'laptop');
-      /* The experiment's own laptop, which hides alhazen's laptop of the same
-       * name: the shared one is left out of the menu, and is not chosen. */
-      const own = await pageWith({
-        project: { ...RIGGED, rigs: [...RIGGED.rigs, sharedEntry('laptop', { shadowed: true })] },
-        rigs: RIGS,
-      });
-      assert.equal(own.byId('rig').value, 'configs/rig-laptop.yaml');
-      assert.ok(!menu(own).flatMap(([, options]) => options).some(([v]) => v === 'alhazen/laptop'));
-      /* No laptop of its own: alhazen's shared laptop, though the shared mac
-       * and the experiment's own rigs are listed before it. */
-      const shared = await pageWith({
-        project: { ...RIGGED, rigs: [...withoutOwnLaptop, sharedEntry('laptop')] },
-        rigs: { ...RIGS, 'alhazen/laptop': rig(false, false, { name: 'laptop', source: 'alhazen' }) },
-      });
-      assert.equal(shared.byId('rig').value, 'alhazen/laptop');
-      /* No laptop at all: the first rig listed — the experiment's lab, not
-       * the shared mac the menu used to prefer. */
-      const neither = await pageWith({
-        project: { ...RIGGED, rigs: withoutOwnLaptop }, rigs: RIGS,
-      });
-      assert.equal(neither.byId('rig').value, 'configs/rig-lab.yaml');
-      /* And with only shared rigs, the first of them. */
-      const onlyShared = await pageWith({
-        project: { ...RIGGED, rigs: [sharedEntry('vpixx'), sharedEntry('mac')] }, rigs: RIGS,
-      });
-      assert.equal(onlyShared.byId('rig').value, 'alhazen/vpixx');
-    });
-
-  it('leaves out a group with no rigs in it', async () => {
-    const app = await pageWith();
-    assert.deepEqual(plain(menu(app).map(([label]) => label)), ['This experiment']);
+  it('lists the task’s own events first, with the lines carried from its last session', async () => {
+    const app = await labPage();
+    assert.equal(app.byId('rig-events').hidden, false);
+    assert.deepEqual(rowsOf(app).slice(0, 2), [['FIX_ON', 'Dev1/port0/line0', false], ['TRIAL_END', '', false]]);
+    assert.match(app.byId('rig-events').textContent, /1 event go out on a line|1 event goes|1 event go/);
+    assert.match(app.byId('rig-events').textContent, /Started as in the last session of this task/);
+    /* The ones every task has are folded away, unassigned. */
+    assert.match(app.byId('rig-events').textContent, /Events every task has \(2\)/);
   });
 
-  it('shows the file beside a name two of the experiment’s rigs share', async () => {
-    const app = await pageWith({
-      project: {
-        ...PROJECT,
-        rigs: [rigEntry('lab'), rigEntry('lab', { path: 'configs/old/rig-lab.yaml' })],
-      },
-      rigs: { 'configs/rig-lab.yaml': rig(true, false, { name: 'lab' }) },
-    });
-    /* Sorted by name like every rig (2026-10-06), so the file decides. */
-    assert.deepEqual(plain(menu(app)[0][1].map(([, text]) => text)), [
-      'demo/lab (configs/old/rig-lab.yaml)', 'demo/lab (configs/rig-lab.yaml)',
-    ]);
+  it('sends the session’s rig, event lines and changes included, and marks each change', async () => {
+    const app = await labPage();
+    const line = app.byId('rig-events').querySelectorAll('tr')
+      .find((r) => r.children[0].textContent === 'TRIAL_END').children[1].querySelector('input');
+    line.value = 'Dev1/port0/line3';
+    line.fire('change');
+    const distance = app.byId('rig-fields').querySelectorAll('.parameter-row')
+      .find((r) => r.dataset.key === 'monitor.distance_cm');
+    const input = distance.querySelector('input');
+    input.value = '60';
+    input.fire('input');
+    input.fire('change');
+    const marked = app.byId('rig-fields').querySelectorAll('.parameter-row.changed');
+    assert.deepEqual(marked.map((r) => r.dataset.key), ['monitor.distance_cm']);
+    assert.equal(app.byId('rig-edit-count').textContent, '1 changed');
+    assert.equal(facts(app).Rig, 'lab · 1 changed for this session');
+    assert.equal(app.byId('rig-save').disabled, false);
+    chooseMode(app, 'simulate');
+    await launch(app);
+    const sent = launched(app);
+    assert.equal(sent.rig, undefined);
+    assert.equal(sent.rig_values.monitor.distance_cm, 60);
+    assert.deepEqual(sent.rig_values.devices.sync.event_lines,
+      { FIX_ON: 'Dev1/port0/line0', TRIAL_END: 'Dev1/port0/line3' });
   });
 
-  it('sorts each group by name, and still opens on the laptop', async () => {
-    const app = await pageWith({
-      project: {
-        ...PROJECT,
-        rigs: [
-          rigEntry('vpixx'), rigEntry('lab-rehearsal'), rigEntry('lab'),
-          sharedEntry('mac'), sharedEntry('laptop'), sharedEntry('lab', { shadowed: true }),
-        ],
-      },
-      rigs: { 'alhazen/laptop': rig(true, false, { name: 'laptop', source: 'alhazen' }) },
-    });
-    const groups = menu(app);
-    assert.deepEqual(plain(groups.map(([heading, items]) => [heading, items.map(([, t]) => t)])), [
-      ['This experiment', ['demo/lab', 'demo/lab-rehearsal', 'demo/vpixx']],
-      ['Shared (alhazen)', ['alhazen/laptop', 'alhazen/mac']],
-    ]);
-    assert.equal(app.byId('rig').value, 'alhazen/laptop');
+  it('resets one change, and all of them', async () => {
+    const app = await labPage();
+    const row = () => app.byId('rig-fields').querySelectorAll('.parameter-row')
+      .find((r) => r.dataset.key === 'monitor.distance_cm');
+    const input = row().querySelector('input');
+    input.value = '70';
+    input.fire('input');
+    input.fire('change');
+    row().querySelector('.rig-reset').fire('click');
+    assert.equal(app.run('sessionRig.current.monitor.distance_cm'), 57);
+    assert.equal(app.byId('rig-edit-count').textContent, 'as saved');
+    const again = row().querySelector('input');
+    again.value = '71';
+    again.fire('input');
+    again.fire('change');
+    app.byId('rig-reset-all').fire('click');
+    assert.equal(app.run('sessionRig.current.monitor.distance_cm'), 57);
+    /* The event lines go back to where the session started. */
+    assert.deepEqual(plain(app.run('sessionRig.current.devices.sync.event_lines')), { FIX_ON: 'Dev1/port0/line0' });
   });
 
-  it('summarises a shared rig from the merged answer, and says whose it is', async () => {
-    const app = await pageWith({ project: RIGGED, rigs: RIGS });
-    /* The shared mac, which has the live monitor off, chosen from the menu:
-     * the page used to open on it, and now opens on the experiment's own
-     * laptop (changed at the owner's request, 2026-10-02). The summary
-     * names it as the menu does (changed at the owner's request from
-     * "alhazen’s shared rig mac"). */
-    await chooseRig(app, 'alhazen/mac');
-    assert.ok(app.fetches.some((f) => f.url === '/api/rig?project=p&rig=alhazen%2Fmac'));
-    /* Every fact under its label (changed at the owner's request from three
-     * lines of monospace text that wrapped mid-phrase). */
-    assert.deepEqual(plain(facts(app)), {
-      Screen: '1920 × 1080 px · 60 Hz',
-      Size: '52 cm wide · 57 cm away',
-      Display: 'default display',
-      'Live monitor': 'off',
-      Rig: 'alhazen/mac · alhazen’s shared rig',
-    });
-    /* A value is made of parts that never break inside; a line may break only
-     * at the separators between them. */
-    const screen = app.byId('rig-summary').children[0].children[1];
-    assert.deepEqual(
-      plain(screen.children.map((part) => [part.className, part.textContent])),
-      [['fact', '1920 × 1080 px'], ['fact-separator', ' · '], ['fact', '60 Hz']],
-    );
-    /* Another shared rig: the summary follows. (The shadowed lab this test
-     * used to pick is no longer in the menu to pick.) */
-    await chooseRig(app, 'alhazen/vpixx');
-    assert.equal(facts(app)['Live monitor'], 'on');
-    assert.equal(facts(app).Rig, 'alhazen/vpixx · alhazen’s shared rig');
+  it('asks before saving the changes as this machine’s, and leaves the event lines alone', async () => {
+    const app = await labPage();
+    const input = app.byId('rig-fields').querySelectorAll('.parameter-row')
+      .find((r) => r.dataset.key === 'monitor.distance_cm').querySelector('input');
+    input.value = '58';
+    input.fire('input');
+    input.fire('change');
+    app.server.saveMachine = (body) => {
+      const saved = JSON.parse(JSON.stringify(body.values));
+      delete saved.devices.sync.event_lines;
+      return { name: 'lab', file: 'C:/state/machine-rig/rig-lab.yaml', sha256: 'sha-2', values: saved, problem: null };
+    };
+    app.byId('rig-save').fire('click');
+    const confirm = app.byId('rig-save-confirm');
+    assert.equal(confirm.hidden, false);
+    assert.match(confirm.textContent, /monitor\.distance_cm: 57 → 58/);
+    confirm.querySelector('.primary').fire('click');
+    await settle();
+    const post = app.server.posted.find((p) => p.path === '/api/machine-rig/save');
+    assert.equal(post.body.sha256, 'sha-lab');
+    assert.equal(app.run('sessionRig.machine.sha256'), 'sha-2');
+    assert.equal(app.byId('rig-edit-count').textContent, 'as saved');
+    assert.deepEqual(plain(app.run('sessionRig.current.devices.sync.event_lines')), { FIX_ON: 'Dev1/port0/line0' });
   });
 
-  it('summarises a rig that extends a shared one as merged, naming the shared rig', async () => {
-    const app = await pageWith({ project: RIGGED, rigs: RIGS });
-    await chooseRig(app, 'configs/rig-lab.yaml');
-    /* The experiment's file says nothing about the live monitor; the merged
-     * answer does, and the Live monitor tab reads the same fact. */
-    assert.equal(facts(app)['Live monitor'], 'on');
-    /* Named as in the menu, then its file and the shared rig it builds on
-     * (changed at the owner's request from "this experiment’s
-     * configs/rig-lab.yaml, extending alhazen’s shared lab"; the "extends"
-     * moved here from the menu's option text). */
-    assert.equal(
-      facts(app).Rig, 'demo/lab · this experiment’s configs/rig-lab.yaml · extends alhazen/lab',
-    );
-    assert.equal(app.run("rigMonitor['p:configs/rig-lab.yaml']"), true);
+  it('keeps a change across another mode, and makes Measure rig read only', async () => {
+    const app = await labPage();
+    const input = app.byId('rig-fields').querySelectorAll('.parameter-row')
+      .find((r) => r.dataset.key === 'monitor.distance_cm').querySelector('input');
+    input.value = '59';
+    input.fire('input');
+    input.fire('change');
+    chooseMode(app, 'measure');
+    await settle();
+    assert.equal(app.run('sessionRig.current.monitor.distance_cm'), 59);
+    assert.equal(app.byId('rig-events').hidden, true);
+    assert.equal(app.byId('rig-fields').querySelector('input').disabled, true);
+    assert.match(app.byId('rig-edit-help').textContent, /Measure rig measures this machine’s rig as it is saved/);
   });
 
-  it('launches a shared rig by its alhazen/ name, and an experiment rig by its path',
-    async () => {
-      const app = await pageWith({ project: RIGGED, rigs: RIGS });
-      chooseMode(app, 'movie');
-      /* vpixx, not the shadowed lab this used to pick: that one is no longer
-       * in the menu. The value sent is unchanged by the new labels. */
-      await chooseRig(app, 'alhazen/vpixx');
-      await launch(app);
-      assert.equal(launched(app).rig, 'alhazen/vpixx');
-
-      const own = await pageWith({ project: RIGGED, rigs: RIGS });
-      chooseMode(own, 'movie');
-      await chooseRig(own, 'configs/rig-lab.yaml');
-      await launch(own);
-      assert.equal(launched(own).rig, 'configs/rig-lab.yaml');
-    });
-
-  it('says why a project registered before shared rigs offers none', async () => {
-    const note = 'This project was registered before the workspace listed alhazen’s shared rigs';
-    const app = await pageWith({ project: { ...PROJECT, rigs_note: note } });
-    assert.equal(app.byId('rig-note').hidden, false);
-    assert.equal(app.byId('rig-note').textContent, note);
-    const current = await pageWith();
-    assert.equal(current.byId('rig-note').hidden, true);
-  });
-
-  it('shows a shared-rig run in the history by its alhazen/ name', async () => {
-    const run = runDetail({
-      status: 'completed', returncode: 0, rig: 'alhazen/lab', rig_name: 'lab',
-      rig_source: 'alhazen',
-    });
-    const app = await pageWith({ project: RIGGED, rigs: RIGS, run: run });
-    const row = app.byId('history').children[0];
-    /* The rig's name, then the seed (2.3.0; a simulation that has not said
-     * which seed it drew). */
-    assert.match(row.querySelector('small').textContent, / · alhazen\/lab · seed new$/);
-    const mine = await pageWith({
-      project: RIGGED, rigs: RIGS,
-      run: runDetail({
-        status: 'completed', returncode: 0, rig: 'configs/rig-lab.yaml', rig_name: 'lab',
-        rig_source: 'experiment',
-      }),
-    });
-    /* The experiment's own lab, owner first (was the bare "lab"); the seed
-     * after it, as above. */
-    assert.match(
-      mine.byId('history').children[0].querySelector('small').textContent,
-      / · demo\/lab · seed new$/,
-    );
+  it('shows the set-up card, and no launch, until this machine has a rig', async () => {
+    const app = loadWorkspace({});
+    app.server.state = { projects: [{ ...PROJECT, machine_rig: null }], runs: [], active: null };
+    app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+    app.server.machine = {
+      configured: false, error: null, suggested: 'p:configs/rig-mac.yaml',
+      templates: [
+        { id: 'alhazen/lab', label: 'alhazen/lab', kind: 'shared', name: 'lab', summary: '1920 × 1080 px · 120 Hz · eyelink', real_data: true, events: [], error: null },
+        { id: 'p:configs/rig-mac.yaml', label: 'demo/mac', kind: 'experiment', name: 'mac', summary: '3024 × 1964 px · 120 Hz · no eye tracker', real_data: false, events: [], error: null },
+      ],
+    };
+    await app.run('refresh()');
+    await settle();
+    assert.equal(app.byId('rig-machine').textContent, 'This machine has no rig yet');
+    assert.equal(app.byId('rig-setup').hidden, false);
+    assert.equal(app.byId('launch').disabled, true);
+    assert.match(app.byId('launch-note').textContent, /Set up this machine’s rig first/);
+    const from = app.byId('rig-setup').querySelector('select');
+    assert.equal(from.value, 'p:configs/rig-mac.yaml');
+    assert.match(app.byId('rig-setup').textContent, /development rig \(run mode refused\)/);
   });
 });
+
 
 /** The sidebar's group for experiment `id`: its disclosure button and its
  *  pages (renderNav in workspace.js). */
@@ -1349,7 +1281,6 @@ describe('the experiment’s name', () => {
     const app = await pageWith({ project: old });
     assert.equal(app.byId('project-name').textContent, 'demo-folder');
     assert.equal(app.document.title, 'Run · demo-folder · Alhazen');
-    assert.equal(app.byId('rig').children[0].children[0].textContent, 'demo-folder/mac');
   });
 
   it('follows a title changed while the page is open', async () => {
@@ -1402,16 +1333,16 @@ describe('the launch summary', () => {
   it('says in one line what the button will start, and follows the form', async () => {
     const app = await pageWith();
     chooseMode(app, 'simulate');
-    assert.equal(app.byId('launch-summary').textContent, 'Simulate · task · demo/mac · ses 1');
+    assert.equal(app.byId('launch-summary').textContent, 'Simulate · task · mac · ses 1');
     app.byId('subject').value = 's01';
     app.byId('subject').fire('input');
     app.byId('session').value = '2';
     app.byId('session').fire('input');
     assert.equal(app.byId('launch-summary').textContent,
-      'Simulate · task · demo/mac · sub-s01 · ses 2');
+      'Simulate · task · mac · sub-s01 · ses 2');
     /* Measure takes no parameters and names no subject. */
     chooseMode(app, 'measure');
-    assert.equal(app.byId('launch-summary').textContent, 'Measure rig · demo/mac');
+    assert.equal(app.byId('launch-summary').textContent, 'Measure rig · mac');
   });
 });
 
@@ -2625,55 +2556,53 @@ describe('the PsychoPy warning in the launch footer', () => {
 
 describe('a development rig in the launch form', () => {
   /* docs/rigs.md §5: run mode refuses a rig whose settings say
-   * real_data: false — the laptop the Rig menu opens on. The page says so
-   * under the rig and above the launch, and shows the server's refusal when
-   * a launch is sent anyway; it warns and never blocks, because the server
-   * makes the check. PsychoPy is present, so its warning stays out of it. */
-  const LAPTOP = Object.freeze({
-    ...PROJECT, psychopy_version: '2026.2.4', rigs: [sharedEntry('lab'), sharedEntry('laptop')],
-  });
+   * real_data: false. On a development machine that is this machine's rig
+   * itself, and a session cannot change it. The page says so under the rig
+   * and above the launch, and shows the server's refusal when a launch is
+   * sent anyway; it warns and never blocks, because the server makes the
+   * check. PsychoPy is present, so its warning stays out of it. */
+  const LAPTOP = Object.freeze({ ...PROJECT, psychopy_version: '2026.2.4' });
   const DEVELOPMENT = rig(true, false, { name: 'laptop', source: 'alhazen' });
   DEVELOPMENT.values.real_data = false;
-  const RIGS = {
-    'alhazen/laptop': DEVELOPMENT,
-    'alhazen/lab': rig(true, false, { name: 'lab', source: 'alhazen' }),
-  };
-
-  async function chooseRig(app, value) {
-    app.byId('rig').value = value;
-    app.byId('rig').fire('change');
-    await settle();
-  }
+  const COLLECTING = rig(true, false, { name: 'lab', source: 'alhazen' });
 
   function note(app) {
     return app.byId('launch-note');
   }
 
   it('says under the rig that real data is refused there, and only for such a rig', async () => {
-    const app = await pageWith({ project: LAPTOP, rigs: RIGS });
-    assert.equal(app.byId('rig').value, 'alhazen/laptop');
+    const app = await pageWith({ project: LAPTOP, rigs: { laptop: DEVELOPMENT } });
+    assert.equal(app.byId('rig-machine').textContent, 'This machine · laptop');
     assert.equal(facts(app)['Real data'], 'refused · a development rig (real_data: false)');
-    await chooseRig(app, 'alhazen/lab');
-    assert.equal('Real data' in facts(app), false);
+    const lab = await pageWith({ project: LAPTOP, rigs: { lab: COLLECTING } });
+    assert.equal('Real data' in facts(lab), false);
+  });
+
+  it('shows real_data as this machine’s, never as a setting a session can change', async () => {
+    const app = await pageWith({ project: LAPTOP, rigs: { laptop: DEVELOPMENT } });
+    const row = app.byId('rig-fields').querySelectorAll('.parameter-row')
+      .find((r) => r.dataset.key === 'real_data');
+    assert.equal(row.querySelector('input'), null);
+    assert.match(row.textContent, /false \(this machine’s\)/);
   });
 
   it('warns in Run mode before the launch, names the rig and the way on, and still launches',
     async () => {
-      const app = await pageWith({ project: LAPTOP, rigs: RIGS });
+      const app = await pageWith({ project: LAPTOP, rigs: { laptop: DEVELOPMENT } });
       chooseMode(app, 'run');
       assert.equal(
         note(app).textContent,
-        'Run experiment records real data, and alhazen/laptop is a development rig '
-          + '(real_data: false): this launch will be refused before anything is written. '
-          + 'Choose a rig that collects real data, or Test session or Simulate to try the '
-          + 'session on this machine.',
+        'Run experiment records real data, and this machine’s rig (laptop) is a development '
+          + 'rig (real_data: false): this launch will be refused before anything is written. '
+          + 'Use Test session or Simulate to try the session on this machine, or set '
+          + 'real_data: true in this machine’s rig if subjects are recorded here.',
       );
       assert.equal(note(app).classList.contains('launch-warning'), true);
       assert.equal(app.byId('launch').disabled, false);
     });
 
   it('says nothing of it in the modes that run there', async () => {
-    const app = await pageWith({ project: LAPTOP, rigs: RIGS });
+    const app = await pageWith({ project: LAPTOP, rigs: { laptop: DEVELOPMENT } });
     for (const mode of ['test', 'simulate', 'demo', 'movie', 'measure']) {
       chooseMode(app, mode);
       assert.doesNotMatch(note(app).textContent, /development rig/, mode);
@@ -2682,17 +2611,16 @@ describe('a development rig in the launch form', () => {
   });
 
   it('gives a collecting rig in Run mode the usual reminder', async () => {
-    const app = await pageWith({ project: LAPTOP, rigs: RIGS });
-    await chooseRig(app, 'alhazen/lab');
+    const app = await pageWith({ project: LAPTOP, rigs: { lab: COLLECTING } });
     chooseMode(app, 'run');
     assert.match(note(app).textContent, /^This mode records real subject data/);
     assert.equal(note(app).classList.contains('launch-warning'), false);
   });
 
   it('shows the server’s refusal in the error banner', async () => {
-    const app = await pageWith({ project: LAPTOP, rigs: RIGS });
-    const refusal = 'run mode records real data, and alhazen/laptop (alhazen’s shared rig) is '
-      + 'a development rig: its settings say `real_data: false`. Nothing was started and '
+    const app = await pageWith({ project: LAPTOP, rigs: { laptop: DEVELOPMENT } });
+    const refusal = 'run mode records real data, and this machine’s rig (laptop) is a '
+      + 'development rig: its settings say `real_data: false`. Nothing was started and '
       + 'nothing was written.';
     app.server.launch = () => { throw new Error(refusal); };
     chooseMode(app, 'run');

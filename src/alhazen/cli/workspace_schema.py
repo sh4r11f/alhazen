@@ -6,7 +6,8 @@ Prints the JSON schema of the params model of the task ``run.py`` runs: the
 class it passes to ``run_experiment(task_class=...)`` or, for an experiment
 that declares several with ``run_experiment(tasks=...)``, the one named —
 without a name, the table's default. The schema carries that task's name
-under ``x-alhazen-task`` (``TASK_NAME_KEY``). The workspace runs this in the
+under ``x-alhazen-task`` (``TASK_NAME_KEY``), and the events it declares under
+``x-alhazen-events`` (``EVENTS_KEY``). The workspace runs this in the
 project's own interpreter, where the task's imports resolve, never in its
 own; every refusal names what run.py must say for the choices to be read.
 """
@@ -29,6 +30,12 @@ SHAPE = (
 # The key of the schema's top level that names the task it describes
 # (`task_schema`); the workspace reads it back under the same name.
 TASK_NAME_KEY = "x-alhazen-task"
+# The events the task declares, with the reserved ones every task has
+# (``EventSchema.all_names``), sorted: the names a rig's sync lines and
+# photodiode may name, which the workspace's Rig section offers.
+EVENTS_KEY = "x-alhazen-events"
+# The task's own events alone, without the reserved ones (``EventSchema.declared``).
+TASK_EVENTS_KEY = "x-alhazen-task-events"
 
 
 def _run_experiment_call(tree: ast.AST) -> ast.Call | None:
@@ -104,6 +111,12 @@ def task_schema(path: Path, task: str | None = None) -> dict[str, Any]:
     # only the class, so the name cannot be read from the file alone.
     if isinstance(name, str):
         schema[TASK_NAME_KEY] = name
+    events = getattr(getattr(cls, "events", None), "all_names", None)
+    if events is not None:
+        schema[EVENTS_KEY] = sorted(str(e) for e in events)
+        own = getattr(cls.events, "declared", None)
+        if own is not None:
+            schema[TASK_EVENTS_KEY] = sorted(str(e) for e in own)
     return schema
 
 

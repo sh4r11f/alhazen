@@ -19,7 +19,9 @@ function load() {
   vm.runInContext(readFileSync(new URL('workspace_calibration.js', assets),'utf8'),context);
   vm.runInContext(readFileSync(new URL('workspace.js', assets),'utf8').replace(/\npoll\(\);\s*$/, ''),context);
   const run = (code) => vm.runInContext(code,context);
-  run(`state.projects = [{id:'p', scripts:[], rigs:['rig.yaml'], available:true}]; selected='p';`);
+  // This machine's rig, read (loadRig): what a launch needs besides the form.
+  run(`state.projects = [{id:'p', scripts:[], rigs:['rig.yaml'], available:true, machine_rig:{name:'m'}}]; selected='p';
+    sessionRig = {project:'p', key:'', machine:{name:'m', values:{}, sha256:'s'}, prefill:{}, current:{}};`);
   return {run, document, byId:id=>document.getElementById(id)};
 }
 const schema = {properties:{

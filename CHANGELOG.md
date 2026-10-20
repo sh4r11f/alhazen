@@ -61,6 +61,36 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   machine's reports; a copy's Run tab points to it. design.md Appendix A documents the routes.
 - **Shut down is easier to find**: a bordered button with a power mark in the top bar, and
   its confirmation says when the library will be told.
+- **One rig per machine in the dashboard.** A dashboard workspace is one
+  machine, and every session it launches now runs on that machine's rig: one
+  complete file (no `extends`) in the workspace's state folder,
+  `<state>/machine-rig/rig-<name>.yaml`, with its gamma and reward calibration
+  beside it and every earlier version kept in `history/`. The Run page has no
+  Rig menu and experiment pages list no rigs; the General page shows **This
+  machine's rig** with an editor. The first time, the dashboard asks to set it
+  up from a registered experiment's rig or a shared one (written out merged,
+  event names left out); `alhazen rig init --name lab --from lab` and `alhazen
+  rig show` do the same from a terminal. Existing workspaces keep everything;
+  set-up opens on the rig they last launched with ([Rigs
+  §10](docs/rigs.md#10-in-the-dashboard-this-machines-rig)).
+- **Change the rig for one session.** The Run page's Rig section lists the
+  machine's settings by section, marks each one changed for this session with
+  a reset, and offers **Save to this machine's rig** (asked first). The session
+  runs its own copy, written into its run folder and launched as `--rig
+  <file>`; `run.json` records what changed, and an alhazen with the new
+  `rig-origin` capability records it in `session.json`'s `rig.origin`
+  (`--rig-origin`). History shows each session's rig, changes and event lines.
+  `real_data` stays the machine's, and Measure rig runs the machine's file as
+  saved.
+- **Event lines per session, without YAML.** The Rig section's Event lines
+  table assigns the task's events to sync lines and the photodiode, starting
+  from the last session of the same experiment and task on this machine, else
+  the experiment's own rig of the machine's name, else none, and says which
+  and how many events go out on a line. A rig naming an event the task does
+  not declare is refused before anything is written. Task schemas now carry
+  `x-alhazen-events` and `x-alhazen-task-events`.
+- `run.py`, `alhazen run`, shared rigs and `extends` are unchanged on the
+  command line; a workspace launch request that names a rig still runs it.
 
 ## 3.4.1 - 2026-10-17
 

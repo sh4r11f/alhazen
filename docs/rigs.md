@@ -379,41 +379,175 @@ the calibration ledger and out of the repository with the rest of the data
    result loads, and `alhazen rigs` shows what extends what.
 3. Keep whole files for machines only this experiment uses.
 
-## 10. In the dashboard
+## 10. In the dashboard: this machine's rig
 
-The [experiment workspace](workspace.md)'s **Rig** menu lists every rig by
-name — `lab`, not `rig-lab.yaml` — in two groups: **This experiment** and
-**Shared (alhazen)**. The shared rigs are the ones the *project's* alhazen
-ships, which registering the project asks its interpreter for; the workspace's
-own alhazen may be another version. In the menu:
+The [experiment workspace](workspace.md) runs on one machine, and every
+session it launches runs on **that machine's rig**. There is no rig to choose
+at a launch: which machine a session runs on is decided by where the
+dashboard is running. A workspace keeps its machine as **one complete rig
+file** in its own state folder, never in an experiment's repository:
 
-- an experiment rig that extends a shared one reads `lab · extends alhazen/lab`;
-- a shared rig shadowed by the experiment's own reads
-  `alhazen/lab (hidden by this experiment's lab)`, so the two `lab`s cannot be
-  confused once the menu is closed;
-- the summary under it describes the rig as it would run, merged, and says
-  whose it is; a development rig (§5) adds **Real data: refused**.
+```text
+<state>/machine-rig/
+  rig-<name>.yaml            the machine: no extends, no event names
+  rig-<name>_gamma.yaml      a measured gamma (alhazen calibrate gamma), when there is one
+  rig-<name>.reward.yaml     the reward calibration (Measure rig, Juice per pulse)
+  machine.json               where it was set up from, and every save
+  history/                   every earlier version of the file
+```
 
-In Run mode on a development rig the note under the launch button says,
-before anything is launched, that the launch will be refused and what to
-choose instead. The launch itself is refused by the workspace with the words
-of §5, naming the rigs in the menu that do collect, before a run record or
-anything else is written; the page shows them in its error banner.
+`<state>` is the dashboard's state folder (`~/.alhazen/dashboard`, or
+`--state-dir`). The file is named like any rig (§1), so PsychoPy registers
+its monitor as `rig-<name>` and the gamma and reward calibration are found
+beside it exactly as they are beside an experiment's file (§8).
 
-A shared rig launches as `--rig alhazen/<name>`; an experiment rig as its
-file. The run's `run.json` records `rig` (what was launched), `rig_name` and
-`rig_source`, and the history shows the name. The run folder's `rig.yaml` is
-the rig as it ran: the file itself for a whole rig, the merged rig for one
-that extends — with the experiment's file as written beside it, as
-`rig-source.yaml`.
+```mermaid
+flowchart LR
+    T["a shared rig, or a registered<br/>experiment's rig (extends merged)"] -- "set up once" --> M["<state>/machine-rig/rig-lab.yaml<br/>this machine"]
+    M -- "every launch starts from it" --> S["the session's rig<br/>(changed for this session only)"]
+    S -- "written into the run folder,<br/>launched as --rig <file>" --> R["session.json rig.origin:<br/>machine, sha256, changes, event lines"]
+    S -. "Save to this machine's rig" .-> M
+```
 
-Before a launch the workspace checks the rig, so one that cannot run is
-refused before a run folder exists. It reads the rig as the project's alhazen
-will: a project still on alhazen 1.x may call the live monitor's section
-`dashboard:` (its name before 1.9, [live monitor](live_monitor.md)), and
-launches; a project on 2.0 whose rig still says `dashboard:` is refused with
-the message its own session would give, naming `live_monitor:`.
+### Setting the machine up
 
-A project registered before the workspace listed shared rigs has none in its
-menu, and the page says so: open **Project settings** and save to register it
-again.
+The first time a workspace is opened without a machine rig, the Run page and
+every experiment's General page show **Set up this machine's rig**: a name
+for the machine, and the rig it starts from — a rig of any registered
+experiment, or one of alhazen's shared rigs. The workspace opens on the rig
+it last launched with, so a workspace from before the machine rig starts
+where it was. The rig is written out complete: a file that extends nothing
+is copied byte for byte, comments and all; one that extends a shared rig is
+written as the merged settings under a header saying what it was made from.
+The same from a terminal, before anyone opens the page:
+
+```bash
+alhazen rig init --name lab --from lab                      # alhazen's shared lab
+alhazen rig init --name booth --from configs/rig-booth.yaml --project ~/projects/amodal-averaging
+alhazen rig show
+```
+
+Both take `--state-dir`. Setting up is done once; after that the rig is
+edited (the General page's **This machine's rig**: its facts, and **Edit**,
+which checks the YAML as a launch would and saves it only if the file has
+not changed since it was opened, keeping the previous one in `history/`).
+
+**Migration.** Nothing an existing workspace holds is moved or rewritten:
+`projects.json`, the runs, their records and the people registry stay as
+they are, and the history still names each earlier run's rig as it was
+launched. An experiment's own rig files stay in its repository and keep
+working for `run.py` and `alhazen run` (§3, §4); in the workspace they are
+starting points at set-up and a source of event lines (below). Each
+experiment's data folders are still found from its own rigs as well as from
+the machine's `data_root`, so data recorded before (or from the command line)
+stays on the Data and History pages.
+
+### What a session can change
+
+The Run page's **Rig** section starts from this machine's rig and shows the
+rig as the session will run it. Under **Rig settings for this session** every
+setting is listed under the Monitor, Display, Eye tracker, Reward, Sync, Live
+monitor and Data headings, with the control its value takes, as the task
+parameters are; a setting changed for this session is marked and has a reset
+button giving the machine's value, and **Reset all** puts everything back.
+These changes are this session's only. **Save to this machine's rig** (asked
+first, listing each change) makes them the machine's for every later session
+of every experiment; the file is then written from its settings, so its
+comments go, and the previous file is kept in `history/`.
+
+Two things a session may not change, each refused before anything is
+written:
+
+- **`real_data`** is the machine's (§5). A development machine is a
+  development rig for every session on it; set `real_data: true` in the
+  machine's rig, with a comment saying why, if subjects are recorded there.
+- **Measure rig** measures the machine's rig as it is saved and keeps what it
+  measures beside it, so it runs the machine's file itself, read only, and
+  refuses a launch that carries changes.
+
+### Event lines
+
+Which of a task's events go out on which sync line, and which flash the
+photodiode, are each experiment's, not the machine's (§2): a machine rig
+naming an event one task never declares would refuse every other
+experiment's sessions. So the machine's rig names no events — they are left
+out at set-up, and the editor refuses them — and the Run page's **Event
+lines** table assigns them per session. It lists the task's own events first,
+each with its line and a photodiode tick, the events every task has folded
+underneath, and says plainly how many events go out on a line and that every
+other one pulses nothing. Lines are typed, with the device's own offered (an
+NI DAQ's `Dev1/port0/lineN`, a DATAPixx3's `DATAPIXX3/doutN`). The two other
+settings each experiment adds on a tracker — the EDF file name and a
+calibration limit — sit under it.
+
+Nobody has to edit YAML for this, and nothing pulses or goes missing
+silently. A session starts from, in this order:
+
+1. **the last session of the same experiment and task on this machine** —
+   its event lines, photodiode events, EDF name and calibration limit, as it
+   ran with them;
+2. else **the experiment's own rig named like the machine**
+   (`configs/rig-lab.yaml` on the machine `lab`), which is where an
+   experiment kept them before;
+3. else **nothing**: no event goes out on a line, and the table says so.
+
+An event the task does not declare is left out of what is carried, and said.
+A launch whose rig names an event the task does not declare is still refused,
+now by the workspace before anything is written (the session refuses it too).
+The task's events come from its parameter schema (`x-alhazen-events`, read in
+the project's interpreter); an alhazen from before that lists only the lines
+already assigned, and the session checks the names itself.
+
+### What a session records
+
+A session on this machine's rig runs **its own copy**, written into the
+workspace's run folder as `rig-<name>.yaml` (with the machine's gamma and
+reward calibration beside it) and launched as `--rig <that file>`. An
+unchanged rig is the machine's file byte for byte; a changed one is its
+settings under a header listing each change. `rig.yaml` beside it is the same
+bytes, for the History page. The session copies the file into its data run
+folder as it copies any rig (`rig-source.yaml`, `rig.yaml`), and records
+where it came from in `session.json`:
+
+```json
+"rig": {
+  "name": "lab", "source": "experiment", "file": ".../runs/<id>/rig-lab.yaml",
+  "origin": {
+    "kind": "machine", "machine": "lab", "file": "<state>/machine-rig/rig-lab.yaml",
+    "sha256": "4bda…",
+    "changes": [{"path": "monitor.distance_cm", "machine": 57.0, "session": 60}],
+    "events": {"source": {"kind": "last-session", "label": "…"},
+               "event_lines": {"FIX_ON": "Dev1/port0/line0"}, "photodiode_events": ["FIX_ON"]},
+    "workspace_run": "<id>"
+  }
+}
+```
+
+`rig.origin` is passed with `--rig-origin <run folder>/rig-origin.json` to an
+alhazen that takes it (the `rig-origin` capability); an older one runs the
+same file and records `origin` as nothing, while the workspace's `run.json`
+and `launch.json` say the same either way (`rig: "machine"`, `rig_name`,
+`rig_source: "machine"`, `rig_changes`, `rig_carried`, `rig_events_source`,
+`machine_rig: {file, sha256}`). The History page shows a session's rig, its
+changes and its event lines.
+
+### Rigs named by a client
+
+A launch request that names a rig (`rig`: an experiment's file or
+`alhazen/<name>`) still launches it as before (merged, refused on a
+development rig in run mode, copied as `rig.yaml`), for a script that drives
+the workspace's API. The page never sends one.
+
+### Decisions (2026-10-19)
+
+| Decision | Why |
+|---|---|
+| One rig per workspace, determined by the machine; no rig menu | The machine a session runs on is where the dashboard runs; a menu offered rigs of other machines, and the rig a session got depended on which experiment's folder held which file. |
+| One flat file, no `extends` | The machine is the same for every experiment run on it; a merged pair of files said less plainly what it was, and a change to a shared rig changed it silently. |
+| Kept in the workspace's state folder, not a repository | It describes this machine, which a repository shared by several machines cannot; research repositories carry no machine-identifying values. |
+| Per-session changes, recorded with the session; saving them to the machine is a separate, confirmed action | A session's changes are its own (a different viewing distance that day); making them every later session's is a decision about the machine. |
+| Event names never in the machine's rig; carried per experiment and task | They are each task's; a machine rig naming one would refuse every other experiment's sessions. Carrying them means nobody edits YAML per session, and the table shows what pulses. |
+| `real_data` not changeable per session | Whether real data may be collected is a property of the rig (§5), decided where it is version-controlled and commented. |
+| Measure rig runs the machine's file | What it measures (gamma, juice per pulse) belongs beside the machine's file, and describes the machine as saved. |
+| Named rigs still accepted by the API | Scripts that drive the workspace keep working; `run.py`, `alhazen run` and every experiment repository are unchanged. |
+
