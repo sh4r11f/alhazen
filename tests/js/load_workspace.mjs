@@ -33,6 +33,8 @@ const WORKSPACE_JS = fileURLToPath(new URL('workspace.js', ASSETS));
 const TRAINING_JS = fileURLToPath(new URL('workspace_training.js', ASSETS));
 const TRAINING_SOURCE = readFileSync(TRAINING_JS, 'utf8');
 const MANAGE_JS = fileURLToPath(new URL('workspace_manage.js', ASSETS));
+const RIG_JS = fileURLToPath(new URL('workspace_rig.js', ASSETS));
+const RIG_SOURCE = readFileSync(RIG_JS, 'utf8');
 const MANAGE_SOURCE = readFileSync(MANAGE_JS, 'utf8');
 const PARAMETERS_SOURCE = readFileSync(PARAMETERS_JS, 'utf8');
 const CALIBRATION_SOURCE = readFileSync(CALIBRATION_JS, 'utf8');
@@ -126,10 +128,15 @@ export function response(json, status = 200) {
  *   state     what /api/state returns: {projects, runs, active}
  *   details   run detail by id, for /api/runs/<id>
  *   configs   {text, values} by path, for /api/config (the parameter presets)
- *   rigs      /api/rig's answer — {name, source, extends, values}, the rig as
- *             it would run — by the Rig menu's value (a project-relative path,
- *             or alhazen/<name> for a shared rig); a value not listed is an
- *             error naming it
+ *   rigs      a rig as it would run — {name, source, extends, values} — by a
+ *             project-relative path or alhazen/<name>: /api/rig's answer
+ *             (runs launched before the machine rig name them); the first
+ *             one listed is also this machine's rig (sessionRig) unless
+ *             `sessionRig` is set
+ *   sessionRig  /api/session-rig's answer (this machine's rig and what a
+ *             session starts from), or null to derive it from `rigs`
+ *   machine   /api/machine-rig's answer (before set-up: {configured: false,
+ *             templates, suggested})
  *   schema    the task's JSON schema, for /api/schema without a task (a
  *             project whose run.py declares one task)
  *   schemas   JSON schema by task name, for /api/schema?…&task=<name> (a
@@ -141,12 +148,32 @@ export function response(json, status = 200) {
  * Every request's URL is in the handle's `fetches` (loadWorkspace), so a
  * test can check that `&task=` was, or was not, sent.
  */
+/** /api/session-rig's answer for a rig as /api/rig gives it: that rig as
+ *  this machine's, nothing carried, the task's events unknown. */
+export function sessionRigFrom(rig) {
+  return {
+    machine: {
+      name: rig.name, file: `C:/state/machine-rig/rig-${rig.name}.yaml`, sha256: 'sha-' + rig.name,
+      values: rig.values, problem: null,
+    },
+    values: rig.values,
+    events: null,
+    task_events: null,
+    events_source: { kind: 'none', label: 'no earlier session of this task on this machine' },
+    dropped: [],
+    reward_calibration: rig.reward_calibration ?? null,
+    live_streams: rig.live_streams,
+  };
+}
+
 function fakeServer() {
   const server = {
     state: { projects: [], runs: [], active: null },
     details: {},
     configs: {},
     rigs: {},
+    sessionRig: null,
+    machine: { configured: false, error: null, templates: [], suggested: null },
     schema: {},
     schemas: {},
     launch: () => ({ id: 'launched' }),
@@ -171,9 +198,27 @@ function fakeServer() {
       if (path === '/api/parameters') return response({ values: JSON.parse(body.text) });
       if (path === '/api/projects') return response({ id: 'p' });
       if (path === '/api/projects/remove') return response({});
+      if (path === '/api/machine-rig/save') {
+        const answer = server.saveMachine ? server.saveMachine(body) : null;
+        return answer ? response(answer) : response({ error: 'No save expected' }, 400);
+      }
+      if (path === '/api/machine-rig/setup') {
+        const answer = server.setupMachine ? server.setupMachine(body) : null;
+        return answer ? response(answer, 201) : response({ error: 'No set-up expected' }, 400);
+      }
       throw new Error('the fake launcher has no POST route for ' + url);
     }
-    if (path === '/api/state') return response(server.state);
+    if (path === '/api/state') {
+      /* A project fixture that says nothing of this machine's rig has one,
+       * named after the first rig the test listed (sessionRigFrom): every
+       * test written before the machine rig runs its sessions on it. A test
+       * of the set-up card says `machine_rig: null`. */
+      const first = Object.values(server.rigs)[0];
+      const projects = server.state.projects.map((p) => (p.machine_rig !== undefined || !first ? p
+        : { ...p, machine_rig: { name: first.name, file: `C:/state/machine-rig/rig-${first.name}.yaml`,
+          sha256: 'sha-' + first.name, data_root: 'data' } }));
+      return response({ ...server.state, projects });
+    }
     if (path === '/api/manage/people') return response(server.people);
     /* The training ladders' history (GET /api/training): none run yet,
      * unless the test says otherwise. */
@@ -191,6 +236,15 @@ function fakeServer() {
       if (!schema) return response({ error: 'Unknown task ' + params.get('task') }, 404);
       return response(schema);
     }
+    if (path === '/api/session-rig') {
+      server.sessionRigQueries = [...(server.sessionRigQueries || []), Object.fromEntries(params)];
+      if (server.sessionRig) return response(server.sessionRig);
+      const first = Object.values(server.rigs)[0];
+      if (!first) return response({ error: 'This machine has no rig yet' }, 400);
+      return response(sessionRigFrom(first));
+    }
+    if (path === '/api/machine-rig') return response(server.machine);
+    if (path === '/api/machine-rig/schema') return response(server.rigSchema || {});
     if (path === '/api/rig') {
       const rig = server.rigs[params.get('rig')];
       if (!rig) return response({ error: 'No such rig ' + params.get('rig') }, 404);
@@ -287,6 +341,7 @@ export function loadWorkspace(options = {}) {
   vm.runInContext(PARAMETERS_SOURCE, context, { filename: PARAMETERS_JS });
   vm.runInContext(CALIBRATION_SOURCE, context, { filename: CALIBRATION_JS });
   vm.runInContext(TRAINING_SOURCE, context, { filename: TRAINING_JS });
+  vm.runInContext(RIG_SOURCE, context, { filename: RIG_JS });
   vm.runInContext(WORKSPACE_WITHOUT_POLL, context, { filename: WORKSPACE_JS });
   /* workspace.html loads the management script after workspace.js; it only
    * defines window.WorkspaceManage, which workspace.js looks up when used. */

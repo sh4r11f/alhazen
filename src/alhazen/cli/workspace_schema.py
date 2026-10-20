@@ -34,6 +34,8 @@ TASK_NAME_KEY = "x-alhazen-task"
 # (``EventSchema.all_names``), sorted: the names a rig's sync lines and
 # photodiode may name, which the workspace's Rig section offers.
 EVENTS_KEY = "x-alhazen-events"
+# The task's own events alone, without the reserved ones (``EventSchema.declared``).
+TASK_EVENTS_KEY = "x-alhazen-task-events"
 
 
 def _run_experiment_call(tree: ast.AST) -> ast.Call | None:
@@ -112,6 +114,9 @@ def task_schema(path: Path, task: str | None = None) -> dict[str, Any]:
     events = getattr(getattr(cls, "events", None), "all_names", None)
     if events is not None:
         schema[EVENTS_KEY] = sorted(str(e) for e in events)
+        own = getattr(cls.events, "declared", None)
+        if own is not None:
+            schema[TASK_EVENTS_KEY] = sorted(str(e) for e in own)
     return schema
 
 

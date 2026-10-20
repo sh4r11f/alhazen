@@ -67,6 +67,10 @@ PAGE_ASSETS = {
     # The juice a session delivered, on History's session details.
     "/workspace_juice.js": ("workspace_juice.js", "text/javascript; charset=utf-8"),
     "/workspace_juice.css": ("workspace_juice.css", "text/css; charset=utf-8"),
+    # This machine's rig: the Run page's Rig section and the General page's
+    # panel (workspace_rig.js; /api/machine-rig, /api/session-rig).
+    "/workspace_rig.js": ("workspace_rig.js", "text/javascript; charset=utf-8"),
+    "/workspace_rig.css": ("workspace_rig.css", "text/css; charset=utf-8"),
     "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts/Manrope-latin.woff2": ("fonts/Manrope-latin.woff2", "font/woff2"),

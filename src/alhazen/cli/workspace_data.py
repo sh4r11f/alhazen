@@ -377,6 +377,16 @@ def _summary(root: Path, folder: Path, found: RunFolder) -> dict[str, Any]:
             row["rig"] = rig.get("name") or (
                 file_rig_name(Path(rig["file"])) if rig.get("file") else None
             )
+            # Where the rig came from, for a session the workspace launched on
+            # its machine rig (session.json's rig.origin): its changes and
+            # event lines, for the History page.
+            origin = rig.get("origin")
+            if isinstance(origin, dict):
+                row["rig_origin"] = {
+                    "machine": origin.get("machine"),
+                    "changes": origin.get("changes") or [],
+                    "events": origin.get("events") or {},
+                }
     elif (folder / "config_snapshot.yaml").is_file():
         # A pre-2.0 run (or a 2.0 run whose card is missing): what the
         # snapshot says. It has no mode; the folder's kind says real or

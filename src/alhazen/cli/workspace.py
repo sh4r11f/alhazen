@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from alhazen.cli import machine_rig as mr
 from alhazen.cli.launch_failure import launch_failure
 from alhazen.cli.people import PeopleError, PeopleRegistry
-from alhazen.cli.workspace_schema import EVENTS_KEY, TASK_NAME_KEY
+from alhazen.cli.workspace_schema import EVENTS_KEY, TASK_EVENTS_KEY, TASK_NAME_KEY
 from alhazen.config.calibration_images import NAME_PATTERN
 from alhazen.config.experiment import experiment_stimuli, experiment_title
 from alhazen.config.loader import validate_rig
@@ -2634,6 +2634,7 @@ class Workspace:
         return {
             "name": machine.name,
             "file": str(machine.path),
+            "sha256": machine.sha256,
             "data_root": machine.values.get("data_root"),
         }
 
@@ -2766,6 +2767,17 @@ class Workspace:
             return self._training_launch(project, request)[1].task
         return self._task_for(project, request)
 
+    def _task_events(self, project: dict[str, Any], task: str | None) -> list[str] | None:
+        """The task's own events (without the reserved ones), for the Rig
+        section to list first; None when its alhazen does not say."""
+        declared = project_tasks(Path(project["path"]))
+        try:
+            schema = self.schema(project["id"], task if declared["tasks"] else None)
+        except ValueError:
+            return None
+        events = schema.get(TASK_EVENTS_KEY)
+        return sorted(str(e) for e in events) if isinstance(events, list) else None
+
     def _declared_events(self, project: dict[str, Any], task: str | None) -> list[str] | None:
         """The events ``task`` declares (and the reserved ones every task
         has), from its parameter schema read in the project's interpreter; None
@@ -2895,6 +2907,7 @@ class Workspace:
             },
             "values": values,
             "events": declared,
+            "task_events": self._task_events(project, task) if declared is not None else None,
             "events_source": source,
             "dropped": dropped,
             "reward_calibration": _reward_calibration_summary(machine.path),
