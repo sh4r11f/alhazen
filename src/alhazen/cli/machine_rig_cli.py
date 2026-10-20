@@ -68,8 +68,13 @@ def run(args: argparse.Namespace) -> int:
         print(status["text"], end="" if status["text"].endswith("\n") else "\n")
         return 0
     root = Path(args.project).expanduser().resolve() if args.project else Path.cwd()
+    source = args.source
+    # A relative path is read from the current folder, as --rig reads one;
+    # failing that, from the experiment folder --project names.
+    if not Path(source).is_file() and (root / source).is_file():
+        source = str(root / source)
     try:
-        ref = resolve_rig(args.source, root)
+        ref = resolve_rig(source, root)
         label = ref.qualified(experiment_title(root).slug)
         status = machine.setup(
             args.name,

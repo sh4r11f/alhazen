@@ -1734,7 +1734,13 @@ def _template_facts(path: Path, shared: dict[str, Path] | None) -> dict[str, Any
         merged = rig_mapping(path, shared=shared)
         rig = validate_rig(merged, path)
     except ConfigError as exc:
-        return {"extends": None, "real_data": None, "summary": None, "error": str(exc)}
+        return {
+            "extends": None,
+            "real_data": None,
+            "summary": None,
+            "events": [],
+            "error": str(exc),
+        }
     m = rig.monitor
     tracker = rig.devices.eyetracker.backend if rig.devices.eyetracker else "no eye tracker"
     summary = f"{m.width_px} × {m.height_px} px · {m.refresh_rate_hz:g} Hz · {tracker}"
@@ -2804,7 +2810,16 @@ class Workspace:
             }
         root = Path(project["path"])
         own = [p for name, p in experiment_rig_files(root) if name == machine.name]
+        none_label = (
+            "no earlier session of this task on this machine, and no rig of this machine's "
+            "name in the experiment, so no event goes out on a line"
+        )
         if len(own) == 1:
+            none_label = (
+                f"no earlier session of this task on this machine, and this experiment's "
+                f"{own[0].relative_to(root).as_posix()} assigns no event lines, so no event "
+                "goes out on a line"
+            )
             try:
                 merged = rig_mapping(own[0], shared=_shared_rigs(project))
             except ConfigError:
@@ -2826,11 +2841,7 @@ class Workspace:
                         "label": f"from this experiment's {relative} (no earlier session of "
                         "this task on this machine)",
                     }
-        return {}, {
-            "kind": "none",
-            "label": "no earlier session of this task on this machine, and no rig of this "
-            "machine's name in the experiment, so no event goes out on a line",
-        }
+        return {}, {"kind": "none", "label": none_label}
 
     def _prefilled(
         self,

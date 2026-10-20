@@ -127,14 +127,17 @@ def strip_events(values: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]
     ``{"event_lines": {...}, "photodiode_events": [...]}`` (only what was there)."""
     clean = copy.deepcopy(values)
     removed: dict[str, Any] = {}
-    found, lines = get_path(clean, EVENT_LINES)
-    if found and lines:
-        removed["event_lines"] = dict(lines)
-        set_path(clean, EVENT_LINES, {})
-    found, events = get_path(clean, PHOTODIODE_EVENTS)
-    if found and events:
-        removed["photodiode_events"] = list(events)
-        set_path(clean, PHOTODIODE_EVENTS, [])
+    for path, key, kind in (
+        (EVENT_LINES, "event_lines", dict),
+        (PHOTODIODE_EVENTS, "photodiode_events", list),
+    ):
+        found, names = get_path(clean, path)
+        if found and names:
+            removed[key] = kind(names)
+            # Taken out rather than emptied: absent is the model's own
+            # default (none), and reads the same as a rig that never had any.
+            _found, parent = get_path(clean, path[:-1])
+            del parent[path[-1]]
     return clean, removed
 
 
