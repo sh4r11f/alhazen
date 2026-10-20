@@ -38,6 +38,29 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **`server.json` names the alhazen.** The holder record also carries `alhazen` (the
   version serving) and `shutdown: true`, so a tool can tell which alhazen a running
   dashboard is and stop it.
+- **Dashboard: the library shows up by itself.** A connection written while the dashboard
+  runs (Mana's kit writing `library.json` after the page loaded, `alhazen library connect`
+  in another terminal) is read in the background on the page's next poll; the page polls
+  while nothing is connected and follows a background read closely
+  (`GET /api/library` → `refreshing`). Any failure of that read is shown, not only the
+  platform's own refusals. Before, a page that loaded first stayed on "no library" until
+  reloaded.
+- **Dashboard: Connect a library.** The Experiments page offers a form for the platform's
+  address and a machine token (`POST /api/library/connect`, checked by listing the copies
+  before anything is saved); `alhazen library connect` gains `--token` and `--machine`.
+- **Dashboard: closing tells the library.** On Shut down or Ctrl+C, after the active run has
+  ended, the dashboard sends its library `dashboard-closed` (`POST /api/machines/events`):
+  machine, alhazen, start and close times, the run jobs its connection named, and each
+  session launched since it started with how it ended and its outcome counts. Bounded to a
+  few seconds, never blocks the shutdown, logged in `<state>/library/reports.log`.
+- **Platform: machine tokens.** `alhazen platform serve` and `platform local` accept
+  `Authorization: Bearer <machine token>` for a rig: made per machine on the new **Machines**
+  page (shown once, stored hashed in `<store>/machines.sqlite3`), revocable, refused for a
+  disabled account, and good only for the owner's copies (`GET /api/forks`, their own
+  revisions' archives) and reports (`POST /api/machines/events`). The page lists each
+  machine's reports; a copy's Run tab points to it. design.md Appendix A documents the routes.
+- **Shut down is easier to find**: a bordered button with a power mark in the top bar, and
+  its confirmation says when the library will be told.
 
 ## 3.4.1 - 2026-10-17
 

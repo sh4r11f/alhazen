@@ -27,6 +27,7 @@ short deadline; a platform that cannot be reached never holds the shutdown up.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
@@ -229,10 +230,9 @@ class Library:
             self._tried = time.time()
 
         def work() -> None:
-            try:
+            # Any failure is kept in _error by refresh, for the page to show.
+            with contextlib.suppress(Exception):
                 self.refresh(counted=True)
-            except Exception:  # noqa: BLE001 - recorded in _error by refresh for the page
-                pass
 
         thread = threading.Thread(target=work, daemon=True, name="library-refresh")
         self._threads.append(thread)

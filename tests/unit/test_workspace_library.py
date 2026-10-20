@@ -4,6 +4,7 @@ platform, downloaded on demand after a disk check, built and registered."""
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -229,3 +230,196 @@ def test_the_command_line_connects_from_a_local_platform_url(tmp_path: Path, cap
     saved = library.load_source(tmp_path)
     assert saved.auth == "alhazen-token" and saved.token == "abc"
     assert "abc" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- the list appears by itself
+def test_a_connection_written_while_the_page_is_open_is_read_in_the_background(tmp_path: Path):
+    """Mana's kit writes library.json after the page has loaded: the next poll starts a read,
+    says it is reading, and the one after lists the copies (no Refresh needed)."""
+    state = tmp_path / "state"
+    state.mkdir()
+    client = FakeClient({"dots-1": fork("dots-1", "b1")}, {})
+    lib = Library(FakeWorkspace(state), client_factory=client, sync=lambda *a: None)
+    assert lib.get() == {"configured": False, "items": []}
+    library.save_source(
+        state, LibrarySource(url="https://mana.example/svc", token="t", copies=tmp_path / "c")
+    )
+    first = lib.get()
+    assert first["configured"] and first["refreshing"] is True and first["items"] == []
+    wait(lib)
+    page = lib.get()
+    assert page["refreshing"] is False and [x["id"] for x in page["items"]] == ["dots-1"]
+
+
+def test_a_changed_connection_drops_the_old_list_and_reads_again(setup):  # type: ignore[no-untyped-def]
+    lib, ws, client, synced, copies = setup
+    lib.refresh()
+    assert len(lib.get()["items"]) == 1
+    client._forks = {"other-2": fork("other-2", "b9")}
+    library.save_source(
+        lib.directory,
+        LibrarySource(url="https://other.example/svc", token="t2", copies=copies),
+    )
+    assert lib.get()["items"] == []  # the old list belongs to the old connection
+    wait(lib)
+    assert [x["id"] for x in lib.get()["items"]] == ["other-2"]
+
+
+def test_a_failed_background_read_is_shown_not_swallowed(setup):  # type: ignore[no-untyped-def]
+    lib, ws, client, synced, copies = setup
+
+    def broken() -> dict[str, Any]:
+        raise RuntimeError("socket closed")
+
+    client.forks = broken  # type: ignore[method-assign]
+    assert lib.get()["refreshing"] is True
+    wait(lib)
+    page = lib.get()
+    assert page["refreshing"] is False and "socket closed" in page["error"]
+    assert lib.get()["refreshing"] is False  # not retried on every poll
+
+
+def test_the_page_connects_with_a_token_checked_before_it_is_saved(tmp_path: Path):
+    state = tmp_path / "state"
+    state.mkdir()
+    client = FakeClient({"dots-1": fork("dots-1", "b1")}, {})
+    lib = Library(FakeWorkspace(state), client_factory=client, sync=lambda *a: None)
+    page = lib.connect("https://lab.example/platform/", "alm_x", "Lab")
+    assert page["source"]["label"] == "Lab" and [x["id"] for x in page["items"]] == ["dots-1"]
+    saved = library.load_source(state)
+    assert saved.url == "https://lab.example/platform" and saved.auth == "bearer"
+
+    def refused() -> dict[str, Any]:
+        raise LibraryError("Lab refused this dashboard's token (401)")
+
+    client.forks = refused  # type: ignore[method-assign]
+    with pytest.raises(LibraryError):
+        lib.connect("https://evil.example", "alm_wrong")
+    assert library.load_source(state).url == "https://lab.example/platform"  # kept
+
+
+def test_closing_reports_the_sessions_and_the_jobs(tmp_path: Path):
+    state = tmp_path / "state"
+    state.mkdir()
+    library.save_source(
+        state,
+        LibrarySource(
+            url="https://mana.example/svc",
+            token="t",
+            copies=tmp_path / "c",
+            machine="Booth 2",
+            run_jobs=("1792455795541",),
+        ),
+    )
+    sent: list[dict[str, Any]] = []
+
+    class Reporting(FakeClient):
+        def report(self, event: dict[str, Any]) -> dict[str, Any]:
+            sent.append(event)
+            return {"ok": True}
+
+    lib = Library(FakeWorkspace(state), client_factory=Reporting({}, {}), sync=lambda *a: None)
+    sessions = [{"experiment": "Dots", "task": "main", "outcomes": {"CORRECT": 3}}]
+    message = lib.report_closed(
+        started="2026-10-19T10:00:00+00:00", sessions=sessions, reason="shut down from the page"
+    )
+    assert "Told Library the dashboard closed (1 session" in message
+    (event,) = sent
+    assert event["event"] == "dashboard-closed" and event["machine"] == "Booth 2"
+    assert event["jobs"] == ["1792455795541"] and event["sessions"] == sessions
+    assert (state / "library" / "reports.log").read_text(encoding="utf-8").count("\n") == 1
+
+
+def test_closing_never_waits_long_for_a_platform_that_hangs(tmp_path: Path):
+    import threading
+    import time as _time
+
+    state = tmp_path / "state"
+    state.mkdir()
+    library.save_source(
+        state, LibrarySource(url="https://mana.example/svc", token="t", copies=tmp_path / "c")
+    )
+    release = threading.Event()
+
+    class Hanging(FakeClient):
+        def report(self, event: dict[str, Any]) -> dict[str, Any]:
+            release.wait(30)
+            return {}
+
+    lib = Library(FakeWorkspace(state), client_factory=Hanging({}, {}), sync=lambda *a: None)
+    t0 = _time.monotonic()
+    message = lib.report_closed(started="x", sessions=[], reason="r", timeout=0.2)
+    release.set()
+    assert _time.monotonic() - t0 < 3 and "did not answer" in message
+
+
+def test_closing_without_a_library_says_nothing(tmp_path: Path):
+    lib = Library(FakeWorkspace(tmp_path))
+    assert lib.report_closed(started="x", sessions=[], reason="r") == ""
+
+
+def test_session_summaries_read_the_runs_and_their_last_console_line(tmp_path: Path):
+    import threading
+
+    class Runs:
+        directory = tmp_path
+        lock = threading.Lock()
+        runs = {
+            "r1": {
+                "id": "r1",
+                "name": "dots",
+                "task": "main",
+                "mode": "run",
+                "started": "2026-10-19T10:05:00+00:00",
+                "finished": "2026-10-19T10:20:00+00:00",
+                "status": "completed",
+                "cwd": str(tmp_path / "copy"),
+            },
+            "r0": {
+                "id": "r0",
+                "name": "dots",
+                "task": "main",
+                "mode": "run",
+                "started": "2026-10-18T09:00:00+00:00",
+                "finished": None,
+                "status": "completed",
+                "cwd": str(tmp_path / "copy"),
+            },
+        }
+
+    (tmp_path / "runs" / "r1").mkdir(parents=True)
+    (tmp_path / "runs" / "r1" / "console.log").write_text(
+        "INFO running main\nINFO session end: complete — 12 trials served, 10 rows recorded "
+        "(CORRECT 7, WRONG 3)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "copy" / ".alhazen-hub").mkdir(parents=True)
+    (tmp_path / "copy" / ".alhazen-hub" / "source.json").write_text(
+        json.dumps({"schema": 1, "id": "dots-1", "bundle": "b1"}), encoding="utf-8"
+    )
+    (only,) = workspace_library.session_summaries(Runs(), "2026-10-19T10:00:00+00:00")
+    assert only["copy"] == "dots-1" and only["revision"] == "b1" and only["session"] == "complete"
+    assert only["outcomes"] == {"CORRECT": 7, "WRONG": 3} and only["task"] == "main"
+
+
+def test_the_command_line_takes_a_machine_token_and_a_name(tmp_path: Path):
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    workspace_library.add_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(
+        [
+            "library",
+            "connect",
+            "https://lab.example/platform",
+            "--token",
+            "alm_abc",
+            "--machine",
+            "Booth 2",
+            "--state-dir",
+            str(tmp_path),
+        ]
+    )
+    assert workspace_library.run(args) == 0
+    saved = library.load_source(tmp_path)
+    assert saved.auth == "bearer" and saved.token == "alm_abc" and saved.machine == "Booth 2"

@@ -204,9 +204,11 @@ class Accounts:
 
     def principal(self, uid: str) -> Principal | None:
         """The enabled user ``uid`` (for a machine token), or None."""
-        row = self._db().execute(
-            "SELECT name, disabled FROM users WHERE uid = ?", (str(uid),)
-        ).fetchone()
+        row = (
+            self._db()
+            .execute("SELECT name, disabled FROM users WHERE uid = ?", (str(uid),))
+            .fetchone()
+        )
         if row is None or row[1]:
             return None
         return Principal(str(uid), row[0])

@@ -35,10 +35,11 @@ from typing import Any
 from alhazen.experiment_platform.errors import InvalidRequest, NotFound
 
 FILE = "machines.sqlite3"
+Record = dict[str, Any]
 TOKEN_PREFIX = "alm_"
-MAX_MACHINES = 50          # active tokens per person
-MAX_EVENTS = 200           # kept per person, newest first
-MAX_SESSIONS = 200         # sessions listed in one report
+MAX_MACHINES = 50  # active tokens per person
+MAX_EVENTS = 200  # kept per person, newest first
+MAX_SESSIONS = 200  # sessions listed in one report
 EVENT_KINDS = ("dashboard-closed",)
 # A last-used time written at most this often (every request would be a write).
 TOUCH_S = 60
@@ -124,7 +125,7 @@ class Machines:
         )
         return {**record, "lastUsed": None}, token
 
-    def list(self, uid: str) -> list[dict[str, Any]]:
+    def active(self, uid: str) -> list[Record]:
         rows = self._db().execute(
             "SELECT id, name, created, last_used FROM machines "
             "WHERE uid = ? AND revoked IS NULL ORDER BY created DESC",
@@ -182,7 +183,7 @@ class Machines:
         )
         return kept
 
-    def events(self, uid: str, limit: int = 20) -> list[dict[str, Any]]:
+    def events(self, uid: str, limit: int = 20) -> list[Record]:
         rows = self._db().execute(
             "SELECT seq, body FROM events WHERE uid = ? ORDER BY seq DESC LIMIT ?",
             (uid, max(1, min(int(limit), MAX_EVENTS))),
@@ -212,7 +213,8 @@ def clean_event(event: Any, machine_name: str) -> dict[str, Any]:
     for s in sessions[:MAX_SESSIONS]:
         if not isinstance(s, dict):
             continue
-        outcomes = s.get("outcomes") if isinstance(s.get("outcomes"), dict) else {}
+        raw = s.get("outcomes")
+        outcomes: dict[str, Any] = raw if isinstance(raw, dict) else {}
         kept_sessions.append(
             {
                 "experiment": _text(s.get("experiment"), 120),

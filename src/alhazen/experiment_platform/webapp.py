@@ -297,7 +297,7 @@ class PlatformApp:
             return self._json(
                 200,
                 {
-                    "machines": self.machines.list(principal.uid),
+                    "machines": self.machines.active(principal.uid),
                     "events": self.machines.events(principal.uid),
                 },
             )
@@ -363,6 +363,7 @@ class PlatformApp:
             info, headers = self.gate.login(request, body)
             return self._json(200, info, headers)
         machine: tuple[str, str] | None = None
+        principal: Principal | None
         bearer = request.header("Authorization") or ""
         if bearer.startswith("Bearer "):
             principal, machine = self._machine(bearer[7:].strip())

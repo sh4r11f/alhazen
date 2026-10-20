@@ -161,13 +161,20 @@ One WSGI application (`experiment_platform.http`) serves both standalone hosts:
 | `POST /api/forks/<id>/revisions` | upload a zip as a new revision |
 | `POST /api/forks/<id>/publish`, `/unpublish`; `DELETE /api/forks/<id>` | |
 | `GET /api/art/<path>` | content-hashed listing pictures |
+| `GET /api/machines`, `POST /api/machines`, `DELETE /api/machines/<id>` | the person's machine tokens and the machines' recent reports |
+| `POST /api/machines/events` | a rig's report (machine token only) |
 
 Security: local mode follows `alhazen dashboard` (loopback bind, random token in the URL
 fragment, `X-Alhazen-Token` header, exact `Host` check, `Origin` check). Server mode uses an
 `HttpOnly`, `SameSite=Strict` session cookie (`Secure` unless the operator runs plain HTTP
 on loopback), a CSRF header on every state-changing request, a strict Content-Security-
 Policy, login throttling, and refuses to start on a non-loopback address unless the
-operator states how TLS is provided (`--tls-terminated-by-proxy`).
+operator states how TLS is provided (`--tls-terminated-by-proxy`). Both hosts also accept a
+**machine token** (`Authorization: Bearer alm_...`), made per rig on the Machines page and
+stored as a SHA-256 in `<store>/machines.sqlite3` (`experiment_platform.machines`). A token
+reaches only `GET /api/forks`, `GET /api/bundles/F~.../archive` (its owner's own revisions) and
+`POST /api/machines/events`; everything else is 403. It needs no CSRF header because a browser
+never sends it on its own; revoking it, or disabling the account, refuses it at once (401).
 
 ## 7. Web app
 
@@ -233,9 +240,27 @@ workspace_library` for the page and the jobs).
   address plus a token file; the Mana kit writes it on every run (below). Plain `http` is
   accepted only for loopback addresses. The page shows the platform's origin, never the URL's
   path (a Mana ingress path is itself a credential).
-- **Client.** Two requests of Appendix A: `GET /api/forks` and `GET /api/bundles/<handle>/
-  archive`, the same against `alhazen platform local` and Mana. A server host's cookie
-  sessions are not supported yet (it would need per-rig API tokens).
+- **Client.** Three requests of Appendix A: `GET /api/forks`, `GET /api/bundles/<handle>/
+  archive` and, when the dashboard closes, `POST /api/machines/events`; the same against
+  `alhazen platform local`, `alhazen platform serve` and Mana. On a standalone host the rig uses
+  a **machine token**: the person makes one on the Machines page (shown once) and runs
+  `alhazen library connect <address> --token <token>` on the rig, or pastes both into the
+  dashboard's Library section (`POST /api/library/connect`, which lists the copies before it
+  saves anything). The connection may also name the machine (`machine`) and the platform's run
+  jobs it serves (`runJobs`, written by Mana's kit).
+- **Reading the list.** The dashboard reads the list in the background the first time the page
+  asks after a connection appears or changes (a `library.json` written while it runs, as Mana's
+  kit does when it joins an open dashboard); `GET /api/library` then says `refreshing: true`, and
+  any failure is kept as `error`. The page asks every few seconds while nothing is connected, so
+  a connection made meanwhile shows without a reload. A changed connection drops the old list.
+- **Closing.** When the dashboard stops (Shut down on the page, Ctrl+C), after its active run
+  has ended, it sends `dashboard-closed` to its library: machine, alhazen version, start and
+  close times, why it closed, the run jobs named in its connections, and every session launched
+  since it started (experiment, library copy and revision, task, mode, start and end, how it
+  ended and the outcome counts of the console's last line). It waits at most 5 s and never
+  stops the shutdown; the result is printed and appended to `<state>/library/reports.log`. A
+  standalone host keeps the report for the Machines page; Mana's service marks the matching run
+  jobs finished and notifies the person.
 - **Disk.** Every download writes `<copies>/<copy id>/.alhazen-hub/source.json`
   (`{schema: 1, id, bundle, title, source, writtenAt, files, previous}`). A copy's folder is
   `absent`, `current` (marker names the library's revision), `outdated` or `unknown` (no
@@ -254,9 +279,12 @@ workspace_library` for the page and the jobs).
   serves only that user's copies; each rig gets its own bearer token, stored in the sandbox only
   as a SHA-256 hash with an expiry (7 days, renewed on every run), alongside an ingress link of
   the same lifetime. `hubkit.run_on_machine` applies the same disk rules before copying
-  (raising `CopyHasData` instead of overwriting), adds the experiment to a dashboard that is
-  already open, and writes the connection file by file transfer (the token never appears in a
-  terminal command).
+  (raising `CopyHasData` instead of overwriting), writes the connection file by file transfer
+  (the token never appears in a terminal command) before it starts or joins the dashboard, so
+  the page lists the library from its first read, names the run job in it, and adds the
+  experiment to a dashboard that is already open. The service answers `POST
+  /api/machines/events` too: it marks the reported run jobs (and, for an older connection that
+  names none, the open run jobs of that machine) finished with a plain summary.
 
 ## 9. Decisions and their price
 
@@ -289,11 +317,13 @@ Authentication: local host, header `X-Alhazen-Token: <token>` (from the URL frag
 `#token=`); server host, the `alhazen_platform_session` cookie plus header
 `X-Alhazen-CSRF: <csrf>` (from `/api/session`) on every POST and DELETE, and
 `X-Alhazen-Platform: 1` on every POST and DELETE including `/api/login` (a header a
-cross-site form cannot send).
+cross-site form cannot send). A rig, on either host: `Authorization: Bearer <machine token>`,
+for the three requests marked *machine* below and no others (403); an unknown, revoked or
+disabled-account token is 401.
 
 | Request | Response |
 |---|---|
-| `GET /api/session` | `{kind: "local"\|"server", viewer: {uid, name}\|null, csrf: str\|null, capabilities: {fork, publish, uploadRevision, downloadRevision, changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, signIn: bool}}` |
+| `GET /api/session` | `{kind: "local"\|"server", viewer: {uid, name}\|null, csrf: str\|null, capabilities: {fork, publish, uploadRevision, downloadRevision, changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, machineTokens: bool, signIn: bool}}` |
 | `POST /api/login` `{username, password}` | the session object; sets the cookie |
 | `POST /api/logout` | `{}`; clears the cookie |
 | `GET /api/assets` | `{hero: <svg>, penrose: <svg>}` |
@@ -301,8 +331,8 @@ cross-site form cannot send).
 | `GET /api/catalogue/<uid>/<exp>/docs[?version=<bundleId>]` | the documentation record (`guide`, `methods`, `parameterGuide`, `readme`, `references`, `tasks`, `assumed`, `deviations`, all strings as stored) plus `docsStatus`, `bundleId` |
 | `GET /api/bundles/<handle>/meta` | bundle meta (`files` and `excluded` are JSON strings, as in Mana) |
 | `GET /api/bundles/<handle>/chunks/<n>` | the chunk: a JSON array of entries (the text is returned as is) |
-| `GET /api/bundles/<handle>/archive` | `application/zip`, everything under `<exp or fork id>/` |
-| `GET /api/forks` | `{forks: {<forkId>: fork}}`; `fork.head.path` is a bundle handle |
+| `GET /api/bundles/<handle>/archive` (also *machine*, `F~` handles only) | `application/zip`, everything under `<exp or fork id>/` |
+| `GET /api/forks` (also *machine*) | `{forks: {<forkId>: fork}}`; `fork.head.path` is a bundle handle |
 | `POST /api/forks` `{publisher, exp}` | `{id, fork}` |
 | `GET /api/forks/<id>/docs` | `{docs: record\|null, readme: str\|null, stale: bool}` |
 | `POST /api/forks/<id>/revisions?message=<text>` body: zip bytes | `{revision: {bundle, message, by, at}, fork}` |
@@ -310,6 +340,10 @@ cross-site form cannot send).
 | `POST /api/forks/<id>/unpublish` | `{}` |
 | `DELETE /api/forks/<id>` | `{removed: {bundles: [bundleId], docs: [docsKey]}}` |
 | `GET /api/art/<path>` | the image (content-hashed name, cacheable) |
+| `GET /api/machines` | `{machines: [{id, name, created, lastUsed}], events: [event]}` (newest 20 reports) |
+| `POST /api/machines` `{name}` | `{machine: {id, name, created, lastUsed: null}, token}`; the token is returned this once |
+| `DELETE /api/machines/<id>` | `{}`; the token is refused from now on |
+| `POST /api/machines/events` (*machine* only) `{event: "dashboard-closed", machine, alhazen, startedAt, closedAt, reason, jobs: [jobId], sessions: [{experiment, copy, revision, task, mode, startedAt, endedAt, status, session, outcomes: {<outcome>: n}}]}` | `{ok: true, event}`: what was kept (strings bounded, unknown fields dropped, `machine` is the token's name and `reportedName` the one sent; 200 reports kept per person) |
 
 Bundle handles are opaque to the web app: `L~<publisher>~<exp>~<bundleId>` for a published
 version, `F~<forkId>~<bundleId>` for a revision of the viewer's own copy. A handle names a

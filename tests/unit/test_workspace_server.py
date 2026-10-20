@@ -186,6 +186,15 @@ class TestShutDown:
         status, answer = _post(server, "/api/runs", {})
         assert status == 409 and "shutting down" in answer["error"]
 
+    def test_the_library_form_refuses_an_address_it_cannot_use(self, server):
+        server, _ = server
+        status, answer = _post(
+            server, "/api/library/connect", {"url": "http://example.com", "token": "x"}
+        )
+        assert status == 502 and "https" in answer["error"]
+        status, _ = _post(server, "/api/library/connect", {"url": 3})
+        assert status == 400
+
     def test_it_needs_the_token(self, server):
         server, thread = server
         connection = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
@@ -308,3 +317,106 @@ class TestTheCommand:
         assert not (state / "server.json").exists()
         with workspace_lock(state):
             pass
+
+    def test_the_library_appears_and_shut_down_reports_to_it(self, tmp_path):
+        """End to end over HTTP against a real local platform with a machine token: the page's
+        first read starts the list in the background, a later one lists the copy, and Shut
+        down tells the platform the dashboard closed."""
+        import time as _time
+        import urllib.request
+
+        from tests.unit.platform_support import add_version, experiment
+
+        from alhazen.experiment_platform import library
+        from alhazen.experiment_platform.library import LibrarySource
+        from alhazen.experiment_platform.local import LocalPlatform
+        from alhazen.experiment_platform.store import FileStore
+
+        store = FileStore(tmp_path / "store", create=True)
+        add_version(store, "lab", "dots", experiment())
+        platform = LocalPlatform(store, name="Me")
+        platform.start()
+
+        def browser(method, path, body=None):  # type: ignore[no-untyped-def]
+            request = urllib.request.Request(
+                platform.origin + path,
+                data=json.dumps(body).encode() if body is not None else None,
+                headers={"X-Alhazen-Token": platform.token, "Content-Type": "application/json"},
+                method=method,
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return json.loads(response.read())
+
+        state = tmp_path / "state"
+        process = None
+        try:
+            fork_id = browser("POST", "/api/forks", {"publisher": "lab", "exp": "dots"})["id"]
+            token = browser("POST", "/api/machines", {"name": "Booth 2"})["token"]
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "alhazen.cli.main",
+                    "dashboard",
+                    "--no-browser",
+                    "--port",
+                    "0",
+                    "--state-dir",
+                    str(state),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+            )
+            assert process.stdout is not None
+            line = process.stdout.readline()
+            url = urlsplit(line.split(": ", 1)[1].strip())
+            dash = url.fragment.removeprefix("token=")
+
+            def ask(method, path, body=None):  # type: ignore[no-untyped-def]
+                connection = HTTPConnection("127.0.0.1", url.port, timeout=10)
+                connection.request(
+                    method,
+                    path,
+                    body=json.dumps(body) if body is not None else None,
+                    headers={"X-Alhazen-Token": dash, "Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                answer = json.loads(response.read())
+                connection.close()
+                return answer
+
+            assert ask("GET", "/api/library") == {"configured": False, "items": []}
+            # Written while the page is open, as Mana's kit does.
+            library.save_source(
+                state,
+                LibrarySource.from_url(
+                    platform.origin,
+                    token,
+                    copies=tmp_path / "copies",
+                    machine="Booth 2",
+                    run_jobs=("1792455795541",),
+                ),
+            )
+            first = ask("GET", "/api/library")
+            assert first["configured"] is True and first["refreshing"] is True
+            deadline = _time.monotonic() + 20
+            while _time.monotonic() < deadline:
+                page = ask("GET", "/api/library")
+                if not page["refreshing"]:
+                    break
+                _time.sleep(0.1)
+            assert [x["id"] for x in page["items"]] == [fork_id], page
+            assert ask("POST", "/api/shutdown", {}) == {"ok": True}
+            output, errors = process.communicate(timeout=30)
+            assert process.returncode == 0, (output, errors)
+            assert "Told Library the dashboard closed (0 sessions" in output, output
+            (event,) = browser("GET", "/api/machines")["events"]
+            assert event["machine"] == "Booth 2" and event["jobs"] == ["1792455795541"]
+            assert event["reason"] == "shut down from the page"
+        finally:
+            if process is not None:
+                process.kill()
+            platform.shutdown()

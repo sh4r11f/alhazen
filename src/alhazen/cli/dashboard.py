@@ -513,7 +513,9 @@ class Handler(BaseHTTPRequestHandler):
                 label = body.get("label")
                 self._json(
                     self.server.library.connect(
-                        body["url"], body.get("token", ""), label if isinstance(label, str) else None
+                        body["url"],
+                        body.get("token", ""),
+                        label if isinstance(label, str) else None,
                     )
                 )
             elif path == "/api/library/disconnect":

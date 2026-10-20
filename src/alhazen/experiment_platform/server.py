@@ -3,8 +3,9 @@
 ``alhazen platform serve --config platform.toml`` serves the same application as the
 local host to several people, with accounts (``alhazen platform users ...``), sessions in
 an HttpOnly cookie and a CSRF token on every change. Rigs reach it with machine tokens each
-person makes on the Machines page (machines.py; bearer tokens, so no cookie and no CSRF). It runs the platform only: no
-experiment code runs on the server, and rigs still run sessions themselves.
+person makes on the Machines page (machines.py; bearer tokens, so no cookie and no CSRF). It
+runs the platform only: no experiment code runs on the server, and rigs still run sessions
+themselves.
 
 Configuration (TOML, ``[server]`` table)::
 
