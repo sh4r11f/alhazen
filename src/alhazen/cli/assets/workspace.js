@@ -1594,17 +1594,23 @@ async function loadRig() {
   renderRig();
 }
 
-/** RigConfig's schema, once, for the settings' choices; the fields work
- *  without it (free text), so a failure is only logged. */
+/* Why the rig settings' choices could not be read, said under them; null. */
+let rigSchemaError = null;
+
+/** RigConfig's schema, once, for the settings' choices. The fields work
+ *  without it (a free-text field where a menu would be), so a failure does
+ *  not stop a launch: it is said under the settings, and asked again when
+ *  the Rig section is next read. */
 async function loadRigSchema() {
   rigSchema = false;
   try {
     rigSchema = await api('/api/machine-rig/schema');
-    if (sessionRig) renderRig();
+    rigSchemaError = null;
   } catch (e) {
     rigSchema = null;
-    console.warn('The rig settings’ choices could not be read', e);
+    rigSchemaError = e.message;
   }
+  if (sessionRig) renderRig();
 }
 
 /** Read the Rig section again when the task or the kind of launch changed,
@@ -1656,6 +1662,10 @@ function renderRig({fields = true} = {}) {
       + 'beside it, so it runs without this session’s changes.'
     : 'Changes here are for this session only and are recorded with it. Save to this '
       + 'machine’s rig to keep them for every later session on this machine.';
+  if (rigSchemaError) {
+    $('rig-edit-help').textContent += ` The settings’ choices could not be read (${rigSchemaError}), `
+      + 'so every value is typed.';
+  }
   updateLaunch();
 }
 
