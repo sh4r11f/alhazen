@@ -33,6 +33,64 @@ function removalPlan(f, all) {
   else kept_.push('The original listing on the marketplace');
   return { removed, kept: kept_, bundles, docsKey: key && !docsShared ? key : null, working: jobs.some((j) => j && (j.status === 'running' || j.status === 'waiting')) };
 }
+// Who can see a listing (design.md section 5a). A listing without `access` (written before 3.7) is
+// public. The publisher manages it; anyone else who can see a non-public listing had it shared.
+const ACCESS_CHOICES = [['private', 'Only you'], ['people', 'Specific people'], ['public', 'Everyone']];
+const ACCESS_MAX_PEOPLE = 200;
+function accessOf(L) {
+  const a = (L && L.access) || {};
+  const visibility = a.visibility === 'private' || a.visibility === 'people' ? a.visibility : 'public';
+  return { visibility, people: visibility === 'people' ? [...new Set(asList(a.people).filter((u) => typeof u === 'string' && u))] : [] };
+}
+const accessCanManage = (L, viewerUid) => !!L && (L.canManage === true || (!!viewerUid && L.uid === viewerUid));
+// The grouping used by Browse's "Visible to" filter and My experiments.
+function accessGroup(L, viewerUid) {
+  const v = accessOf(L).visibility;
+  if (v === 'public') return 'public';
+  if (!accessCanManage(L, viewerUid)) return 'with-you';
+  return v === 'private' ? 'private' : 'by-you';
+}
+const VISIBLE_TO = [['public', 'Everyone'], ['with-you', 'Shared with you'], ['by-you', 'Shared by you'], ['private', 'Only you']];
+// The badge on cards and listing headers; none for public listings.
+function accessBadge(L, viewerUid) {
+  const g = accessGroup(L, viewerUid);
+  return g === 'public' ? null : g === 'private' ? 'Only you' : g === 'by-you' ? 'Shared' : 'Shared with you';
+}
+// One plain line saying who can see a listing. `names` maps uid to a label (publisher only).
+function accessSummary(L, viewerUid, names) {
+  const a = accessOf(L);
+  if (a.visibility === 'public') return 'Everyone';
+  if (!accessCanManage(L, viewerUid)) return 'Shared with you by ' + ((L.publisher || {}).name || 'its publisher');
+  if (a.visibility === 'private') return 'Only you';
+  const n = a.people.length;
+  const shown = a.people.map((u) => (names || {})[u]).filter(Boolean);
+  return 'You and ' + n + (n === 1 ? ' person' : ' people') + (shown.length ? ': ' + shown.slice(0, 3).join(', ') + (n > 3 ? ' and ' + (n - 3) + ' more' : '') : '');
+}
+// The rules of PlatformService.set_access, for hosts that apply them in the browser (Mana) and for
+// the dialog, so it can say what is wrong before saving. Returns {visibility, people}; throws an
+// Error carrying the contract's message.
+function normalizeAccess(input, publisherUid) {
+  const visibility = input && input.visibility;
+  if (!ACCESS_CHOICES.some(([k]) => k === visibility)) throw new Error('Choose who can see it: Only you, Specific people or Everyone.');
+  if (visibility !== 'people') return { visibility, people: [] };
+  const people = [...new Set(asList(input.people).map((u) => String(u || '').trim()).filter((u) => u && u !== publisherUid))];
+  if (!people.length) throw new Error('Add at least one person, or choose Only you');
+  if (people.length > ACCESS_MAX_PEOPLE) throw new Error('A listing can be shared with at most ' + ACCESS_MAX_PEOPLE + ' people.');
+  return { visibility, people };
+}
+// My experiments: the viewer's listings that are not on the marketplace, listings shared with the
+// viewer, and the viewer's public listings (newest first, as `listings` is ordered).
+function librarySections(listings, viewerUid) {
+  const out = { notOnMarketplace: [], sharedWithYou: [], onMarketplace: [] };
+  for (const L of listings || []) {
+    const g = accessGroup(L, viewerUid);
+    if (g === 'with-you') out.sharedWithYou.push(L);
+    else if (!accessCanManage(L, viewerUid)) continue;
+    else if (g === 'public') out.onMarketplace.push(L);
+    else out.notOnMarketplace.push(L);
+  }
+  return out;
+}
 const kb = (b) => b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB';
 
 function readRoute() {

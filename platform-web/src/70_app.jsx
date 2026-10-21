@@ -17,7 +17,7 @@ function PlatformApp({ host }) {
   const [dialog, setDialog] = React.useState(null);
   const [flash, setFlash] = React.useState(null);
   const [busy, setBusy] = React.useState('');
-  const [bf, setBf] = React.useState({ q: '', cat: '', hw: [], who: [], sort: 'newest', coll: '' });
+  const [bf, setBf] = React.useState({ q: '', cat: '', hw: [], who: [], sort: 'newest', coll: '', vis: '' });
   const [docs, setDocs] = React.useState({});
   const [metas, setMetas] = React.useState({});
   const [fileView, setFileView] = React.useState(null);
@@ -29,6 +29,10 @@ function PlatformApp({ host }) {
   const [madeToken, setMadeToken] = React.useState(null);
   const [machineName, setMachineName] = React.useState('');
   const [revoking, setRevoking] = React.useState('');
+  // Who can see a listing (design.md section 5a): labels of the people a publisher shared with, and
+  // share links being resolved (listings the host could not list yet: 'pending' | 'found' | 'missing').
+  const [peopleNames, setPeopleNames] = React.useState({});
+  const [resolved, setResolved] = React.useState({});
 
   React.useEffect(() => { const on = () => setRoute(readRoute()); window.addEventListener('popstate', on); return () => window.removeEventListener('popstate', on); }, []);
   React.useEffect(() => host.subscribeListings((v) => setPublished(v || {})), [host.key]);
@@ -84,15 +88,17 @@ function PlatformApp({ host }) {
     try {
       setBusy('Publishing');
       const name = form.name;
-      await host.publish(fork, form, setBusy);
+      const res = await host.publish(fork, form, setBusy);
       setBusy(''); setDialog(null);
-      setFlash({ kind: 'ok', text: form.title + ' is on the marketplace under ' + name + '.' });
+      const a = form.access || { visibility: 'public', people: [] };
+      setFlash({ kind: 'ok', text: a.visibility === 'public' ? form.title + ' is on the marketplace under ' + name + '.' : form.title + ' is listed under ' + name + ': ' + accessDoneText(a, res) });
     } catch (e) { setBusy(''); setFlash({ kind: 'bad', text: 'Could not publish: ' + (e.message || e) }); }
   }
 
-  async function unpublish(fork) {
-    await host.unpublish(fork);
-    setDialog(null); setFlash({ kind: 'ok', text: fork.title + ' was taken off the marketplace. Your copy is unchanged.' });
+  async function unpublish(fork, listedAs) {
+    try { await host.unpublish(fork); }
+    catch (e) { setDialog(null); setFlash({ kind: 'bad', text: 'Could not remove the listing: ' + (e.message || e) }); return; }
+    setDialog(null); setFlash({ kind: 'ok', text: fork.title + (listedAs && listedAs !== 'public' ? '’s listing was removed.' : ' was taken off the marketplace.') + ' Your copy is unchanged.' });
   }
 
   // Remove a copy from the library (My experiments). The host deletes the copy with its revisions
@@ -126,6 +132,93 @@ function PlatformApp({ host }) {
 
   const showChat = (chatId) => host.showChat(chatId);
 
+  // ------------------------------------------------------------ who can see a listing (design.md section 5a)
+  const ownListing = (forkId) => (viewerUid ? listings.find((x) => x.key === viewerUid + '~' + forkId) || null : null);
+  async function labelPeople(uids) {
+    const missing = (uids || []).filter((u) => !peopleNames[u]);
+    if (!missing.length || !host.describePeople) return;
+    try { const got = await host.describePeople(missing); setPeopleNames((p) => ({ ...p, ...got })); }
+    catch (e) { console.warn('Alhazen Experiment Platform: could not look up the people a listing is shared with; their account ids are shown instead.', e); }
+  }
+  // The dialog's working copy of a listing's access: people carry the label the dialog shows.
+  function accessDraft(L) {
+    const a = L ? accessOf(L) : { visibility: 'public', people: [] };
+    const names = { ...peopleNames, ...((L && L.access && L.access.names) || {}) };
+    if (L && a.people.some((u) => !names[u])) labelPeople(a.people);
+    return { visibility: a.visibility, people: a.people.map((uid) => ({ uid, label: names[uid] || '' })), query: '', results: null, finding: false, findError: '', notify: true, initial: a.people };
+  }
+  const setAccessDraft = (patch) => setDialog((prev) => (prev && prev.access ? { ...prev, error: '', access: { ...prev.access, ...(typeof patch === 'function' ? patch(prev.access) : patch) } } : prev));
+  function accessDraftValue(a, publisherUid) {
+    return normalizeAccess({ visibility: a.visibility, people: a.people.map((p) => p.uid) }, publisherUid);
+  }
+  function accessDoneText(next, res) {
+    const n = next.people.length;
+    let text = next.visibility === 'public' ? 'everyone can see it.' : next.visibility === 'private' ? 'only you can see it.' : 'you and ' + n + (n === 1 ? ' person' : ' people') + ' can see it.';
+    const sent = (res && res.notified && res.notified.sent) || 0, failed = (res && res.notified && res.notified.failed) || [];
+    if (sent) text += ' Emailed ' + sent + (sent === 1 ? ' person' : ' people') + ' a link.';
+    if (failed.length) text += ' Could not email ' + failed.join(', ') + '.';
+    return text;
+  }
+  async function saveAccess(d) {
+    let next;
+    try { next = accessDraftValue(d.access, d.L.uid); } catch (e) { setDialog({ ...d, error: e.message }); return; }
+    try {
+      setBusy('Saving');
+      const res = await host.setAccess(d.L, { ...next, notify: !!(caps.notifyPeople && d.access.notify) });
+      setPeopleNames((p) => ({ ...p, ...Object.fromEntries(d.access.people.filter((x) => x.label).map((x) => [x.uid, x.label])) }));
+      setBusy(''); setDialog(null);
+      setFlash({ kind: 'ok', text: d.L.title + ': ' + accessDoneText(next, res) });
+    } catch (e) { setBusy(''); setDialog({ ...d, error: e.message || String(e) }); }
+  }
+  const openAccess = (L) => setDialog({ kind: 'access', L, access: accessDraft(L), error: '' });
+  // A share link to a listing the host has not listed yet (Mana keeps non-public listings outside
+  // the hub): ask the host once whether this viewer can read it.
+  React.useEffect(() => {
+    if (route.v !== 'exp' || published === null || !route.id || !host.resolveListing) return;
+    if (listings.some((x) => x.key === route.id) || resolved[route.id]) return;
+    const k = route.id, i = k.indexOf('~');
+    if (i <= 0) return;
+    setResolved((p) => ({ ...p, [k]: 'pending' }));
+    host.resolveListing(k.slice(0, i), k.slice(i + 1)).then((ok) => setResolved((p) => ({ ...p, [k]: ok ? 'found' : 'missing' })),
+      (e) => { console.warn('Alhazen Experiment Platform: could not open the shared listing ' + k, e); setResolved((p) => ({ ...p, [k]: 'missing' })); });
+  }, [route.v, route.id, published === null, listings.length]);
+  // The publisher's own listing: show who it is shared with by name.
+  const routeListing = route.v === 'exp' ? listings.find((x) => x.key === route.id) : null;
+  const routePeople = routeListing && accessCanManage(routeListing, viewerUid) && !(routeListing.access && routeListing.access.names) ? accessOf(routeListing).people.join(',') : '';
+  React.useEffect(() => { if (routePeople) labelPeople(routePeople.split(',')); }, [routePeople]);
+
+  // The "Who can see it" fields of the Access and publish dialogs.
+  function accessFields(a, publisherUid) {
+    const choices = ACCESS_CHOICES.filter(([k]) => k !== 'people' || caps.shareWithPeople || a.visibility === 'people');
+    const explain = { private: 'Only you. It is listed in My experiments, where you can run it.', people: 'You and the people you add. Nobody else can find it.', public: 'Everyone who can open this platform can see it and add it to their library.' };
+    const byEmail = !!caps.notifyPeople;
+    const find = async () => {
+      const q = a.query.trim(); if (!q || a.finding) return;
+      setAccessDraft({ finding: true, findError: '', results: null });
+      try {
+        const found = (await host.findPeople(q)).filter((p) => p.uid !== publisherUid);
+        setAccessDraft({ finding: false, results: found, findError: found.length ? '' : byEmail ? 'No Mana account uses that address.' : 'Nobody matches.' });
+      } catch (e) { setAccessDraft({ finding: false, findError: e.message || String(e) }); }
+    };
+    const add = (p) => setAccessDraft((cur) => ({ people: cur.people.some((x) => x.uid === p.uid) ? cur.people : [...cur.people, p], query: byEmail ? '' : cur.query, results: byEmail ? null : cur.results, findError: '' }));
+    const newcomers = a.people.filter((p) => !(a.initial || []).includes(p.uid));
+    return <fieldset className="eh-access">
+      <legend>Who can see it</legend>
+      {choices.map(([k, label]) => <label key={k} className="eh-access-choice"><input type="radio" name="eh-access" checked={a.visibility === k} onChange={() => setAccessDraft({ visibility: k })} /><span><b>{label}</b><small>{explain[k]}</small></span></label>)}
+      {a.visibility === 'people' ? <div className="eh-access-people">
+        <div className="field"><label htmlFor="eh-access-q">{byEmail ? 'Add a person by email' : 'Add a person'}</label>
+          <div className="eh-access-find"><input id="eh-access-q" type={byEmail ? 'email' : 'text'} value={a.query} placeholder={byEmail ? 'name@example.org' : 'Name or username'} autoComplete="off"
+            onChange={(e) => setAccessDraft({ query: e.target.value, findError: '' })} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); find(); } }} />
+            <button className="btn btn-line" type="button" disabled={!a.query.trim() || a.finding} onClick={find}>{a.finding ? 'Looking…' : 'Find'}</button></div></div>
+        {a.findError ? <p className="eh-access-error" role="alert">{a.findError}</p> : null}
+        {a.results && a.results.length ? <ul className="eh-access-results" aria-label="Matching people">{a.results.map((p) => { const on = a.people.some((x) => x.uid === p.uid); return <li key={p.uid}><span>{p.label}</span><button className="btn btn-line btn-small" type="button" disabled={on} onClick={() => add(p)}>{on ? 'Added' : 'Add'}</button></li>; })}</ul> : null}
+        {a.people.length ? <ul className="eh-access-list" aria-label="People who can see it">{a.people.map((p) => <li key={p.uid}><span>{p.label || peopleNames[p.uid] || p.uid}</span><button className="btn btn-quiet btn-small" type="button" aria-label={'Remove ' + (p.label || peopleNames[p.uid] || p.uid)} onClick={() => setAccessDraft((cur) => ({ people: cur.people.filter((x) => x.uid !== p.uid) }))}>Remove</button></li>)}</ul>
+          : <p className="eh-access-none">Nobody added yet.</p>}
+        {byEmail && newcomers.length ? <label className="check"><input type="checkbox" checked={!!a.notify} onChange={() => setAccessDraft((cur) => ({ notify: !cur.notify }))} />{newcomers.length === 1 ? 'Email them a link' : 'Email the ' + newcomers.length + ' new people a link'}</label> : null}
+      </div> : null}
+    </fieldset>;
+  }
+
   // ------------------------------------------------------------ pieces
   function card(L, featured) {
     const owned = forkedFrom[L.key];
@@ -142,6 +235,7 @@ function PlatformApp({ host }) {
           {hwKeys(L).map((k) => <span key={k} className="need" title={(HW.find((x) => x[0] === k) || [])[1]}><Glyph k={k} />{featured || k === 'display' ? (HW.find((x) => x[0] === k) || [])[1] : null}</span>)}
           <span>{asList(L.subjects).map((s) => s === 'human' ? 'Human' : 'Monkey').join(' · ')}</span>
           <span className="sp" />
+          {accessBadge(L, viewerUid) ? <span className="tag-access">{accessBadge(L, viewerUid)}</span> : null}
           {L.status ? <span className={'tag-status st-' + L.status} title={(STATUS[L.status] || [])[1]}>{(STATUS[L.status] || [L.status])[0]}</span> : null}
           {owned ? <span className="owned"><Glyph k="check" />Forked</span> : <span>{L.version ? 'v' + L.version : ''}</span>}
         </div>
@@ -157,7 +251,10 @@ function PlatformApp({ host }) {
 
   // ------------------------------------------------------------ views
   function Home() {
-    const featured = listings.filter((L) => L.featured).slice(0, 2);
+    // Home's sections show what everyone sees; listings shared with the viewer get their own section.
+    const open = listings.filter((L) => accessGroup(L, viewerUid) === 'public');
+    const shared = listings.filter((L) => accessGroup(L, viewerUid) === 'with-you');
+    const featured = open.filter((L) => L.featured).slice(0, 2);
     return (
       <>
         <section className="eh-hero">
@@ -171,13 +268,15 @@ function PlatformApp({ host }) {
           </div>
           <div className="eh-art" dangerouslySetInnerHTML={{ __html: assets.hero || '' }} />
         </section>
+        {shared.length ? <section className="eh-section"><div className="eh-sechead"><h2>Shared with you</h2>{shared.length > 3 ? <button className="btn btn-quiet" onClick={() => { setBf({ ...bf, vis: 'with-you' }); go({ v: 'browse' }); }}>View all</button> : null}</div>
+          <div className="eh-grid">{shared.slice(0, 3).map((L) => card(L))}</div></section> : null}
         {featured.length ? <section className="eh-section"><div className="eh-sechead"><h2>Featured</h2></div><div className="eh-featured">{featured.map((L) => card(L, true))}</div></section> : null}
-        {listings.some((L) => collOf(L) === 'classics') ? <section className="eh-section"><div className="eh-sechead"><h2>Classics</h2><button className="btn btn-quiet" onClick={() => { setBf({ ...bf, coll: 'classics' }); go({ v: 'browse' }); }}>View all</button></div>
+        {open.some((L) => collOf(L) === 'classics') ? <section className="eh-section"><div className="eh-sechead"><h2>Classics</h2><button className="btn btn-quiet" onClick={() => { setBf({ ...bf, coll: 'classics' }); go({ v: 'browse' }); }}>View all</button></div>
           <p className="eh-muted" style={{ margin: '-6px 0 14px', fontSize: 14 }}>Landmark experiments rebuilt from their original methods sections. Each says whether it follows the original protocol or adapts it, and lists every value the paper did not state.</p>
-          <div className="eh-grid">{listings.filter((L) => collOf(L) === 'classics').sort((a, b) => ((a.original || {}).year || 0) - ((b.original || {}).year || 0)).slice(0, 6).map((L) => card(L))}</div></section> : null}
+          <div className="eh-grid">{open.filter((L) => collOf(L) === 'classics').sort((a, b) => ((a.original || {}).year || 0) - ((b.original || {}).year || 0)).slice(0, 6).map((L) => card(L))}</div></section> : null}
         <section className="eh-section">
           <div className="eh-sechead"><h2>Latest</h2><button className="btn btn-quiet" onClick={() => go({ v: 'browse' })}>View all</button></div>
-          {published === null ? <p className="eh-muted">Loading…</p> : <div className="eh-grid">{listings.slice(0, 6).map((L) => card(L))}</div>}
+          {published === null ? <p className="eh-muted">Loading…</p> : <div className="eh-grid">{open.slice(0, 6).map((L) => card(L))}</div>}
         </section>
         <section className="eh-section">
           <div className="eh-sechead"><h2>How it works</h2></div>
@@ -194,13 +293,14 @@ function PlatformApp({ host }) {
   }
 
   function Browse() {
-    const { q, cat, hw, who, sort, coll } = bf;
-    const setColl = (v) => setBf({ ...bf, coll: v });
+    const { q, cat, hw, who, sort, coll, vis } = bf;
+    const setColl = (v) => setBf({ ...bf, coll: v }), setVis = (v) => setBf({ ...bf, vis: v });
     const setQ = (v) => setBf({ ...bf, q: v }), setCat = (v) => setBf({ ...bf, cat: v }), setSort = (v) => setBf({ ...bf, sort: v });
     const setHw = (v) => setBf({ ...bf, hw: v }), setWho = (v) => setBf({ ...bf, who: v });
     const toggle = (list, set, k) => set(list.includes(k) ? list.filter((x) => x !== k) : [...list, k]);
     const match = (L, skip) => {
       if (skip !== 'coll' && coll && collOf(L) !== coll) return false;
+      if (skip !== 'vis' && vis && accessGroup(L, viewerUid) !== vis) return false;
       if (skip !== 'cat' && cat && !asList(L.tags).includes(cat)) return false;
       if (skip !== 'hw' && hw.length && !hw.some((k) => hwKeys(L).includes(k))) return false;
       if (skip !== 'who' && who.length && !who.some((k) => asList(L.subjects).includes(k))) return false;
@@ -218,6 +318,10 @@ function PlatformApp({ host }) {
             <button className="chip" aria-pressed={!cat} onClick={() => setCat('')}><span>All</span><span>{listings.filter((L) => match(L, 'cat')).length}</span></button>
             {CATEGORIES.map(([k, label]) => <button key={k} className="chip" aria-pressed={cat === k} onClick={() => setCat(cat === k ? '' : k)}><span>{label}</span><span>{catCount(k)}</span></button>)}
           </div></div>
+          {listings.some((L) => accessGroup(L, viewerUid) !== 'public') || vis ? <div><h3>Visible to</h3><div className="eh-chips">
+            <button className="chip" aria-pressed={!vis} onClick={() => setVis('')}><span>All</span><span>{listings.filter((L) => match(L, 'vis')).length}</span></button>
+            {VISIBLE_TO.map(([k, label]) => { const n = listings.filter((L) => match(L, 'vis') && accessGroup(L, viewerUid) === k).length; return n || vis === k ? <button key={k} className="chip" aria-pressed={vis === k} onClick={() => setVis(vis === k ? '' : k)}><span>{label}</span><span>{n}</span></button> : null; })}
+          </div></div> : null}
           <div><h3>Hardware</h3>{HW.map(([k, label]) => <label key={k} className="check"><input type="checkbox" checked={hw.includes(k)} onChange={() => toggle(hw, setHw, k)} />{label}</label>)}</div>
           <div><h3>Subjects</h3>{WHO.map(([k, label]) => <label key={k} className="check"><input type="checkbox" checked={who.includes(k)} onChange={() => toggle(who, setWho, k)} />{label}</label>)}</div>
         </aside>
@@ -391,7 +495,8 @@ function PlatformApp({ host }) {
 
   function Exp() {
     const L = listings.find(x => x.key === route.id);
-    if (!L) return published === null ? <p className="eh-muted">Loading…</p> : <div className="empty"><h3>This experiment is not on the marketplace</h3><p>It may have been taken off. <button className="btn btn-quiet" onClick={() => go({v:'browse'})}>Browse experiments</button></p></div>;
+    const resolving = resolved[route.id] === 'pending' || resolved[route.id] === 'found';
+    if (!L) return published === null || resolving ? <p className="eh-muted">Loading…</p> : <div className="empty"><h3>This experiment is not in the catalogue</h3><p>It may have been taken off, or it is not shared with you. <button className="btn btn-quiet" onClick={() => go({v:'browse'})}>Browse experiments</button></p></div>;
     const d = docs[L.key];
     const mine = forkedFrom[L.key];
     const actions = mine ? <><button className="btn btn-primary" onClick={() => go({v:'fork',id:mine})}>Open my copy</button><button className="btn btn-line" disabled={!!busy} onClick={() => forkListing(L)}>Fork again</button></> : <>{caps.signIn && !viewerUid ? <button className="btn btn-primary" onClick={() => host.signIn()}>Sign in to add to library</button> : <button className="btn btn-primary" disabled={!!busy || !viewerUid} onClick={() => forkListing(L)}>Add to library</button>}{caps.changeWithMana ? <button className="btn btn-line" disabled={!!busy || !viewerUid} onClick={() => setDialog({kind:'forkai',L,text:''})}>Fork with AI</button> : null}</>;
@@ -400,7 +505,11 @@ function PlatformApp({ host }) {
       try { await openFile(L.bundle.path,file); }
       catch (error) { setFileView({bundle:L.bundle.path,path:file,text:'Could not load this file: '+(error.message || error)}); }
     };
-    return <EHDocumentationBoundary key={L.key+':'+(d?.metadata?.updatedAt || d?.__loadError || 'loading')}><EHExperimentPage L={L} d={d} route={route} art={art} actions={actions} renderTabs={tabs} renderFiles={filesTab} renderReplication={replication} go={go} onFile={onFile} /></EHDocumentationBoundary>;
+    // Who can see it: the publisher sees it for every listing and can change it; anyone else sees it
+    // only when the listing was shared with them.
+    const manage = accessCanManage(L, viewerUid) && !!host.setAccess;
+    const accessRow = manage || accessBadge(L, viewerUid) ? <div className="eh-access-row"><dt>Visible to</dt><dd><span>{accessSummary(L, viewerUid, { ...peopleNames, ...((L.access && L.access.names) || {}) })}</span>{manage ? <button className="eh-inline-link" disabled={!!busy} onClick={() => openAccess(L)}>Change</button> : null}</dd></div> : null;
+    return <EHDocumentationBoundary key={L.key+':'+(d?.metadata?.updatedAt || d?.__loadError || 'loading')}><EHExperimentPage L={L} d={d} route={route} art={art} actions={actions} renderTabs={tabs} renderFiles={filesTab} renderReplication={replication} go={go} onFile={onFile} accessBadge={accessBadge(L, viewerUid)} accessRow={accessRow} /></EHDocumentationBoundary>;
   }
 
   function statusChip(st) {
@@ -425,29 +534,63 @@ function PlatformApp({ host }) {
     );
   }
 
+  // How a published copy's listing is shown on its row: on the marketplace, or who it is shared with.
+  function publishedChip(f) {
+    const L = ownListing(f.id);
+    const g = L ? accessGroup(L, viewerUid) : (f.published && f.published.visibility) === 'private' ? 'private' : (f.published && f.published.visibility) === 'people' ? 'by-you' : 'public';
+    return g === 'public' ? <span className="status st-ok">On the marketplace</span> : <span className="tag-access">{g === 'private' ? 'Listed, only you' : 'Listed, shared'}</span>;
+  }
+
+  function listingRow(L, sub) {
+    const badge = accessBadge(L, viewerUid);
+    return <div key={L.key} className="row eh-mine-row">
+      <button className="eh-row-open" onClick={() => go({ v: 'exp', id: L.key })}>
+        <div className="row-art"><EHExperimentLogo item={L}/></div>
+        <div className="row-main"><div className="row-title">{L.title}</div><div className="row-sub">{sub}</div></div>
+        {badge ? <span className="tag-access">{badge}</span> : null}
+      </button>
+    </div>;
+  }
+
   function Mine() {
+    // Above the copies: the viewer's listings that are not on the marketplace and listings shared
+    // with them; below, a collapsed list of their listings on the marketplace (design.md section 5a).
+    const sec = librarySections(listings, viewerUid);
+    const names = { ...peopleNames };
+    for (const L of sec.notOnMarketplace) Object.assign(names, (L.access && L.access.names) || {});
+    const facts = (L, first) => [first, L.version ? 'v' + L.version : '', L.updatedAt ? 'updated ' + ago(L.updatedAt) : ''].filter(Boolean).join(' · ');
+    const hasListings = sec.notOnMarketplace.length || sec.sharedWithYou.length || sec.onMarketplace.length;
     return (
       <>
         <div className="eh-sechead" style={{ marginBottom: 6 }}><h1 style={{ fontSize: 34, fontWeight: 800 }}>My experiments</h1>
           {caps.newWithMana ? <button className="btn btn-primary" disabled={!viewerUid} onClick={() => setDialog({ kind: 'new', title: '', text: '' })}>New experiment</button> : null}</div>
-        <p className="eh-muted" style={{ margin: '0 0 24px' }}>Your copies. Only you can see and change them; share one to put it on the marketplace under your name.</p>
-        {forks === null ? <p className="eh-muted">Loading…</p> : forkList.length ? <div className="list">
-          {forkList.map((f) => {
-            const jobs = Object.values(f.jobs || {}).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
-            const live = jobs.find((j) => j.status === 'running' || j.status === 'waiting');
-            return (
-              <div key={f.id} className="row eh-mine-row">
-                <button className="eh-row-open" onClick={() => go({ v: 'fork', id: f.id })}>
-                  <div className="row-art"><EHExperimentLogo item={f}/></div>
-                  <div className="row-main"><div className="row-title">{f.title}</div>
-                    <div className="row-sub">{f.origin && f.origin.scratch ? 'Started from scratch' : `From ${f.origin.title}${f.origin.publisherName ? ' by ' + f.origin.publisherName : ''}`} · {Object.keys(f.revisions || {}).length} revision{Object.keys(f.revisions || {}).length === 1 ? '' : 's'} · changed {ago(f.updatedAt)}</div></div>
-                  {f.published ? <span className="status st-ok">On the marketplace</span> : null}
-                  {live ? statusChip(live.status) : null}
-                </button>
-                <button className="btn btn-quiet btn-small eh-row-remove" aria-label={'Remove ' + f.title + ' from your library'} onClick={() => setDialog({ kind: 'remove', f })}>Remove</button>
-              </div>);
-          })}
-        </div> : (caps.signIn && !viewerUid ? <div className="empty"><h3>Sign in to keep experiments</h3><p>Your copies are private to your account.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-primary" onClick={() => host.signIn()}>Sign in</button></div></div> : <div className="empty"><h3>Nothing here yet</h3><p>{caps.newWithMana ? 'Fork an experiment from Browse, or start a new one.' : 'Fork an experiment from Browse.'}</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-line" onClick={() => go({ v: 'browse' })}>Browse experiments</button></div></div>)}
+        <p className="eh-muted" style={{ margin: '0 0 24px' }}>{hasListings ? 'Your listings, listings shared with you, and your copies. Only you can see and change your copies; publish one to list it for everyone, for people you choose, or only for you.' : 'Your copies. Only you can see and change them; publish one to list it for everyone, for people you choose, or only for you.'}</p>
+        {sec.notOnMarketplace.length ? <section className="eh-mine-section"><h2>Not on the marketplace</h2>
+          <p className="eh-muted">Your listings that only you, or the people you chose, can see. Add one to your library to change it or run it.</p>
+          <div className="list">{sec.notOnMarketplace.map((L) => listingRow(L, facts(L, accessSummary(L, viewerUid, names))))}</div></section> : null}
+        {sec.sharedWithYou.length ? <section className="eh-mine-section"><h2>Shared with you</h2>
+          <div className="list">{sec.sharedWithYou.map((L) => listingRow(L, facts(L, 'From ' + ((L.publisher || {}).name || 'Unknown'))))}</div></section> : null}
+        <section className="eh-mine-section">{hasListings ? <h2>Your copies</h2> : null}
+          {forks === null ? <p className="eh-muted">Loading…</p> : forkList.length ? <div className="list">
+            {forkList.map((f) => {
+              const jobs = Object.values(f.jobs || {}).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+              const live = jobs.find((j) => j.status === 'running' || j.status === 'waiting');
+              return (
+                <div key={f.id} className="row eh-mine-row">
+                  <button className="eh-row-open" onClick={() => go({ v: 'fork', id: f.id })}>
+                    <div className="row-art"><EHExperimentLogo item={f}/></div>
+                    <div className="row-main"><div className="row-title">{f.title}</div>
+                      <div className="row-sub">{f.origin && f.origin.scratch ? 'Started from scratch' : `From ${f.origin.title}${f.origin.publisherName ? ' by ' + f.origin.publisherName : ''}`} · {Object.keys(f.revisions || {}).length} revision{Object.keys(f.revisions || {}).length === 1 ? '' : 's'} · changed {ago(f.updatedAt)}</div></div>
+                    {f.published ? publishedChip(f) : null}
+                    {live ? statusChip(live.status) : null}
+                  </button>
+                  <button className="btn btn-quiet btn-small eh-row-remove" aria-label={'Remove ' + f.title + ' from your library'} onClick={() => setDialog({ kind: 'remove', f })}>Remove</button>
+                </div>);
+            })}
+          </div> : (caps.signIn && !viewerUid ? <div className="empty"><h3>Sign in to keep experiments</h3><p>Your copies are private to your account.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-primary" onClick={() => host.signIn()}>Sign in</button></div></div> : <div className="empty"><h3>Nothing here yet</h3><p>{caps.newWithMana ? 'Fork an experiment from Browse, or start a new one.' : 'Fork an experiment from Browse.'}</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-line" onClick={() => go({ v: 'browse' })}>Browse experiments</button></div></div>)}
+        </section>
+        {sec.onMarketplace.length ? <details className="eh-mine-section eh-mine-public"><summary>On the marketplace <span>{sec.onMarketplace.length}</span></summary>
+          <div className="list">{sec.onMarketplace.map((L) => listingRow(L, facts(L, 'Everyone')))}</div></details> : null}
       </>
     );
   }
@@ -510,6 +653,9 @@ function PlatformApp({ host }) {
     const changes = jobs.filter((j) => j.kind !== 'run');
     const lastRun = runs[0];
     const head = f.head;
+    // The listing published from this copy, when there is one (on the marketplace or shared).
+    const myListing = f.published ? ownListing(f.id) : null;
+    const listedAs = myListing ? accessGroup(myListing, viewerUid) : f.published && f.published.visibility === 'private' ? 'private' : f.published && f.published.visibility === 'people' ? 'by-you' : 'public';
     const send = async () => { const text = draft.trim(); if (!text) return; setDraft(''); setBusy('Asking Mana'); try { await startJob(f.id, f, 'change', text); setBusy(''); go({ v: 'fork', id: f.id, tab: 'changes' }, true); } catch (e) { setBusy(''); setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } };
     const jobRow = (j) => (
       <div key={j.id} className="row">
@@ -548,7 +694,8 @@ function PlatformApp({ host }) {
     const actions = <>
       {caps.runOnMachines ? <button className="btn btn-primary" disabled={!head || !!busy} onClick={() => setDialog({ kind: 'run', f, machine: '' })}>Run on my machine</button>
         : <button className="btn btn-primary" disabled={!head || !!busy} onClick={() => downloadRevision(f)}>Download this revision (.zip)</button>}
-            {caps.publish ? <button className="btn btn-line" disabled={!head} onClick={() => { const name = (host.viewer && host.viewer.name) || 'Unknown'; setDialog({ kind: 'share', f, form: { name, title: f.published ? f.published.title : f.title, summary: f.summary || '', category: (asList(f.tags).find((t) => CATEGORIES.some((c) => c[0] === t))) || 'eye-movements', subjects: asList(f.subjects), hardware: f.hardware || {}, version: f.published ? '' : ((f.origin && f.origin.version) ? f.origin.version + '-1' : '0.1.0'), license: 'All rights reserved' } }); }}>{f.published ? 'Update listing' : 'Share to marketplace'}</button> : null}
+            {caps.publish ? <button className="btn btn-line" disabled={!head} onClick={() => { const name = (host.viewer && host.viewer.name) || 'Unknown'; setDialog({ kind: 'share', f, access: accessDraft(myListing), error: '', form: { name, title: f.published ? f.published.title : f.title, summary: f.summary || '', category: (asList(f.tags).find((t) => CATEGORIES.some((c) => c[0] === t))) || 'eye-movements', subjects: asList(f.subjects), hardware: f.hardware || {}, version: f.published ? '' : ((f.origin && f.origin.version) ? f.origin.version + '-1' : '0.1.0'), license: 'All rights reserved' } }); }}>{f.published ? 'Update listing' : 'Publish'}</button> : null}
+      {myListing ? <button className="btn btn-quiet btn-small" onClick={() => go({ v: 'exp', id: myListing.key })}>View your listing</button> : null}
       {!caps.runOnMachines ? <button className="btn btn-line" onClick={() => nav('run')}>How to run it</button> : null}
       {O ? <button className="btn btn-quiet btn-small" onClick={() => go({ v: 'exp', id: O.key })}>View the original listing</button> : null}
     </>;
@@ -556,7 +703,7 @@ function PlatformApp({ host }) {
     const scopeNote = changed || newer || (d && d.__stale) ? <p className="eh-source-note eh-fork-scope">{originLine}{changed ? ' Methods, tasks and parameters describe that version; changes made to your copy are under Changes, and Files shows your current revision.' : ''}{newer ? <> The original is now at {O.version ? 'v' + O.version : 'a newer version'} on the marketplace.</> : null}{d && d.__stale ? ' The methods of that version were not saved with your copy, so its README is shown instead.' : ''}</p> : null;
     const overviewExtra = <section className="eh-reference-section eh-fork-copy">
       <h2>Your copy</h2>
-      <p className="eh-muted" style={{ margin: '0 0 14px' }}>{originLine}{f.published ? <> On the marketplace as v{f.published.version}.</> : null}</p>
+      <p className="eh-muted" style={{ margin: '0 0 14px' }}>{originLine}{f.published ? <> {listedAs === 'public' ? 'On the marketplace' : listedAs === 'private' ? 'Listed for you only' : 'Listed for the people you chose'} as v{f.published.version}.</> : null}</p>
       {changes.filter((j) => j.status === 'running' || j.status === 'waiting').length ? <div className="list" style={{ marginBottom: 20 }}>{changes.filter((j) => j.status === 'running' || j.status === 'waiting').map(jobRow)}</div> : null}
       <div className="eh-two" style={{ marginBottom: 24 }}>
             <div className="panel"><h3>Current revision</h3>
@@ -568,7 +715,7 @@ function PlatformApp({ host }) {
       {caps.changeWithMana ? <div className="eh-actions"><button className="btn btn-line" disabled={!head} onClick={() => nav('changes')}>Change with Mana</button><button className="btn btn-line" onClick={() => nav('run')}>Runs</button></div>
         : <div className="eh-actions"><button className="btn btn-line" disabled={!head} onClick={() => nav('changes')}>Changes</button><button className="btn btn-line" onClick={() => nav('run')}>Run</button></div>}
           <div style={{ marginTop: 32, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {f.published ? <button className="btn btn-line btn-small" onClick={() => setDialog({ kind: 'unpublish', f })}>Take off the marketplace</button> : null}
+            {f.published ? <button className="btn btn-line btn-small" onClick={() => setDialog({ kind: 'unpublish', f, listedAs })}>{listedAs === 'public' ? 'Take off the marketplace' : 'Remove the listing'}</button> : null}
             <button className="btn btn-quiet btn-small" onClick={() => setDialog({ kind: 'remove', f })}>Remove from library</button>
           </div>
     </section>;
@@ -649,8 +796,15 @@ function PlatformApp({ host }) {
       <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={async () => { close(); try { await startJob(d.f.id, d.f, 'run', '', d.machine, { rigConfig: d.rigConfig ? d.rigConfig.slice(d.rigConfig.indexOf('|') + 1) : '' }); go({ v: 'fork', id: d.f.id, tab: 'run' }, true); } catch (e) { setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } }}>Run</button></div></>;
     else if (d.kind === 'share') { const fm = d.form; const set = (k, v) => setDialog({ ...d, form: { ...fm, [k]: v } });
       const togg = (k) => set('subjects', fm.subjects.includes(k) ? fm.subjects.filter((x) => x !== k) : [...fm.subjects, k]);
+      const a = d.access;
+      const publish = () => {
+        let access;
+        try { access = accessDraftValue(a, viewerUid); } catch (e) { setDialog({ ...d, error: e.message }); return; }
+        publishFork(d.f, { ...fm, title: fm.title.trim(), version: fm.version.trim(), access, notify: !!(caps.notifyPeople && a.notify) });
+      };
       body = <>
-        <h2>{d.f.published ? 'Update listing' : 'Share to marketplace'}</h2><p>Everyone who can open this hub will see the listing and can fork this revision. It carries your name.</p>
+        <h2>{d.f.published ? 'Update listing' : 'Publish ' + d.f.title}</h2><p>{a.visibility === 'public' ? 'Everyone who can open this platform will see the listing and can fork this revision.' : a.visibility === 'people' ? 'Only you and the people you add will see the listing and can fork this revision.' : 'Only you will see the listing. You can share it later.'} It carries your name.</p>
+        {accessFields(a, viewerUid)}
         <dl className="kv"><dt>Appears as</dt><dd>{fm.name}</dd></dl>
         <div className="field"><label htmlFor="eh-st">Title</label><input id="eh-st" value={fm.title} onChange={(e) => set('title', e.target.value)} /></div>
         <div className="field"><label htmlFor="eh-ss">Summary</label><textarea id="eh-ss" style={{ minHeight: 90 }} value={fm.summary} onChange={(e) => set('summary', e.target.value)} /></div>
@@ -659,10 +813,22 @@ function PlatformApp({ host }) {
         <div className="eh-two"><div className="field"><label>Subjects</label>{WHO.map(([k, l]) => <label key={k} className="check"><input type="checkbox" checked={fm.subjects.includes(k)} onChange={() => togg(k)} />{l}</label>)}</div>
           <div className="field"><label>Hardware</label>{[['eye_tracker', 'Eye tracker'], ['reward', 'Reward line']].map(([k, l]) => <label key={k} className="check"><input type="checkbox" checked={!!fm.hardware[k]} onChange={() => set('hardware', { ...fm.hardware, [k]: !fm.hardware[k] })} />{l}</label>)}</div></div>
         <div className="field"><label htmlFor="eh-sl">Licence</label><input id="eh-sl" value={fm.license} onChange={(e) => set('license', e.target.value)} /></div>
-        <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!fm.title.trim() || !fm.version.trim() || !!busy} onClick={() => publishFork(d.f, { ...fm, title: fm.title.trim(), version: fm.version.trim() })}>{d.f.published ? 'Update' : 'Publish'}</button></div></>; }
-    else if (d.kind === 'unpublish') body = <>
+        {d.error ? <p className="eh-access-error" role="alert">{d.error}</p> : null}
+        <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!fm.title.trim() || !fm.version.trim() || !!busy} onClick={publish}>{d.f.published ? 'Update' : 'Publish'}</button></div></>; }
+    else if (d.kind === 'unpublish') body = d.listedAs && d.listedAs !== 'public' ? <>
+      <h2>Remove the listing?</h2><p>Nobody you shared it with can open it any more. Copies they already made stay theirs, and your copy is unchanged.</p>
+      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" onClick={() => unpublish(d.f, d.listedAs)}>Remove the listing</button></div></> : <>
       <h2>Take off the marketplace?</h2><p>The listing disappears from Browse. Copies others already forked stay theirs, and your copy is unchanged.</p>
-      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" onClick={() => unpublish(d.f)}>Take off</button></div></>;
+      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" onClick={() => unpublish(d.f, 'public')}>Take off</button></div></>;
+    else if (d.kind === 'access') { const a = d.access; const before = accessOf(d.L).visibility;
+      body = <>
+      <h2>Who can see {d.L.title}</h2>
+      <p>{a.visibility === before ? 'Copies people already made stay theirs whatever you choose.' : a.visibility === 'public' ? 'It will appear in Browse for everyone. Copies people already made stay theirs.' : 'People who can no longer see it keep the copies they already made.'}</p>
+      {accessFields(a, d.L.uid)}
+      {d.error ? <p className="eh-access-error" role="alert">{d.error}</p> : null}
+      <div className="eh-actions">
+        {a.visibility === 'people' && host.shareLink && before === 'people' ? <button className="btn btn-quiet eh-access-copy" onClick={async () => { const r = await host.copyText(host.shareLink(d.L)); setFlash({ kind: r === 'failed' ? 'bad' : 'ok', text: r === 'failed' ? 'Could not copy.' : 'Copied the link to ' + d.L.title + '.' }); }}>Copy link</button> : null}
+        <button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={() => saveAccess(d)}>Save</button></div></>; }
     else if (d.kind === 'remove') { const plan = removalPlan(d.f, forkList);
       body = <>
       <h2>Remove {d.f.title} from your library?</h2>

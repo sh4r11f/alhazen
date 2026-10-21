@@ -471,6 +471,42 @@
 .eh-rig-brief p{margin-top:10px}
 @container (max-width:560px){.eh-rig-row{flex-wrap:wrap;gap:6px 14px}.eh-rig-row .row-main{flex:1 1 100%}.eh-rig-field{grid-template-columns:1fr;gap:4px;padding:8px 0}.eh-rig-field>label{padding-top:0}.eh-rig-versions{grid-template-columns:1fr}.eh-rig-h1{font-size:24px}.eh-rig-spacer{display:none}.eh-rig-control input[type=text],.eh-rig-control select{max-width:none}.eh-rig-mhead{align-items:flex-start}.eh .field textarea.eh-rig-yaml{min-height:380px}}
 
+/* Who can see a listing (design.md section 5a) */
+.tag-access{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:6px;background:var(--accent-soft);color:var(--accent-ink);font-size:12px;font-weight:650;white-space:nowrap}
+.eh-store-hero .tag-access{font-size:12px;font-weight:600;padding:4px 9px;height:auto;border-radius:999px;vertical-align:middle}
+.eh-store-spec .eh-access-row dd{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+.eh-store-spec .eh-access-row .eh-inline-link{font-size:14px}
+.eh-mine-section{margin:0 0 32px}
+.eh-mine-section>h2{font-size:18px;font-weight:800;margin:0 0 6px}
+.eh-mine-section>p.eh-muted{margin:0 0 12px;font-size:14px}
+.eh-mine-section>h2+.list,.eh-mine-section>h2+.empty,.eh-mine-section>h2+p.eh-muted+.list{margin-top:6px}
+.eh-mine-public>summary{cursor:pointer;list-style:none;font-size:18px;font-weight:800;padding:4px 0 12px}
+.eh-mine-public>summary::-webkit-details-marker{display:none}
+.eh-mine-public>summary::before{content:'+';display:inline-block;width:18px;color:var(--muted);font-weight:600}
+.eh-mine-public[open]>summary::before{content:'−'}
+.eh-mine-public>summary span{color:var(--muted);font-weight:600;font-size:14px;margin-left:6px}
+.eh-mine-row .tag-access{margin-right:6px}
+.eh-access{border:0;margin:18px 0 0;padding:0;min-width:0}
+.eh-access legend{font-size:13px;font-weight:700;padding:0;margin-bottom:8px}
+.eh-access-choice{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer}
+.eh-access-choice+.eh-access-choice{margin-top:6px}
+.eh-access-choice:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.eh-access-choice input{margin:3px 0 0;width:16px;height:16px;accent-color:var(--accent);flex:none}
+.eh-access-choice span{display:flex;flex-direction:column;gap:2px;min-width:0}
+.eh-access-choice b{font-size:14px;font-weight:700}
+.eh-access-choice small{font-size:13px;color:var(--muted);line-height:1.45}
+.eh-access-people{margin:4px 0 0 0}
+.eh-access-find{display:flex;gap:8px}
+.eh-access-find input{flex:1;min-width:0}
+.eh-access-results,.eh-access-list{list-style:none;margin:10px 0 0;padding:0;border:1px solid var(--line);border-radius:8px}
+.eh-access-results li,.eh-access-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 6px 6px 12px;font-size:14px;min-height:40px}
+.eh-access-results li+li,.eh-access-list li+li{border-top:1px solid var(--line)}
+.eh-access-results li span,.eh-access-list li span{min-width:0;overflow-wrap:anywhere}
+.eh-access-none{margin:10px 0 0;color:var(--muted);font-size:14px}
+.eh-access-people .check{margin-top:10px}
+.eh-access-error{margin:10px 0 0;color:var(--bad-ink);font-size:14px}
+.eh-dialog .eh-actions .eh-access-copy{margin-right:auto}
+
 @media (prefers-reduced-motion: reduce){.eh *{transition:none!important;animation:none!important}}
 /* Alhazen Experiment Platform documentation views (hub_docs.js).
  *
