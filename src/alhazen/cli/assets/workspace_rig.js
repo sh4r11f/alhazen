@@ -1,11 +1,13 @@
-/* Alhazen experiment workspace — this machine's rig, on the Run and General pages.
+/* Alhazen experiment workspace — this machine's rig configs, on the Run and
+ * General pages.
  *
- * A dashboard workspace is one machine, and every session it launches runs on
- * that machine's rig (alhazen/cli/machine_rig.py). The Run page's Rig section
- * starts from it, lets the person change it for THIS session only — the same
- * way they change the task parameters: settings in sections, each changed
- * value marked and resettable — and assigns the task's events to sync lines.
- * "Save to this machine's rig" makes a session's changes the machine's.
+ * A dashboard workspace is one machine, with several named rig configs, one
+ * of them the default (docs/design/machine-rig-configs.md). Every session
+ * runs on one of them, chosen on the Run page. The Run page's Rig section
+ * starts from the chosen config, lets the person change it for THIS session
+ * only — the same way they change the task parameters: settings in sections,
+ * each changed value marked and resettable — and assigns the task's events
+ * to sync lines. "Save to <config>" makes a session's changes the config's.
  *
  *   RigEditor.changes(machine, current)        what the session changed
  *   RigEditor.carryChanges(previous, next)     keep them across a task change
@@ -13,10 +15,17 @@
  *   RigEditor.setLine / setDiode               edit one event's assignment
  *   RigEditor.renderFields(host, rig, opts)    the settings, in sections
  *   RigEditor.renderEvents(host, rig, opts)    the Event lines block
- *   RigEditor.setupCard(host, status, opts)    "set up this machine's rig"
+ *   RigEditor.createForm(host, opts)           add a config (from a template
+ *                                              or a copy of another config)
+ *   RigEditor.pickConfig(choices, wanted)      the config the Run page opens on
+ *   RigEditor.syncText(config) / connectionText(sync, date)
+ *                                              a config's and the machine's
+ *                                              sync state, in words
  *
- * `rig` is the Run page's session rig: {machine: {name, values, sha256, ...},
- * prefill, current, events, taskEvents, source, dropped}. The pure helpers
+ * `rig` is the Run page's session rig: {machine: {id, name, values, sha256,
+ * ...} (the chosen config), prefill, current, events, taskEvents, source,
+ * dropped}; the General page's config editor passes {machine: {values},
+ * current} with the saved config as the baseline. The pure helpers
  * touch no DOM, so tests/js/workspace_rig.test.mjs loads them on their own;
  * the renderers take the page's `node(tag, class, text)`.
  */
@@ -239,9 +248,13 @@ const RigEditor = (() => {
    * Eye tracker, … headings, each with the control its value takes. A row
    * the session changed is marked and has a reset button giving the
    * machine's value. Options: node, schema (RigConfig's JSON schema, for
-   * choices), query (the search text), disabled, onChange().
+   * choices), query (the search text), disabled, onChange(), baseline (what
+   * the reset button gives back, in words: the Run page's "this config’s
+   * value", the config editor's "the saved value") and fixed (the settings
+   * shown but not editable: real_data on the Run page, none in the editor).
    */
-  function renderFields(host, rig, {node, schema = null, query = '', disabled = false, onChange}) {
+  function renderFields(host, rig, {node, schema = null, query = '', disabled = false, onChange,
+    baseline = 'this config’s value', fixed = MACHINE_ONLY}) {
     host.replaceChildren();
     const changed = new Map(settingChanges(rig).map((c) => [c.path, c]));
     const rows = leaves(rig.current).filter((l) => !isEventPath(l.path.join('.')));
@@ -266,15 +279,15 @@ const RigEditor = (() => {
       // Monitor, "calibration_target" for one of the tracker's nested settings.
       const group = path.slice(sectionDepth(path), -1);
       if (group.length) lab.append(node('small', '', group.join(' / ')));
-      const control = controlFor(path, value, id, {node, schema, rig, disabled, onChange});
+      const control = controlFor(path, value, id, {node, schema, rig, disabled, onChange, fixed});
       const cell = node('div', 'rig-value');
       cell.append(control);
       if (change) {
         const undo = node('button', 'rig-reset', '↺');
         undo.type = 'button';
         const machineValue = change.absent === 'machine' ? 'not set' : show(get(rig.machine.values, path).value ?? change.machine);
-        undo.title = `Back to this machine’s value: ${machineValue}`;
-        undo.setAttribute('aria-label', `Reset ${path.join(' ')} to this machine’s value, ${machineValue}`);
+        undo.title = `Back to ${baseline}: ${machineValue}`;
+        undo.setAttribute('aria-label', `Reset ${path.join(' ')} to ${baseline}, ${machineValue}`);
         undo.disabled = disabled;
         undo.addEventListener('click', () => {
           reset(rig, change.path.split('.'));
@@ -303,18 +316,19 @@ const RigEditor = (() => {
 
   /* The control for one setting: a choice for a value the schema lists, a
    * checkbox for a boolean, a number field, a text field, or JSON for a list
-   * or null. real_data is the machine's alone: shown, never editable here. */
-  function controlFor(path, value, id, {node, schema, rig, disabled, onChange}) {
+   * or null. A `fixed` setting (real_data on the Run page) is the config's
+   * alone: shown, never editable for a session. */
+  function controlFor(path, value, id, {node, schema, rig, disabled, onChange, fixed}) {
     const dotted = path.join('.');
     if (value === undefined) {
       const span = node('span', 'rig-removed', 'removed for this session');
       span.id = id;
       return span;
     }
-    if (MACHINE_ONLY.includes(dotted)) {
-      const span = node('span', 'rig-fixed', `${value} (this machine’s)`);
+    if (fixed.includes(dotted)) {
+      const span = node('span', 'rig-fixed', `${value} (this config’s)`);
       span.id = id;
-      span.title = 'Whether real data may be collected is decided in this machine’s rig, not per session.';
+      span.title = 'Whether real data may be collected is decided in the rig config, not per session.';
       return span;
     }
     const choice = typeof value === 'string' && typeof ParameterChoices !== 'undefined' && schema
@@ -396,7 +410,7 @@ const RigEditor = (() => {
     const assigned = rows.filter((r) => r.line).length;
     const flashed = rows.filter((r) => r.diode).length;
     let summary;
-    if (!hasSync && !hasDiode) summary = 'This machine has no sync device or photodiode, so no event is marked.';
+    if (!hasSync && !hasDiode) summary = 'This rig config has no sync device or photodiode, so no event is marked.';
     else if (!hasSync) summary = flashed ? `${flashed} event${flashed === 1 ? '' : 's'} flash the photodiode; no sync device.` : 'No sync device; no event flashes the photodiode.';
     else summary = assigned
       ? `${assigned} event${assigned === 1 ? '' : 's'} go out on a line; every other event pulses nothing.`
@@ -512,108 +526,261 @@ const RigEditor = (() => {
   }
 
   /* ---------------------------------------------------------------- */
-  /* Setting the machine up                                            */
+  /* Configs: choosing one, their sync state, adding one               */
   /* ---------------------------------------------------------------- */
 
+  /** The config the Run page opens on, from `choices` ([{id, name, default,
+   *  problem}]): `wanted` (an id or a name, e.g. the address's ?rig=) when it
+   *  names a valid one, else the default when valid, else the first valid
+   *  one; null when none can run. */
+  function pickConfig(choices, wanted) {
+    const usable = (choices || []).filter((c) => !c.problem);
+    if (wanted) {
+      const named = usable.find((c) => c.id === wanted) || usable.find((c) => c.name === wanted);
+      if (named) return named;
+    }
+    return usable.find((c) => c.default) || usable[0] || null;
+  }
+
+  /** Why a config does not load, in a line: the validator's message without
+   *  its file path, error count, error codes and documentation links. */
+  function problemText(problem) {
+    if (!problem) return '';
+    const lines = String(problem).split('\n').map((l) => l.trim()).filter((l) => l
+      && !/^For further information/.test(l) && !/^\d+ validation errors? for /.test(l));
+    if (lines.length > 1 && /^invalid config in /.test(lines[0])) lines.shift();
+    // Pydantic gives a field's place on one line and what is wrong on the next.
+    const parts = [];
+    for (let i = 0; i < lines.length; i++) {
+      const message = (text) => text.replace(/\s*\[type=[^\]]*\]/g, '').replace(/^\w+ error, /, '');
+      if (/^[\w.[\]-]+$/.test(lines[i]) && i + 1 < lines.length) {
+        parts.push(`${lines[i]}: ${message(lines[i + 1])}`);
+        i++;
+      } else {
+        parts.push(message(lines[i]));
+      }
+    }
+    return parts.join('; ').trim();
+  }
+
+  /** A config's sync state in words (its `sync.state`, docs/design §3). */
+  function syncText(config) {
+    const sync = config?.sync || {};
+    switch (sync.state) {
+      case 'synced': return 'Synced';
+      case 'local': return 'Changed here, not sent yet';
+      case 'pending': return 'Waiting for this machine (a platform edit)';
+      case 'rejected': return `Platform edit refused: ${sync.rejected?.reason || 'no reason given'}`;
+      case 'conflict': return 'Conflict';
+      default: return 'Only on this machine';
+    }
+  }
+
+  /** The kind of lamp a config's sync state gets: ok, warn or bad. */
+  function syncLamp(config) {
+    const state = config?.sync?.state;
+    if (state === 'synced') return 'ok';
+    if (state === 'conflict' || state === 'rejected') return 'bad';
+    if (state === 'local' || state === 'pending') return 'warn';
+    return 'idle';
+  }
+
+  /** The machine's connection to the platform in one line (Rigs.sync);
+   *  `date(stamp)` formats a time. */
+  function connectionText(sync, date = (s) => s) {
+    const where = sync?.platform ? ` (${sync.platform})` : '';
+    switch (sync?.state) {
+      case 'synced':
+        return `Synced with the platform${where}${sync.at ? ` at ${date(sync.at)}` : ''}.`;
+      case 'offline':
+        return `The platform${where} could not be reached${sync.error ? `: ${sync.error}` : ''}. `
+          + 'Changes are kept here and sent at the next sync.';
+      case 'unsupported':
+        return `The platform${where} does not keep rig configs yet, so they stay on this machine.`;
+      case 'error':
+        return `The last sync failed${sync.error ? `: ${sync.error}` : ''}.`;
+      default:
+        return 'Not connected to a platform: these configs stay on this machine. Connect a '
+          + 'library to edit them on the platform too.';
+    }
+  }
+
+  /** The valid name of a config, or the reason it is not one. */
+  function nameProblem(name, taken = []) {
+    if (!name) return 'Give the config a name.';
+    if (name.length > 64) return 'A name has at most 64 characters.';
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+      return 'A name starts with a letter or digit and holds only letters, digits, dots, dashes '
+        + 'and underscores.';
+    }
+    if (taken.includes(name)) return `This machine already has a config named ${name}.`;
+    return null;
+  }
+
   /**
-   * The card shown until this machine has a rig: its name and the rig it
-   * starts from — a registered experiment's rig or one of alhazen's shared
-   * rigs, with a line on each — then Set up. `status` is /api/machine-rig's
-   * answer before set-up ({templates, suggested}). Options: node, api,
-   * onDone(status).
+   * The form that adds a config: its name and what it starts from — a copy
+   * of one of this machine's configs, a registered experiment's rig, or one
+   * of alhazen's shared rigs (GET /api/machine-rigs/templates; the only place
+   * those appear) — then Add. `first` words it as the machine's first config
+   * (the Run page's card while there is none). Options: node, api, configs
+   * (this machine's, to copy), first, onDone(rigs), onCancel (a Cancel button
+   * when given).
    */
-  function setupCard(host, status, {node, api, onDone}) {
+  function createForm(host, {node, api, configs = [], first = false, onDone, onCancel = null}) {
     host.replaceChildren();
     const card = node('div', 'rig-setup');
-    card.append(node('h4', 'rig-subtitle', 'Set up this machine’s rig'));
-    card.append(node('p', 'help', 'Every session on this machine runs on one rig. Choose the rig it '
-      + 'starts from and name the machine; it is written out as one complete file you can edit '
-      + 'later, and a session can still change it for itself.'));
-    if (status.error) card.append(node('p', 'rig-problem', status.error));
-    const templates = (status.templates || []).filter((t) => !t.error);
-    const form = node('form', 'rig-setup-form');
-    const from = node('select');
-    from.id = 'rig-setup-from';
-    const groups = [
-      ['Registered experiments’ rigs', templates.filter((t) => t.kind === 'experiment')],
-      ['alhazen’s shared rigs', templates.filter((t) => t.kind === 'shared')],
-    ];
-    for (const [label, list] of groups) {
-      if (!list.length) continue;
-      const group = node('optgroup');
-      group.label = label;
-      for (const t of list) {
-        const o = node('option', '', t.label);
-        o.value = t.id;
-        group.append(o);
-      }
-      from.append(group);
-    }
-    const initial = status.suggested
-      || templates.find((t) => t.kind === 'experiment')?.id || templates[0]?.id || '';
-    from.value = initial;
-    const name = node('input');
-    name.id = 'rig-setup-name';
-    name.required = true;
-    name.maxLength = 64;
-    name.pattern = '[A-Za-z0-9][A-Za-z0-9._-]*';
-    const facts = node('p', 'help rig-setup-facts');
-    const describe = () => {
-      const t = templates.find((x) => x.id === from.value);
-      if (!t) {
-        facts.textContent = '';
-        return;
-      }
-      if (!name.dataset.typed) name.value = t.name;
-      const parts = [t.summary];
-      parts.push(t.real_data ? 'collects real data' : 'development rig (run mode refused)');
-      if (t.extends) parts.push(`written out over alhazen/${t.extends}`);
-      if (t.events?.length) parts.push(`its event lines (${t.events.join(', ')}) are left out and chosen per session`);
-      facts.textContent = parts.join(' · ');
-    };
-    name.addEventListener('input', () => { name.dataset.typed = '1'; });
-    from.addEventListener('change', describe);
-    const row = (label, control) => {
-      const wrap = node('div', 'rig-setup-row');
-      const lab = node('label', '', label);
-      lab.htmlFor = control.id;
-      wrap.append(lab, control);
-      return wrap;
-    };
-    const result = node('p', 'rig-problem');
-    result.hidden = true;
-    const submit = node('button', 'primary', 'Set up this machine’s rig');
-    submit.type = 'submit';
-    form.append(row('Start from', from), facts, row('Machine name', name), result, submit);
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      submit.disabled = true;
-      result.hidden = true;
-      try {
-        const answer = await api('/api/machine-rig/setup', {name: name.value.trim(), template: from.value});
-        await onDone(answer);
-      } catch (e) {
-        result.textContent = e.message;
-        result.hidden = false;
-      } finally {
-        submit.disabled = false;
-      }
-    });
-    if (!templates.length) {
-      card.append(node('p', 'rig-problem', 'No rig to start from: register an experiment, or run '
-        + '`alhazen rig init` in a terminal.'));
-    } else {
-      card.append(form);
-      describe();
-    }
+    card.append(node('h4', 'rig-subtitle', first ? 'Add this machine’s first rig config' : 'Add a rig config'));
+    card.append(node('p', 'help', first
+      ? 'Every session on this machine runs on one of its rig configs. Start the first one from '
+        + 'a registered experiment’s rig or one of alhazen’s shared rigs; it is written out as one '
+        + 'complete file you can edit later on the General page, and a session can still change it '
+        + 'for itself.'
+      : 'A config starts as a copy of another one on this machine, or of a registered '
+        + 'experiment’s rig or one of alhazen’s shared rigs.'));
+    const loading = node('p', 'help', 'Reading the rigs a config can start from…');
+    card.append(loading);
     host.append(card);
+    const taken = configs.map((c) => c.name);
+    const draw = (answer) => {
+      loading.remove();
+      if (answer.error) card.append(node('p', 'rig-problem', answer.error));
+      const templates = (answer.templates || []).filter((t) => !t.error);
+      const form = node('form', 'rig-setup-form');
+      const from = node('select');
+      from.id = `rig-create-from-${first ? 'first' : 'more'}`;
+      const options = new Map();
+      const groups = [
+        ['This machine’s configs', configs.map((c) => ({key: `copy:${c.id}`, label: c.name, copy: c}))],
+        ['Registered experiments’ rigs', templates.filter((t) => t.kind === 'experiment')
+          .map((t) => ({key: `template:${t.id}`, label: t.label, template: t}))],
+        ['alhazen’s shared rigs', templates.filter((t) => t.kind === 'shared')
+          .map((t) => ({key: `template:${t.id}`, label: t.label, template: t}))],
+      ];
+      for (const [label, list] of groups) {
+        if (!list.length) continue;
+        const group = node('optgroup');
+        group.label = label;
+        for (const item of list) {
+          const o = node('option', '', item.label);
+          o.value = item.key;
+          options.set(item.key, item);
+          group.append(o);
+        }
+        from.append(group);
+      }
+      const suggested = answer.suggested && options.has(`template:${answer.suggested}`)
+        ? `template:${answer.suggested}` : null;
+      from.value = suggested
+        || [...options.keys()].find((k) => options.get(k).template?.kind === 'experiment')
+        || [...options.keys()][0] || '';
+      const name = node('input');
+      name.id = `${from.id}-name`;
+      name.required = true;
+      name.maxLength = 64;
+      name.pattern = '[A-Za-z0-9][A-Za-z0-9._-]*';
+      name.autocomplete = 'off';
+      const facts = node('p', 'help rig-setup-facts');
+      const describe = () => {
+        const item = options.get(from.value);
+        if (!item) {
+          facts.textContent = '';
+          return;
+        }
+        if (!name.dataset.typed) {
+          let suggestion = item.copy ? `${item.copy.name}-copy` : item.template.name;
+          for (let n = 2; taken.includes(suggestion); n++) suggestion = `${item.copy?.name ?? item.template.name}-${n}`;
+          name.value = suggestion;
+        }
+        if (item.copy) {
+          facts.textContent = item.copy.problem
+            ? `A copy of ${item.copy.name}, which does not load yet: ${item.copy.problem}`
+            : `A copy of ${item.copy.name} as it is saved now; the two are separate from then on.`;
+          return;
+        }
+        const t = item.template;
+        const parts = [t.summary];
+        parts.push(t.real_data ? 'collects real data' : 'development rig (run mode refused)');
+        if (t.extends) parts.push(`written out over alhazen/${t.extends}`);
+        if (t.events?.length) parts.push(`its event lines (${t.events.join(', ')}) are left out and chosen per session`);
+        facts.textContent = parts.filter(Boolean).join(' · ');
+      };
+      name.addEventListener('input', () => { name.dataset.typed = '1'; });
+      from.addEventListener('change', describe);
+      const row = (label, control) => {
+        const wrap = node('div', 'rig-setup-row');
+        const lab = node('label', '', label);
+        lab.htmlFor = control.id;
+        wrap.append(lab, control);
+        return wrap;
+      };
+      const result = node('p', 'rig-problem');
+      result.hidden = true;
+      result.setAttribute('role', 'alert');
+      const submit = node('button', 'primary', first ? 'Add this config' : 'Add the config');
+      submit.type = 'submit';
+      const buttons = node('div', 'rig-confirm-actions');
+      buttons.append(submit);
+      if (onCancel) {
+        const cancel = node('button', 'quiet', 'Cancel');
+        cancel.type = 'button';
+        cancel.addEventListener('click', onCancel);
+        buttons.append(cancel);
+      }
+      form.append(row('Start from', from), facts);
+      // Rigs that cannot be read are not offered; say which, and why.
+      for (const t of (answer.templates || []).filter((x) => x.error)) {
+        form.append(node('p', 'help rig-setup-facts', `Not offered: ${t.label}, which cannot be read (${t.error}).`));
+      }
+      form.append(row('Config name', name), result, buttons);
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const chosen = name.value.trim();
+        const problem = nameProblem(chosen, taken);
+        const item = options.get(from.value);
+        if (problem || !item) {
+          result.textContent = problem || 'Choose what the config starts from.';
+          result.hidden = false;
+          return;
+        }
+        submit.disabled = true;
+        result.hidden = true;
+        try {
+          const body = item.copy ? {name: chosen, copy_of: item.copy.id} : {name: chosen, template: item.template.id};
+          const rigs = await api('/api/machine-rigs/create', body);
+          await onDone(rigs);
+        } catch (e) {
+          result.textContent = e.message;
+          result.hidden = false;
+        } finally {
+          submit.disabled = false;
+        }
+      });
+      if (!options.size) {
+        card.append(node('p', 'rig-problem', 'No rig to start from: register an experiment, or run '
+          + '`alhazen rig init` in a terminal.'));
+        if (onCancel) {
+          const cancel = node('button', 'quiet', 'Close');
+          cancel.type = 'button';
+          cancel.addEventListener('click', onCancel);
+          card.append(cancel);
+        }
+      } else {
+        card.append(form);
+        describe();
+      }
+    };
+    return api('/api/machine-rigs/templates').then(draw, (e) => {
+      loading.remove();
+      card.append(node('p', 'rig-problem', `The rigs a config can start from could not be read: ${e.message}`));
+    });
   }
 
   return {
     EVENT_LINES, PHOTODIODE_EVENTS, EDF, ACCURACY, SECTIONS,
     clone, same, get, set, remove, changes, settingChanges, reset, resetAll, carryChanges,
     eventRows, setLine, setDiode, suggestedLines, sectionOf, leaves, show,
-    renderFields, renderEvents, setupCard,
+    renderFields, renderEvents, pickConfig, problemText, syncText, syncLamp, connectionText, nameProblem,
+    createForm,
   };
 })();
 

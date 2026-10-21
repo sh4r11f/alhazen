@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from http.client import HTTPConnection
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ import yaml
 
 from alhazen.cli import machine_rig as mr
 from alhazen.cli import workspace as workspace_module
+from alhazen.cli.dashboard import DashboardServer, with_rig_config
 from alhazen.cli.main import _read_rig_origin, main
 from alhazen.cli.workspace import Launch, Workspace
 from alhazen.cli.workspace_data import data_roots
@@ -61,8 +64,10 @@ def workspace(tmp_path, monkeypatch):
 
 
 def set_up(space: Workspace, rig: str = "configs/rig-sim.yaml", name: str = "booth") -> dict:
+    """Add a rig config from one of the experiment's rigs; the config as the page sees it."""
     pid = space.projects[0]["id"]
-    return space.setup_machine({"name": name, "template": f"{pid}:{rig}"})
+    answer = space.setup_machine({"name": name, "template": f"{pid}:{rig}"})
+    return next(c for c in answer["configs"] if c["id"] == answer["created"])
 
 
 def finish(space, run):
@@ -71,23 +76,41 @@ def finish(space, run):
     return space.detail(run["id"])
 
 
-class TestTheMachineFile:
-    def test_a_shared_rig_is_copied_byte_for_byte(self, tmp_path):
-        machine = mr.MachineRig(tmp_path)
-        status = machine.setup(
-            "lab", mr.Path(RIG), shared=None, template={"kind": "shared", "label": "x"}
+def legacy_state(tmp_path: Path, name: str = "booth") -> Path:
+    """A state folder as alhazen 3.5.0 left it: one machine rig at the top of machine-rig/,
+    its gamma beside it, its saves and one earlier version."""
+    folder = tmp_path / "state" / "machine-rig"
+    (folder / "history").mkdir(parents=True)
+    (folder / f"rig-{name}.yaml").write_text(RIG.read_text())
+    (folder / f"rig-{name}_gamma.yaml").write_text("gamma: 2.2\n")
+    (folder / "history" / f"rig-{name}.20261019T000000Z.yaml").write_text("old\n")
+    (folder / "machine.json").write_text(
+        json.dumps(
+            {
+                "name": name,
+                "created": "2026-10-19T00:00:00+00:00",
+                "saves": [{"by": "setup", "at": "2026-10-19T00:00:00+00:00"}],
+            }
         )
-        assert status["configured"] and status["name"] == "lab"
-        assert Path(status["file"]).name == "rig-lab.yaml"
+    )
+    return tmp_path / "state"
+
+
+class TestTheConfigFiles:
+    def test_a_shared_rig_is_copied_byte_for_byte_as_the_first_config(self, tmp_path):
+        rigs = mr.MachineRigs(tmp_path)
+        status = rigs.setup("lab", RIG, shared=None, template={"kind": "shared", "label": "x"})
+        assert status["name"] == "lab" and status["default"] is True
+        assert Path(status["file"]) == tmp_path / "machine-rig/configs/lab/rig-lab.yaml"
         assert Path(status["file"]).read_text() == RIG.read_text()
-        assert status["template"]["sha256"]
-        with pytest.raises(mr.MachineRigError, match="already has a rig"):
-            machine.setup("lab", RIG, shared=None, template={})
+        assert status["origin"]["template"]["sha256"]
+        with pytest.raises(mr.MachineRigError, match="already has a rig config named 'lab'"):
+            rigs.setup("lab", RIG, shared=None, template={})
 
     def test_event_names_are_left_out_and_returned(self, tmp_path):
         source = tmp_path / "rig-lab.yaml"
         source.write_text(lab_text(events=True))
-        status = mr.MachineRig(tmp_path / "state").setup(
+        status = mr.MachineRigs(tmp_path / "state").setup(
             "lab", source, shared=None, template={"label": "exp/lab"}
         )
         assert status["left_out"] == {
@@ -103,13 +126,13 @@ class TestTheMachineFile:
         source = tmp_path / "configs" / "rig-lab.yaml"
         source.parent.mkdir()
         source.write_text("extends: base\nmonitor:\n  distance_cm: 70.0\n")
-        status = mr.MachineRig(tmp_path / "state").setup(
+        status = mr.MachineRigs(tmp_path / "state").setup(
             "lab", source, shared={"base": shared / "rig-base.yaml"}, template={"label": "e/lab"}
         )
         assert "extends" not in status["values"]
         assert status["values"]["monitor"]["distance_cm"] == 70.0
         assert status["values"]["monitor"]["width_px"] == 1920
-        assert status["template"]["extends"] == "base"
+        assert status["origin"]["template"]["extends"] == "base"
 
     @pytest.mark.parametrize(
         ("text", "match"),
@@ -120,41 +143,114 @@ class TestTheMachineFile:
             ("- a\n", "YAML mapping"),
         ],
     )
-    def test_the_editor_refuses_what_a_machine_rig_cannot_be(self, tmp_path, text, match):
-        machine = mr.MachineRig(tmp_path)
-        machine.setup("lab", RIG, shared=None, template={})
+    def test_the_editor_refuses_what_a_rig_config_cannot_be(self, tmp_path, text, match):
+        rigs = mr.MachineRigs(tmp_path)
+        rigs.setup("lab", RIG, shared=None, template={})
         with pytest.raises(mr.MachineRigError, match=match):
-            machine.save_text(text, None, by="test")
+            rigs.save_text("lab", text, None, by="test")
 
     def test_a_save_keeps_the_previous_file_and_checks_it_was_not_changed(self, tmp_path):
-        machine = mr.MachineRig(tmp_path)
-        status = machine.setup("lab", RIG, shared=None, template={})
+        rigs = mr.MachineRigs(tmp_path)
+        status = rigs.setup("lab", RIG, shared=None, template={})
         edited = status["text"].replace("distance_cm: 60.0", "distance_cm: 61.0")
         with pytest.raises(mr.MachineRigError, match="changed since"):
-            machine.save_text(edited, "0" * 64, by="test")
-        saved = machine.save_text(edited, status["sha256"], by="test")
-        assert saved["values"]["monitor"]["distance_cm"] == 61.0
-        history = list((tmp_path / "machine-rig" / "history").iterdir())
+            rigs.save_text(status["id"], edited, "0" * 64, by="test")
+        saved = rigs.save_text(status["id"], edited, status["sha256"], by="test")
+        assert saved["saved"] == ["monitor.distance_cm"]
+        assert rigs.require().values["monitor"]["distance_cm"] == 61.0
+        history = list((tmp_path / "machine-rig/configs/lab/history").iterdir())
         assert [p.read_text() for p in history] == [RIG.read_text()]
-        assert saved["saves"][-1]["changes"] == ["monitor.distance_cm"]
+        assert rigs.history("lab")["saves"][0]["changes"] == ["monitor.distance_cm"]
+        assert rigs.version("lab", history[0].name) == RIG.read_text()
+        with pytest.raises(mr.MachineRigError, match="history"):
+            rigs.version("lab", "../configs.json")
 
     def test_saving_settings_drops_event_names(self, tmp_path):
-        machine = mr.MachineRig(tmp_path)
+        rigs = mr.MachineRigs(tmp_path)
         source = tmp_path / "rig-x.yaml"
         source.write_text(lab_text())
-        status = machine.setup("lab", source, shared=None, template={})
+        status = rigs.setup("lab", source, shared=None, template={})
         values = yaml.safe_load(lab_text(events=True))
         values["monitor"]["distance_cm"] = 65.0
-        saved = machine.save_values(values, status["sha256"], by="run page")
+        saved = rigs.save_values(None, values, status["sha256"], by="run page")
         assert saved["saved"] == ["monitor.distance_cm"]
-        assert "event_lines" not in saved["values"]["devices"]["sync"]
+        assert "event_lines" not in rigs.require().values["devices"]["sync"]
 
-    def test_two_rig_files_are_refused_rather_than_one_picked(self, tmp_path):
-        machine = mr.MachineRig(tmp_path)
-        machine.setup("lab", RIG, shared=None, template={})
-        (tmp_path / "machine-rig" / "rig-other.yaml").write_text(RIG.read_text())
-        assert machine.status()["configured"] is False
-        assert "a machine has one rig" in machine.status()["error"]
+    def test_several_configs_one_default_rename_and_delete(self, tmp_path):
+        rigs = mr.MachineRigs(tmp_path)
+        lab = rigs.setup("lab", RIG, shared=None, template={})
+        source = tmp_path / "rig-x.yaml"
+        source.write_text(lab_text())
+        eye = rigs.setup("eyelink", source, shared=None, template={})
+        assert rigs.default_id() == lab["id"] and eye["default"] is False
+        assert [c.name for c in rigs.configs()] == ["lab", "eyelink"]
+        gamma = tmp_path / "machine-rig/configs/eyelink/rig-eyelink_gamma.yaml"
+        gamma.write_text("gamma: 2.0\n")
+        rigs.rename(eye["id"], "tracker", eye["sha256"], by="test")
+        moved = tmp_path / "machine-rig/configs/tracker"
+        assert (moved / "rig-tracker.yaml").is_file() and (
+            moved / "rig-tracker_gamma.yaml"
+        ).is_file()
+        assert rigs.require("tracker").id == eye["id"]
+        with pytest.raises(mr.MachineRigError, match="already has a rig config named"):
+            rigs.rename(eye["id"], "lab", None, by="test")
+        with pytest.raises(mr.MachineRigError, match="default"):
+            rigs.delete(lab["id"], None, by="test")
+        rigs.set_default(eye["id"])
+        removed = rigs.delete(lab["id"], lab["sha256"], by="test")
+        assert Path(removed["trash"], "configs", "rig-lab.yaml").is_file()
+        assert [c.name for c in rigs.configs()] == ["tracker"]
+        with pytest.raises(mr.MachineRigError, match="no rig config 'lab'"):
+            rigs.require("lab")
+
+
+class TestMigrationFrom350:
+    def test_the_350_rig_becomes_the_first_config_where_it_is(self, tmp_path):
+        state = legacy_state(tmp_path)
+        before = {p: p.read_bytes() for p in (state / "machine-rig").rglob("*") if p.is_file()}
+        rigs = mr.MachineRigs(state)
+        status = rigs.status()
+        (config,) = status["configs"]
+        assert config["name"] == "booth" and config["legacy"] and config["default"]
+        assert status["migrated"]["config"] == config["id"]
+        assert config["file"] == str(state / "machine-rig/rig-booth.yaml")
+        assert config["gamma"]["file"].endswith("rig-booth_gamma.yaml")
+        # Nothing 3.5.0 wrote was moved or rewritten.
+        after = {p: p.read_bytes() for p in (state / "machine-rig").rglob("*") if p.is_file()}
+        assert {p: b for p, b in after.items() if p.name != "configs.json"} == before
+        # The id is the machine's from now on.
+        assert mr.MachineRigs(state).machine_id() == rigs.machine_id()
+
+    def test_a_350_dashboard_still_sees_its_rig_and_its_edits_are_picked_up(self, tmp_path):
+        state = legacy_state(tmp_path)
+        rigs = mr.MachineRigs(state)
+        source = tmp_path / "rig-x.yaml"
+        source.write_text(lab_text())
+        rigs.setup("eyelink", source, shared=None, template={})
+        # 3.5.0 lists rig files at the top of the folder only.
+        assert [p.name for p in mr._rig_files(state / "machine-rig")] == ["rig-booth.yaml"]
+        top = state / "machine-rig/rig-booth.yaml"
+        top.write_text(top.read_text().replace("distance_cm: 60.0", "distance_cm: 59.0"))
+        assert rigs.require("booth").values["monitor"]["distance_cm"] == 59.0
+
+    def test_a_rig_a_350_dashboard_sets_up_after_the_first_was_deleted_is_adopted(self, tmp_path):
+        state = legacy_state(tmp_path)
+        rigs = mr.MachineRigs(state)
+        source = tmp_path / "rig-x.yaml"
+        source.write_text(lab_text())
+        other = rigs.setup("eyelink", source, shared=None, template={})
+        rigs.set_default(other["id"])
+        rigs.delete("booth", None, by="test")
+        assert not (state / "machine-rig/rig-booth.yaml").exists()
+        (state / "machine-rig/rig-desk.yaml").write_text(RIG.read_text())
+        names = {c["name"]: c for c in rigs.status()["configs"]}
+        assert names["desk"]["legacy"] and names["desk"]["origin"]["kind"] == "older-dashboard"
+
+    def test_two_rig_files_at_the_top_are_refused_rather_than_one_picked(self, tmp_path):
+        state = legacy_state(tmp_path)
+        (state / "machine-rig/rig-other.yaml").write_text(RIG.read_text())
+        status = mr.MachineRigs(state).status()
+        assert status["configs"] == [] and "holds 2 rig files" in status["error"]
 
     def test_changes_are_listed_setting_by_setting(self):
         changes = mr.rig_changes(
@@ -170,12 +266,12 @@ class TestTheMachineFile:
 class TestSessions:
     def test_a_launch_needs_this_machines_rig(self, workspace):
         pid = workspace.projects[0]["id"]
-        with pytest.raises(ValueError, match="no rig yet"):
+        with pytest.raises(ValueError, match="no rig config yet"):
             workspace.start(Launch(project=pid, mode="simulate"))
 
     def test_a_session_runs_its_own_copy_and_records_what_changed(self, workspace):
         set_up(workspace, "configs/rig-lab.yaml", "lab")
-        machine_file = workspace.machine.file()
+        machine_file = workspace.machine.require().path
         # A reward calibration kept beside the machine's file is read beside
         # the session's copy too.
         (machine_file.parent / "rig-lab.reward.yaml").write_text("widths: {}\n")
@@ -222,7 +318,7 @@ class TestSessions:
         # The workspace's own records still say where the rig came from.
         launch = json.loads((Path(run["directory"]) / "launch.json").read_text())
         assert launch["rig_origin"]["machine"] == "booth"
-        assert run["machine_rig"]["file"] == str(workspace.machine.file())
+        assert run["machine_rig"]["file"] == str(workspace.machine.require().path)
 
     def test_a_session_cannot_change_whether_real_data_is_collected(self, workspace):
         set_up(workspace)
@@ -250,7 +346,7 @@ class TestSessions:
             workspace.start(Launch(project=pid, mode="measure", rig_values=values))
         run = finish(workspace, workspace.start(Launch(project=pid, mode="measure")))
         argv = json.loads(run["log"].splitlines()[0])
-        assert argv[argv.index("--rig") + 1] == str(workspace.machine.file())
+        assert argv[argv.index("--rig") + 1] == str(workspace.machine.require().path)
         assert run["rig_carried"] is None
 
     def test_an_undeclared_event_is_refused_before_anything_is_written(self, workspace):
@@ -317,6 +413,44 @@ class TestEventLinesCarryOver:
         assert "no event goes out on a line" in start["events_source"]["label"]
 
 
+class TestChoosingAConfig:
+    def test_a_session_runs_on_the_chosen_config_and_carries_its_own_event_lines(self, workspace):
+        booth = set_up(workspace)
+        lab = set_up(workspace, "configs/rig-lab.yaml", "lab")
+        pid = workspace.projects[0]["id"]
+        assert workspace.describe(pid)["machine_rigs"]["default"] == booth["id"]
+        start = workspace.session_rig(pid, None, "simulate", lab["id"])
+        assert start["config"] == {"id": lab["id"], "name": "lab"}
+        assert [c["name"] for c in start["configs"]] == ["booth", "lab"]
+        values = start["values"]
+        values["devices"]["sync"]["event_lines"] = {"TRIAL_START": "Dev1/port0/line5"}
+        run = finish(
+            workspace,
+            workspace.start(
+                Launch(
+                    project=pid,
+                    mode="test",
+                    subject="s1",
+                    initials="AB",
+                    rig_config="lab",
+                    rig_values=values,
+                )
+            ),
+        )
+        assert run["rig_name"] == "lab" and run["rig_config"] == lab["id"]
+        assert Path(run["directory"], "rig-lab.yaml").is_file()
+        # The lines go with the config they were chosen on.
+        again = workspace.session_rig(pid, None, "simulate", "lab")
+        assert again["events_source"]["kind"] == "last-session"
+        assert workspace.session_rig(pid, None, "simulate")["config"]["name"] == "booth"
+        with pytest.raises(ValueError, match="no rig config 'nope'"):
+            workspace.start(Launch(project=pid, mode="simulate", rig_config="nope"))
+        with pytest.raises(ValueError, match="either"):
+            workspace.start(
+                Launch(project=pid, mode="simulate", rig_config="lab", rig="configs/rig-sim.yaml")
+            )
+
+
 class TestPages:
     def test_templates_and_the_suggestion_before_set_up(self, workspace):
         pid = workspace.projects[0]["id"]
@@ -324,8 +458,8 @@ class TestPages:
             workspace,
             workspace.start(Launch(project=pid, mode="simulate", rig="configs/rig-sim.yaml")),
         )
-        status = workspace.machine_status()
-        assert status["configured"] is False
+        assert workspace.machine_status()["configs"] == []
+        status = workspace.machine_template_list()
         ids = {t["id"] for t in status["templates"]}
         assert f"{pid}:configs/rig-lab.yaml" in ids and "alhazen/lab" in ids
         lab = next(t for t in status["templates"] if t["id"] == f"{pid}:configs/rig-lab.yaml")
@@ -348,13 +482,34 @@ class TestCommandLine:
             main(["rig", "init", "--state-dir", str(state), "--name", "m1", "--from", str(RIG)])
             == 0
         )
-        assert "this machine's rig is m1" in capsys.readouterr().out
+        assert "added this machine's rig config m1" in capsys.readouterr().out
         assert main(["rig", "show", "--state-dir", str(state)]) == 0
         assert "distance_cm: 60.0" in capsys.readouterr().out
         assert (
             main(["rig", "init", "--state-dir", str(state), "--name", "m1", "--from", str(RIG)])
             == 1
         )
+        assert (
+            main(
+                [
+                    "rig",
+                    "init",
+                    "--state-dir",
+                    str(state),
+                    "--name",
+                    "m2",
+                    "--from",
+                    str(RIG),
+                    "--default",
+                ]
+            )
+            == 0
+        )
+        capsys.readouterr()
+        assert main(["rig", "list", "--state-dir", str(state)]) == 0
+        listed = capsys.readouterr().out.splitlines()
+        assert listed[0].startswith("* m2") and listed[1].startswith("  m1")
+        assert main(["rig", "show", "--state-dir", str(state), "--config", "m1"]) == 0
 
     def test_rig_origin_file_is_read_as_one_json_object(self, tmp_path):
         path = tmp_path / "o.json"
@@ -409,3 +564,82 @@ class TestASimulatedSession:
         ]
         assert origin["workspace_run"] == run["id"]
         assert "distance_cm: 61.5" in (cards[0].parent / "rig-source.yaml").read_text()
+
+
+class TestTheDashboardRoutes:
+    def test_the_pages_api_adds_edits_renames_defaults_and_deletes(self, workspace):
+        server = DashboardServer(workspace)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def call(path, body=None):
+            conn = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+            headers = {"X-Alhazen-Token": server.token}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            conn.request(
+                "POST" if body is not None else "GET",
+                path,
+                json.dumps(body) if body is not None else None,
+                headers,
+            )
+            response = conn.getresponse()
+            data = json.loads(response.read() or b"null")
+            conn.close()
+            return response.status, data
+
+        try:
+            pid = workspace.projects[0]["id"]
+            status, rigs = call("/api/machine-rigs")
+            assert (
+                status == 200 and rigs["configs"] == [] and rigs["machine"]["id"].startswith("mc_")
+            )
+            assert rigs["sync"]["state"] == "not-connected"
+            status, templates = call("/api/machine-rigs/templates")
+            assert f"{pid}:configs/rig-lab.yaml" in {t["id"] for t in templates["templates"]}
+            status, made = call(
+                "/api/machine-rigs/create",
+                {"name": "booth", "template": f"{pid}:configs/rig-sim.yaml"},
+            )
+            assert status == 201 and made["default"] == made["created"]
+            status, made = call("/api/machine-rigs/create", {"name": "spare", "copy_of": "booth"})
+            spare = next(c for c in made["configs"] if c["name"] == "spare")
+            assert spare["origin"]["kind"] == "copy" and spare["sync"]["state"] == "not-synced"
+            status, checked = call("/api/machine-rigs/check", {"id": spare["id"], "text": "- a\n"})
+            assert status == 400
+            status, saved = call(
+                "/api/machine-rigs/save",
+                {
+                    "id": spare["id"],
+                    "sha256": spare["sha256"],
+                    "text": spare["text"].replace("distance_cm: 60.0", "distance_cm: 64.0"),
+                },
+            )
+            assert status == 200 and saved["saved"] == ["monitor.distance_cm"]
+            status, stale = call(
+                "/api/machine-rigs/save",
+                {"id": spare["id"], "sha256": spare["sha256"], "text": spare["text"]},
+            )
+            assert status == 409 and "changed since" in stale["error"]
+            status, renamed = call("/api/machine-rigs/rename", {"id": spare["id"], "name": "desk"})
+            assert "desk" in [c["name"] for c in renamed["configs"]]
+            status, defaulted = call("/api/machine-rigs/default", {"id": spare["id"]})
+            assert defaulted["default"] == spare["id"]
+            status, chosen = call(f"/api/session-rig?project={pid}&mode=simulate&config=booth")
+            assert chosen["config"]["name"] == "booth"
+            booth = next(c for c in defaulted["configs"] if c["name"] == "booth")
+            status, history = call(f"/api/machine-rigs/history?id={spare['id']}")
+            assert [s.get("by") for s in history["saves"]][:2] == ["general page", "general page"]
+            status, deleted = call("/api/machine-rigs/delete", {"id": booth["id"]})
+            assert [c["name"] for c in deleted["configs"]] == ["desk"]
+            status, synced = call("/api/machine-rigs/sync", {})
+            assert status == 200 and synced["sync"]["state"] == "not-connected"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_the_page_can_be_opened_with_a_config_chosen(self):
+        url = "http://127.0.0.1:5/#token=abc"
+        assert with_rig_config(url, "eye link") == "http://127.0.0.1:5/?rig=eye%20link#token=abc"
+        assert with_rig_config(url, None) == url

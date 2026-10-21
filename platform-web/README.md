@@ -25,7 +25,9 @@ module with no imports, so the fragments share names instead of importing them):
 | `40_reader.jsx` | the experiment page and task/parameter readers (`EHExperimentPage`, ...) |
 | `50_logos.jsx` | experiment emblems and glyphs |
 | `60_helpers.js` | formatting, routing (`?ehv=&ehid=&ehtab=&ehtask=&ehset=`), Markdown tokens |
+| `65_rigs.jsx` | machine rig configs: the list on Machines, the editor (form by sections from the machine's rig schema, YAML view), new config, the Run choice (docs/design/machine-rig-configs.md) |
 | `70_app.jsx` | `PlatformApp({host})`: Home, Browse, experiment pages, My experiments, copies, dialogs |
+| `rigsync.js` | Mana only: the owner-side rig config rules, a port of `experiment_platform/rigsync.py` (`test/rigsync.test.mjs` replays cases generated from the Python module by `test/gen_rigsync_cases.py`) |
 | `host_mana.jsx` | `UserDiv()`: the Mana host (Firebase paths, Mana chats, prompts, Mana Terminal) |
 | `host_http.jsx` | the standalone host over the JSON API (design.md Appendix A), sign-in card, theme |
 | `standalone_css.js` | `STANDALONE_CSS`, the standalone-only rules (font face, sign-in, run steps) |
@@ -49,6 +51,13 @@ Shared fragments may use only the names both targets provide: `React`, `ReactMar
 | `fontStylesheet`, `inlineStyles`, `extraCss` | Google Fonts link, inline `<style>` | none, `platform.css` |
 | `signOut()`, `refresh()` | — | server sign-out; re-run every subscription |
 | `subscribeForkDocs` callback | `{docs}` or `{stale: true}`; the Mana host backfills old copies | same values from `GET /api/forks/<id>/docs` |
+
+Machine rig configs (`capabilities.rigConfigs`) use `listRigMachines()`, `getRigMachine(mid)`,
+`subscribeRigMachines(cb)`, `subscribeRigMachine(mid, cb)`, `putRigConfig(mid, cid, {name, text, base, basedOn})`,
+`deleteRigConfig(mid, cid, base)`, `setRigDefault(mid, cid, base)`, `resolveRigConfig(mid, cid, keep)`,
+`forgetRigMachine(mid)` and `loadYaml()`: the standalone host calls the owner routes of the contract (§4) and bundles
+the `yaml` package; the Mana host applies `rigsync.js` to the viewer's Firebase record and loads `yaml` from esm.sh the
+first time an editor opens, never at app start.
 
 Capabilities gate the interface explicitly: without `changeWithMana`, `newWithMana`,
 `runOnMachines` and `machines` there is no Change with Mana, Fork with AI, New experiment or My

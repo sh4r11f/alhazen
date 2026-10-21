@@ -379,80 +379,148 @@ the calibration ledger and out of the repository with the rest of the data
    result loads, and `alhazen rigs` shows what extends what.
 3. Keep whole files for machines only this experiment uses.
 
-## 10. In the dashboard: this machine's rig
+## 10. In the dashboard: this machine's rig configs
 
 The [experiment workspace](workspace.md) runs on one machine, and every
-session it launches runs on **that machine's rig**. There is no rig to choose
-at a launch: which machine a session runs on is decided by where the
-dashboard is running. A workspace keeps its machine as **one complete rig
-file** in its own state folder, never in an experiment's repository:
+session it launches runs on **one of that machine's rig configs**: named,
+complete rig files such as `eyelink`, `keyboard` or `monkey-daq`, one of them
+the **default**. Which machine a session runs on is decided by where the
+dashboard is running; which of its configs, by the chooser on the Run page.
+The configs are kept in the workspace's own state folder, never in an
+experiment's repository, and can be edited on the dashboard and on your
+[Experiment Platform](experiment-platform/design.md#8a-rigs-the-dashboards-library),
+which keep them in sync:
 
 ```text
 <state>/machine-rig/
-  rig-<name>.yaml            the machine: no extends, no event names
-  rig-<name>_gamma.yaml      a measured gamma (alhazen calibrate gamma), when there is one
-  rig-<name>.reward.yaml     the reward calibration (Measure rig, Juice per pulse)
-  machine.json               where it was set up from, and every save
-  history/                   every earlier version of the file
+  configs.json                 the index: each config's id and name, the default,
+                               this machine's id, and the sync state
+  rig-<first>.yaml             the first config, where alhazen 3.5.0 kept its
+  rig-<first>_gamma.yaml,      single machine rig (with its gamma, reward
+  rig-<first>.reward.yaml,     calibration, machine.json and history/)
+  machine.json, history/
+  configs/<name>/
+    rig-<name>.yaml            every other config: no extends, no event names
+    rig-<name>_gamma.yaml      a measured gamma (alhazen calibrate gamma), when there is one
+    rig-<name>.reward.yaml     the reward calibration (Measure rig, Juice per pulse)
+    config.json                where it came from, and every save
+    history/                   every earlier version of the file
+  trash/<name>.<time>/         a deleted config, moved here, never destroyed
 ```
 
 `<state>` is the dashboard's state folder (`~/.alhazen/dashboard`, or
-`--state-dir`). The file is named like any rig (§1), so PsychoPy registers
+`--state-dir`). Each file is named like any rig (§1), so PsychoPy registers
 its monitor as `rig-<name>` and the gamma and reward calibration are found
-beside it exactly as they are beside an experiment's file (§8).
+beside it exactly as they are beside an experiment's file (§8). A state
+folder is one **machine**: it gets a random id (`mc_…`) the first time
+alhazen 3.6 opens it, which is how the platform tells your machines apart.
+Two state folders on one computer (yours, and the one Mana runs its copies
+from) are two machines, each with its own configs.
 
 ```mermaid
 flowchart LR
-    T["a shared rig, or a registered<br/>experiment's rig (extends merged)"] -- "set up once" --> M["<state>/machine-rig/rig-lab.yaml<br/>this machine"]
-    M -- "every launch starts from it" --> S["the session's rig<br/>(changed for this session only)"]
-    S -- "written into the run folder,<br/>launched as --rig <file>" --> R["session.json rig.origin:<br/>machine, sha256, changes, event lines"]
-    S -. "Save to this machine's rig" .-> M
+    T["a shared rig, or a registered<br/>experiment's rig (extends merged)"] -- "Add a config: a starting point" --> M["<state>/machine-rig/configs/eyelink/rig-eyelink.yaml<br/>one of this machine's configs"]
+    P["the platform's Machines page"] <-- "synced (library connection)" --> M
+    M -- "chosen on the Run page" --> S["the session's rig<br/>(changed for this session only)"]
+    S -- "written into the run folder,<br/>launched as --rig <file>" --> R["session.json rig.origin:<br/>config, sha256, changes, event lines"]
+    S -. "Save to eyelink" .-> M
 ```
 
-### Setting the machine up
+### Adding and editing configs
 
-The first time a workspace is opened without a machine rig, the Run page and
-every experiment's General page show **Set up this machine's rig**: a name
-for the machine, and the rig it starts from — a rig of any registered
-experiment, or one of alhazen's shared rigs. The workspace opens on the rig
-it last launched with, so a workspace from before the machine rig starts
-where it was. The rig is written out complete: a file that extends nothing
-is copied byte for byte, comments and all; one that extends a shared rig is
-written as the merged settings under a header saying what it was made from.
-The same from a terminal, before anyone opens the page:
+An experiment's **General** page has **This machine's rig configs**: every
+config with its default mark, whether it can run (a config that fails the
+checks a launch makes is listed with the reason and cannot be chosen), its
+sync state and its last save. **Add a config** asks for a name and what it
+starts from — a copy of another config, a rig of any registered experiment,
+or one of alhazen's shared rigs. That is the only place the shared and the
+experiments' rigs are offered: a config is written out complete, so a file
+that extends nothing is copied byte for byte, comments and all, and one that
+extends a shared rig is written as the merged settings under a header saying
+what it was made from; event names are left out (they are chosen per
+session, below). After that a config is edited, not re-derived: **Edit**
+shows its settings by section (or as YAML), checks them as a launch would,
+and saves only if the file has not changed since it was opened, keeping the
+previous one in `history/`; **Rename** renames its file and the gamma and
+reward files beside it; **Make default**; **Delete** (asked first; the
+default cannot be deleted) moves it to `trash/`; **History** lists its saves
+and shows any earlier version. The same from a terminal, before anyone opens
+the page:
 
 ```bash
 alhazen rig init --name lab --from lab                      # alhazen's shared lab
-alhazen rig init --name booth --from configs/rig-booth.yaml --project ~/projects/amodal-averaging
-alhazen rig show
+alhazen rig init --name eyelink --from configs/rig-booth.yaml --project ~/projects/amodal-averaging --default
+alhazen rig list
+alhazen rig show --config eyelink
 ```
 
-Both take `--state-dir`. Setting up is done once; after that the rig is
-edited (the General page's **This machine's rig**: its facts, and **Edit**,
-which checks the YAML as a launch would and saves it only if the file has
-not changed since it was opened, keeping the previous one in `history/`).
+All take `--state-dir`. The first config a machine gets is its default.
 
-**Migration.** Nothing an existing workspace holds is moved or rewritten:
-`projects.json`, the runs, their records and the people registry stay as
-they are, and the history still names each earlier run's rig as it was
-launched. An experiment's own rig files stay in its repository and keep
+**From alhazen 3.5.0.** A 3.5.0 workspace kept one machine rig at the top of
+`machine-rig/`. 3.6 makes it the first config, named as it was, and the
+default, where it is: nothing is moved or rewritten (its bytes, `history/`,
+gamma and reward calibration and `machine.json` stay), and the General page
+says so once. A 3.5.0 dashboard on the same state folder afterwards keeps
+working: it ignores `configs/` and `configs.json`, sees and runs exactly that
+first config whichever is the default, and what it saves to it is picked up
+by 3.6 as a change made on this machine. If the first config is deleted in
+3.6 and a 3.5.0 dashboard then sets a machine rig up again, 3.6 adopts that
+file as a new config. Nothing else an existing workspace holds is moved or
+rewritten: `projects.json`, the runs, their records and the people registry
+stay as they are, and the history still names each earlier run's rig as it
+was launched. An experiment's own rig files stay in its repository and keep
 working for `run.py` and `alhazen run` (§3, §4); in the workspace they are
-starting points at set-up and a source of event lines (below). Each
+starting points for a new config and a source of event lines (below). Each
 experiment's data folders are still found from its own rigs as well as from
-the machine's `data_root`, so data recorded before (or from the command line)
+each config's `data_root`, so data recorded before (or from the command line)
 stays on the Data and History pages.
+
+### On the platform, and keeping the two in sync
+
+When the dashboard is connected to a library ([Your library](workspace.md#your-library)), its
+configs also appear on that platform: under **Machines** on a self-hosted
+platform (`alhazen platform serve` / `local`), under **My machines** in
+Mana. There each config can be read and edited with the same sections and a
+YAML view, added (from a copy, or from the starting points this machine
+offers), renamed, made the default or deleted, and the measured gamma and
+juice per pulse are shown (read only: they are measured on the machine).
+
+The machine's own files are what runs, and they keep working offline. The
+platform keeps a copy per machine, and the two are kept in step over the
+library connection: when the dashboard reads the library, every few minutes
+while it runs, after every change made on it, and on **Sync now**.
+
+- A change made on the dashboard is sent; one made on the platform is taken
+  by the machine at its next sync, **after the checks a launch makes**. One
+  that fails them is refused: the platform shows it as refused with the
+  reason, and the machine keeps running its own version.
+- Every change names the version it replaces, so nothing is overwritten that
+  the other side has not seen. When both sides changed a config since they
+  last agreed, neither is overwritten: both pages show both versions, and the
+  person keeps one, on either side.
+- A deletion asked on the platform of a config that was changed on the
+  machine since is not applied: the machine's version stays.
+- A platform without rig configs (alhazen before 3.6), one that cannot be
+  reached, or no library at all leaves everything on the machine; the
+  General page says which.
+
+The protocol is in
+[docs/design/machine-rig-configs.md](design/machine-rig-configs.md).
 
 ### What a session can change
 
-The Run page's **Rig** section starts from this machine's rig and shows the
-rig as the session will run it. Under **Rig settings for this session** every
+The Run page's **Rig** section offers this machine's configs, and only
+those: a chooser with the default chosen (or the config the page was opened
+for, `?rig=<name>`, which `alhazen dashboard --rig-config <name>` and Mana's
+Run use). Changing the config starts the section again from that config.
+It shows the rig as the session will run it. Under **Rig settings for this session** every
 setting is listed under the Monitor, Display, Eye tracker, Reward, Sync, Live
 monitor and Data headings, with the control its value takes, as the task
 parameters are; a setting changed for this session is marked and has a reset
-button giving the machine's value, and **Reset all** puts everything back.
-These changes are this session's only. **Save to this machine's rig** (asked
-first, listing each change) makes them the machine's for every later session
-of every experiment; the file is then written from its settings, so its
+button giving the config's value, and **Reset all** puts everything back.
+These changes are this session's only. **Save to <config>** (asked first,
+listing each change) makes them that config's for every later session of
+every experiment; the file is then written from its settings, so its
 comments go, and the previous file is kept in `history/`.
 
 Two things a session may not change, each refused before anything is
@@ -461,8 +529,8 @@ written:
 - **`real_data`** is the machine's (§5). A development machine is a
   development rig for every session on it; set `real_data: true` in the
   machine's rig, with a comment saying why, if subjects are recorded there.
-- **Measure rig** measures the machine's rig as it is saved and keeps what it
-  measures beside it, so it runs the machine's file itself, read only, and
+- **Measure rig** measures the chosen config as it is saved and keeps what it
+  measures beside it, so it runs the config's file itself, read only, and
   refuses a launch that carries changes.
 
 ### Event lines
@@ -483,11 +551,11 @@ calibration limit — sit under it.
 Nobody has to edit YAML for this, and nothing pulses or goes missing
 silently. A session starts from, in this order:
 
-1. **the last session of the same experiment and task on this machine** —
+1. **the last session of the same experiment and task on this config** —
    its event lines, photodiode events, EDF name and calibration limit, as it
    ran with them;
-2. else **the experiment's own rig named like the machine**
-   (`configs/rig-lab.yaml` on the machine `lab`), which is where an
+2. else **the experiment's own rig named like the config**
+   (`configs/rig-lab.yaml` for the config `lab`), which is where an
    experiment kept them before;
 3. else **nothing**: no event goes out on a line, and the table says so.
 
@@ -500,7 +568,7 @@ already assigned, and the session checks the names itself.
 
 ### What a session records
 
-A session on this machine's rig runs **its own copy**, written into the
+A session on one of this machine's configs runs **its own copy**, written into the
 workspace's run folder as `rig-<name>.yaml` (with the machine's gamma and
 reward calibration beside it) and launched as `--rig <that file>`. An
 unchanged rig is the machine's file byte for byte; a changed one is its
@@ -513,7 +581,8 @@ where it came from in `session.json`:
 "rig": {
   "name": "lab", "source": "experiment", "file": ".../runs/<id>/rig-lab.yaml",
   "origin": {
-    "kind": "machine", "machine": "lab", "file": "<state>/machine-rig/rig-lab.yaml",
+    "kind": "machine", "machine": "lab", "config": "c3f9a01b2d4",
+    "file": "<state>/machine-rig/configs/lab/rig-lab.yaml",
     "sha256": "4bda…",
     "changes": [{"path": "monitor.distance_cm", "machine": 57.0, "session": 60}],
     "events": {"source": {"kind": "last-session", "label": "…"},
@@ -527,8 +596,8 @@ where it came from in `session.json`:
 alhazen that takes it (the `rig-origin` capability); an older one runs the
 same file and records `origin` as nothing, while the workspace's `run.json`
 and `launch.json` say the same either way (`rig: "machine"`, `rig_name`,
-`rig_source: "machine"`, `rig_changes`, `rig_carried`, `rig_events_source`,
-`machine_rig: {file, sha256}`). The History page shows a session's rig, its
+`rig_source: "machine"`, `rig_config` (the config's id, since 3.6),
+`rig_changes`, `rig_carried`, `rig_events_source`, `machine_rig: {file, sha256}`). The History page shows a session's rig, its
 changes and its event lines.
 
 ### Rigs named by a client
@@ -537,6 +606,21 @@ A launch request that names a rig (`rig`: an experiment's file or
 `alhazen/<name>`) still launches it as before (merged, refused on a
 development rig in run mode, copied as `rig.yaml`), for a script that drives
 the workspace's API. The page never sends one.
+
+### Decisions (2026-10-21, alhazen 3.6)
+
+| Decision | Why |
+|---|---|
+| Several named configs per machine, one the default; the Run page offers only those | A machine often has more than one set-up (an EyeLink, a keyboard-only one, a monkey's DAQ); picking among alhazen's or an experiment's rigs at each session offered rigs of other machines. |
+| Shared and experiment rigs only as starting points for a new config | They are templates of a machine, not this machine; once copied, a config is edited, never re-derived. |
+| 3.5.0's machine rig stays where it was, as the first config | Nothing is moved or rewritten, and a 3.5.0 dashboard on the same folder keeps running exactly that config instead of silently finding none. |
+| A config has a stable id and a name; renaming renames its files | Sync and run records follow the id; the name is the rig's file name, PsychoPy's monitor name and the session copy's name, so they must agree. |
+| The machine's files run, and work offline; the platform keeps a synced copy | A session must never depend on a server being up; the platform is where the person edits from elsewhere. |
+| The machine validates every platform edit before taking it, and refuses with the reason | Only the machine's alhazen can check a rig as a launch would; a refused edit never replaces what runs. |
+| Compare-and-set on revisions; conflicts keep both versions | Neither side overwrites a change it has not seen; the person decides. |
+| Sync over the library connection (machine token or a local platform's token) | One connection per machine, already set up for the library; no new credential. |
+| A state folder is a machine (random id), never a host name | Stable across renames and networks, and nothing identifying enters a repository. |
+| Calibrations (gamma, juice per pulse) stay on the machine, shown read only on the platform | They are measurements of that hardware, made there. |
 
 ### Decisions (2026-10-19)
 

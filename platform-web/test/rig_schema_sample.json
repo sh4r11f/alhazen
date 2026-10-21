@@ -1,0 +1,884 @@
+{
+"$defs": {
+"CalibrationPulseConfig": {
+"additionalProperties": false,
+"description": "How a pulsating calibration target swells and shrinks.\n\nThe target's size at time ``t`` after it appears is its still size times\n``min_scale + (max_scale - min_scale) * (1 - cos(2*pi*rate_hz*t)) / 2``:\nit appears at ``min_scale``, reaches ``max_scale`` half a cycle later and\nreturns smoothly, its centre never moving. Time is the session clock, not\na frame count, so the rate is the same on a 60 Hz and a 240 Hz display.\nThe defaults are Realtime RDK's (1 Hz, 1.0 to 1.4 times the size).",
+"properties": {
+"max_scale": {
+"default": 1.4,
+"title": "Max Scale",
+"type": "number"
+},
+"min_scale": {
+"default": 1.0,
+"title": "Min Scale",
+"type": "number"
+},
+"rate_hz": {
+"default": 1.0,
+"title": "Rate Hz",
+"type": "number"
+}
+},
+"title": "CalibrationPulseConfig",
+"type": "object"
+},
+"CalibrationTargetConfig": {
+"additionalProperties": false,
+"description": "What a calibration target looks like and whether it pulsates.\n\n``appearance``:\n\n- ``standard``: the disc with a hole every calibration has drawn (24 px\n  across); the default, so a rig that says nothing calibrates as before.\n- ``images``: the pictures named in ``images``, one per target shown, in\n  the order listed (and round again). One name shows that picture every\n  time.\n- ``random_images``: a random picture per target shown, from ``images``\n  or, when that is empty, from all of alhazen's calibration pictures. The\n  order is a shuffled deck dealt without replacement, re-shuffled when it\n  runs out, never the same picture twice in a row (unless there is only\n  one); it comes from the session seed's own stream (core/rng.py,\n  ``calibration_target``), so it never shifts the trial order, and every\n  target's picture is recorded with the calibration.\n\n``image_size_dva`` is a picture's longer side when still; its aspect and\ntransparency are kept. ``motion: pulse`` makes the target, standard or\npicture, swell and shrink about its centre (``pulse``); ``still`` keeps\nit the size it is. Neither choice changes where the targets go, how many\nthere are, or how gaze is sampled and fitted.",
+"properties": {
+"appearance": {
+"default": "standard",
+"enum": [
+"standard",
+"images",
+"random_images"
+],
+"title": "Appearance",
+"type": "string"
+},
+"image_size_dva": {
+"default": 2.5,
+"title": "Image Size Dva",
+"type": "number"
+},
+"images": {
+"default": [],
+"items": {
+"type": "string"
+},
+"title": "Images",
+"type": "array"
+},
+"motion": {
+"default": "still",
+"enum": [
+"still",
+"pulse"
+],
+"title": "Motion",
+"type": "string"
+},
+"pulse": {
+"$ref": "#/$defs/CalibrationPulseConfig",
+"default": {
+"max_scale": 1.4,
+"min_scale": 1.0,
+"rate_hz": 1.0
+}
+}
+},
+"title": "CalibrationTargetConfig",
+"type": "object"
+},
+"DatabaseConfig": {
+"additionalProperties": false,
+"description": "The queryable SQLite mirror of this rig's runs.\n\n``artifact_max_bytes`` bounds what is copied *into* the database. Every\nfile a run produced is recorded with its path, size and sha256 whatever\nits size \u2014 that is what makes it identifiable later \u2014 but a file over the\ncap keeps its bytes only where they already are, in the run directory,\nwith a log line saying so. Without a cap an EyeLink EDF silently doubles\na session's footprint, and a season of recording turns into a database\nnobody can move.",
+"properties": {
+"artifact_max_bytes": {
+"default": 10000000,
+"title": "Artifact Max Bytes",
+"type": "integer"
+},
+"enabled": {
+"default": true,
+"title": "Enabled",
+"type": "boolean"
+}
+},
+"title": "DatabaseConfig",
+"type": "object"
+},
+"DevicesConfig": {
+"additionalProperties": false,
+"description": "Which device classes this rig has. ``None`` means \"absent on this\nrig\" \u2014 a display-only rig (a laptop, a psychophysics booth with no\ntracker) leaves them all None and every device seam stays unwired.",
+"properties": {
+"eyetracker": {
+"anyOf": [
+{
+"$ref": "#/$defs/EyeTrackerConfig"
+},
+{
+"type": "null"
+}
+],
+"default": null
+},
+"recording": {
+"anyOf": [
+{
+"$ref": "#/$defs/RecordingConfig"
+},
+{
+"type": "null"
+}
+],
+"default": null
+},
+"reward": {
+"anyOf": [
+{
+"$ref": "#/$defs/RewardHwConfig"
+},
+{
+"type": "null"
+}
+],
+"default": null
+},
+"spikes": {
+"anyOf": [
+{
+"$ref": "#/$defs/SpikeSourceConfig"
+},
+{
+"type": "null"
+}
+],
+"default": null
+},
+"sync": {
+"anyOf": [
+{
+"$ref": "#/$defs/SyncHwConfig"
+},
+{
+"type": "null"
+}
+],
+"default": null
+}
+},
+"title": "DevicesConfig",
+"type": "object"
+},
+"DisplayConfig": {
+"additionalProperties": false,
+"properties": {
+"backend": {
+"default": "psychopy",
+"enum": [
+"psychopy",
+"simulated"
+],
+"title": "Backend",
+"type": "string"
+},
+"feedback_beeps": {
+"default": true,
+"title": "Feedback Beeps",
+"type": "boolean"
+},
+"frame_qa": {
+"$ref": "#/$defs/FrameQAConfig",
+"default": {
+"max_consecutive_recycles": 5,
+"max_dropped_fraction": 0.1,
+"max_dropped_per_trial": 3,
+"policy": "warn",
+"tolerance": 0.5
+}
+},
+"photodiode": {
+"anyOf": [
+{
+"$ref": "#/$defs/PhotodiodeConfig"
+},
+{
+"type": "null"
+}
+],
+"default": null
+},
+"refresh_tolerance_hz": {
+"default": 5.0,
+"title": "Refresh Tolerance Hz",
+"type": "number"
+},
+"warmup_flips": {
+"default": 30,
+"title": "Warmup Flips",
+"type": "integer"
+}
+},
+"title": "DisplayConfig",
+"type": "object"
+},
+"EyeTrackerConfig": {
+"additionalProperties": false,
+"description": "Which eye tracker this rig has, and how it is set up.\n\nFour backends, selected by ``backend``:\n\n- ``eyelink`` drives a real SR Research EyeLink over the tracker subnet,\n  via a Host PC that writes its own EDF;\n- ``viewpixx`` drives a VPixx TRACKPixx3 inside the display chassis,\n  which has no Host PC and streams into the DATAPixx3's own buffer;\n- ``mouse_sim`` fakes gaze with the mouse cursor on a machine with no\n  tracker;\n- ``scripted`` is a deterministic replay double that only a test can\n  supply a trajectory to \u2014 session build and ``check-rig`` both reject it\n  (devices/eyetracker/__init__.py).\n\nMost fields belong to exactly one backend, and setting one that the\nchosen backend ignores is rejected below rather than quietly dropped.\nThe shared ones describe the calibration procedure itself, which every\nbackend runs the same way from the experimenter's side: a target grid of\n``calibration_type`` layout covering ``calibration_area`` of the screen,\nwalked by hand or automatically (``calibration_advance``), then checked\n(``validate_after_calibration``) against ``accuracy_max_deg``.",
+"properties": {
+"accuracy_max_deg": {
+"default": 1.0,
+"title": "Accuracy Max Deg",
+"type": "number"
+},
+"backend": {
+"enum": [
+"eyelink",
+"viewpixx",
+"mouse_sim",
+"scripted"
+],
+"title": "Backend",
+"type": "string"
+},
+"calibration_advance": {
+"default": "manual",
+"enum": [
+"manual",
+"auto"
+],
+"title": "Calibration Advance",
+"type": "string"
+},
+"calibration_area": {
+"default": 0.6,
+"title": "Calibration Area",
+"type": "number"
+},
+"calibration_target": {
+"$ref": "#/$defs/CalibrationTargetConfig",
+"default": {
+"appearance": "standard",
+"image_size_dva": 2.5,
+"images": [],
+"motion": "still",
+"pulse": {
+"max_scale": 1.4,
+"min_scale": 1.0,
+"rate_hz": 1.0
+}
+}
+},
+"calibration_type": {
+"default": "HV5",
+"title": "Calibration Type",
+"type": "string"
+},
+"camera_image": {
+"default": true,
+"title": "Camera Image",
+"type": "boolean"
+},
+"drift_max_deg": {
+"default": 3.0,
+"title": "Drift Max Deg",
+"type": "number"
+},
+"edf_host_filename": {
+"default": "alhazen.EDF",
+"title": "Edf Host Filename",
+"type": "string"
+},
+"eye": {
+"default": "left",
+"enum": [
+"left",
+"right",
+"average"
+],
+"title": "Eye",
+"type": "string"
+},
+"host_ip": {
+"default": "100.1.1.1",
+"title": "Host Ip",
+"type": "string"
+},
+"iris_size_px": {
+"anyOf": [
+{
+"type": "integer"
+},
+{
+"type": "null"
+}
+],
+"default": null,
+"title": "Iris Size Px"
+},
+"led_intensity": {
+"anyOf": [
+{
+"type": "integer"
+},
+{
+"type": "null"
+}
+],
+"default": null,
+"title": "Led Intensity"
+},
+"max_consecutive_dropouts": {
+"default": 3,
+"title": "Max Consecutive Dropouts",
+"type": "integer"
+},
+"max_sample_gap_ms": {
+"anyOf": [
+{
+"type": "number"
+},
+{
+"type": "null"
+}
+],
+"default": null,
+"title": "Max Sample Gap Ms"
+},
+"pupil_threshold": {
+"anyOf": [
+{
+"type": "integer"
+},
+{
+"type": "null"
+}
+],
+"default": null,
+"title": "Pupil Threshold"
+},
+"validate_after_calibration": {
+"default": true,
+"title": "Validate After Calibration",
+"type": "boolean"
+}
+},
+"required": [
+"backend"
+],
+"title": "EyeTrackerConfig",
+"type": "object"
+},
+"FrameQAConfig": {
+"additionalProperties": false,
+"description": "What to do about dropped frames.\n\nA frame is \"dropped\" when its measured interval exceeds the nominal frame\nperiod by more than ``tolerance`` frame periods (0.5 = halfway to the\nnext vsync). Every policy records every interval in the frame log and\ncounts each trial's drops; they differ in how the live session reacts:\n\n- ``log``: the per-trial drop line goes to the debug log only.\n- ``warn``: one warning line per trial that dropped frames.\n- ``mark_trial``: also count them on the trial record\n  (``n_dropped_frames``, 0 for a clean trial) so an analysis can exclude\n  or weight.\n- ``recycle_trial``: also end the trial as ``DROPPED_FRAMES`` \u2014 a reserved\n  outcome with ``completed=False`` \u2014 when more than\n  ``max_dropped_fraction`` of its frames were dropped, so the scheduler\n  re-serves the condition exactly as it re-serves a fixation break. A\n  fraction rather than a count because trials differ in length: three\n  drops are a tenth of a 30-frame trial and a rounding error in a\n  350-frame one. The trial's own outcome and the reason are kept on the\n  record (``outcome_before_frame_qa``, ``frame_qa_reason``).\n- ``abort_run``: also raise ``FrameQAError`` once more than\n  ``max_dropped_per_trial`` frames drop in one trial.\n\n**Set these thresholds from the frame log, not from what the policy\ndid.** ``frames.csv`` holds every interval and whether it was over\nbudget: that is the measurement. A recycle count, a run of aborts, the\nnumber of ``DROPPED_FRAMES`` rows \u2014 those are decisions made from the\nmeasurement under whatever thresholds were in force at the time, so\ntuning the thresholds from them tunes a number against itself. Read the\nintervals, decide what fraction of a trial's frames the design can\ntolerate, then write that here.\n\n``recycle_trial`` has a floor under it: a display that is persistently\nbad would otherwise recycle every trial forever and the session would\nnever end, with a subject in the chin rest. Once\n``max_consecutive_recycles`` trials in a row have been recycled the run\naborts with ``FrameQAError`` naming the display, because at that point\nthe panel is not holding its refresh rate and no scheduler can fix that.\n\nA threshold the chosen policy never reads is a config error, not a\ndefault: ``max_dropped_per_trial: 3`` under ``mark_trial`` reads like a\ntolerance and does nothing, and a silent no-op in a rig file is exactly\nwhat this module exists to refuse.",
+"properties": {
+"max_consecutive_recycles": {
+"default": 5,
+"title": "Max Consecutive Recycles",
+"type": "integer"
+},
+"max_dropped_fraction": {
+"default": 0.1,
+"title": "Max Dropped Fraction",
+"type": "number"
+},
+"max_dropped_per_trial": {
+"default": 3,
+"title": "Max Dropped Per Trial",
+"type": "integer"
+},
+"policy": {
+"default": "warn",
+"enum": [
+"log",
+"warn",
+"mark_trial",
+"recycle_trial",
+"abort_run"
+],
+"title": "Policy",
+"type": "string"
+},
+"tolerance": {
+"default": 0.5,
+"title": "Tolerance",
+"type": "number"
+}
+},
+"title": "FrameQAConfig",
+"type": "object"
+},
+"LiveMonitorConfig": {
+"additionalProperties": false,
+"description": "The local, between-trial live monitor in the browser.\n\nIt is opt-in so existing rig files and unattended sessions never start a\nserver unexpectedly.  Port zero asks the OS for an unused local port.",
+"properties": {
+"auto_open": {
+"default": true,
+"title": "Auto Open",
+"type": "boolean"
+},
+"camera": {
+"default": true,
+"title": "Camera",
+"type": "boolean"
+},
+"enabled": {
+"default": false,
+"title": "Enabled",
+"type": "boolean"
+},
+"gaze_traces": {
+"default": true,
+"title": "Gaze Traces",
+"type": "boolean"
+},
+"max_rows": {
+"default": 1000,
+"title": "Max Rows",
+"type": "integer"
+},
+"port": {
+"default": 0,
+"title": "Port",
+"type": "integer"
+}
+},
+"title": "LiveMonitorConfig",
+"type": "object"
+},
+"MonitorConfig": {
+"additionalProperties": false,
+"description": "One physical display: pixel grid, physical size, viewing distance.",
+"properties": {
+"distance_cm": {
+"title": "Distance Cm",
+"type": "number"
+},
+"fullscreen": {
+"default": true,
+"title": "Fullscreen",
+"type": "boolean"
+},
+"height_px": {
+"title": "Height Px",
+"type": "integer"
+},
+"name": {
+"default": "alhazen",
+"title": "Name",
+"type": "string"
+},
+"refresh_rate_hz": {
+"title": "Refresh Rate Hz",
+"type": "number"
+},
+"screen_index": {
+"default": 0,
+"title": "Screen Index",
+"type": "integer"
+},
+"width_cm": {
+"title": "Width Cm",
+"type": "number"
+},
+"width_px": {
+"title": "Width Px",
+"type": "integer"
+}
+},
+"required": [
+"width_px",
+"height_px",
+"width_cm",
+"distance_cm",
+"refresh_rate_hz"
+],
+"title": "MonitorConfig",
+"type": "object"
+},
+"PhotodiodeConfig": {
+"additionalProperties": false,
+"description": "A luminance patch in one screen corner, flipped white on exactly the\nframes whose flip carries one of ``events``.\n\nThat is the same flip the event's timestamp and its sync pulse mark, so a\nphotodiode taped over the patch and a TTL line recorded on the same\ndevice measure the same instant \u2014 which is what makes the software\ntimestamp auditable after the fact. ``events`` are the experiment's own\ndeclared event names, validated against its EventSchema at build time.",
+"properties": {
+"corner": {
+"default": "br",
+"enum": [
+"tl",
+"tr",
+"bl",
+"br"
+],
+"title": "Corner",
+"type": "string"
+},
+"events": {
+"default": [],
+"items": {
+"type": "string"
+},
+"title": "Events",
+"type": "array"
+},
+"size_px": {
+"default": 60,
+"title": "Size Px",
+"type": "integer"
+}
+},
+"title": "PhotodiodeConfig",
+"type": "object"
+},
+"RecordingConfig": {
+"additionalProperties": false,
+"description": "The neural/physiological recorder running alongside this session.\n\nalhazen never records that data; it records where to find it. ``data_dir``\nis where the acquisition software writes, and ``run_glob`` the naming\nconvention this rig uses, so a run directory can point at its own\nexternal recording (devices/recording.py).",
+"properties": {
+"backend": {
+"enum": [
+"spikeglx",
+"simulated"
+],
+"title": "Backend",
+"type": "string"
+},
+"data_dir": {
+"default": ".",
+"format": "path",
+"title": "Data Dir",
+"type": "string"
+},
+"run_glob": {
+"default": "*_g0",
+"title": "Run Glob",
+"type": "string"
+}
+},
+"required": [
+"backend"
+],
+"title": "RecordingConfig",
+"type": "object"
+},
+"RewardHwConfig": {
+"additionalProperties": false,
+"description": "The reward line.\n\n- ``nidaq`` drives a pump/solenoid through an NI-DAQ analog output with an\n  active-high waveform at ``voltage``;\n- ``datapixx`` drives a pump's TTL gate from the DATAPixx3, resting at\n  the inactive level ``polarity`` names (``active_low``: rest HIGH, LOW\n  while dispensing \u2014 the WPI SP220i's Gate), from one of two outputs:\n\n  - a digital output, ``channel: dout<N>`` (N 0-15), timed by the DOUT\n    schedule \u2014 which writes DOUT 0-15 as a whole while it plays, so it\n    cannot share the port with DATAPixx3 sync lines;\n  - an analog output, ``channel: dac<N>`` (N 0-3, the Analog I/O port),\n    timed by the DAC schedule at 0 V and ``voltage`` (HIGH, in (2.0, 5.0]\n    V, the pump's TTL input range; default 5.0). It leaves the whole\n    digital-output port free for DATAPixx3 sync lines.\n\n  ``pump`` declares the pump's own settings, which set the volume;\n- ``simulated`` records deliveries instead.\n\n``polarity``, ``pump``, ``dout_buffer_address`` and\n``dac_buffer_address`` belong to ``datapixx`` and are refused on\n``nidaq`` (unless left at their defaults, as a dumped config carries\nthem). A ``simulated`` line may keep them: test and simulate modes stand\na real line down by changing only its backend.",
+"properties": {
+"backend": {
+"enum": [
+"nidaq",
+"simulated",
+"datapixx"
+],
+"title": "Backend",
+"type": "string"
+},
+"channel": {
+"default": "ao0",
+"title": "Channel",
+"type": "string"
+},
+"dac_buffer_address": {
+"default": 10000000,
+"title": "Dac Buffer Address",
+"type": "integer"
+},
+"device": {
+"default": "Dev1",
+"title": "Device",
+"type": "string"
+},
+"dout_buffer_address": {
+"default": 8000000,
+"title": "Dout Buffer Address",
+"type": "integer"
+},
+"polarity": {
+"anyOf": [
+{
+"enum": [
+"active_high",
+"active_low"
+],
+"type": "string"
+},
+{
+"type": "null"
+}
+],
+"default": null,
+"title": "Polarity"
+},
+"pump": {
+"anyOf": [
+{
+"$ref": "#/$defs/RewardPumpConfig"
+},
+{
+"type": "null"
+}
+],
+"default": null
+},
+"voltage": {
+"default": 5.0,
+"title": "Voltage",
+"type": "number"
+}
+},
+"required": [
+"backend"
+],
+"title": "RewardHwConfig",
+"type": "object"
+},
+"RewardPumpConfig": {
+"additionalProperties": false,
+"description": "What a gated pump is set to, as the operator set it on its own panel.\n\nA pump driven through its gate input (a WPI SP220i on a DATAPixx3\ndigital output) delivers at the rate and syringe it was set to for as\nlong as the gate is held; alhazen cannot read either (the pump's RS232\nis not used), so they are declared here. A reward calibration is valid\nonly for the settings it was measured at (config/reward_calibration.py),\nand every session records them. Keep them true: a wrong number here is a\nvolume nobody measured.",
+"properties": {
+"model": {
+"title": "Model",
+"type": "string"
+},
+"rate_ul_per_min": {
+"title": "Rate Ul Per Min",
+"type": "number"
+},
+"syringe_diameter_mm": {
+"title": "Syringe Diameter Mm",
+"type": "number"
+}
+},
+"required": [
+"model",
+"syringe_diameter_mm",
+"rate_ul_per_min"
+],
+"title": "RewardPumpConfig",
+"type": "object"
+},
+"SpikeSourceConfig": {
+"additionalProperties": false,
+"description": "A live spike stream read *during* the session, for online analysis.\n\nDistinct from ``RecordingConfig`` on purpose: that one records where the\nacquisition host's files land so a run can be found and aligned\nafterwards; this one opens a network connection to the running\nacquisition and streams samples back live. A rig doing chronic\nrecordings typically configures both.\n\nThree backends:\n\n- ``spikeglx`` connects to SpikeGLX's remote command server (Options \u2192\n  Command Server in SpikeGLX; default port 4142) through the official\n  SpikeGLX-CPP-SDK Python bindings, fetches the stream in the\n  background, and turns it into threshold-crossing spikes\n  (:mod:`alhazen.neural.detect`);\n- ``sorted_stream`` subscribes to an external real-time sorter\n  publishing already-sorted units over ZeroMQ, so the rows a live\n  analysis sees are units rather than channels (see\n  ``docs/live-spikes.md`` for the wire contract);\n- ``simulated`` invents spikes from configured ground-truth receptive\n  fields, driven by the session's own stimulus events \u2014 which is what\n  lets the whole live pipeline run, and be tested, with no probe in any\n  brain.",
+"properties": {
+"address": {
+"default": "tcp://127.0.0.1:5556",
+"title": "Address",
+"type": "string"
+},
+"backend": {
+"enum": [
+"spikeglx",
+"simulated",
+"sorted_stream"
+],
+"title": "Backend",
+"type": "string"
+},
+"car": {
+"default": true,
+"title": "Car",
+"type": "boolean"
+},
+"channels": {
+"default": "all",
+"title": "Channels",
+"type": "string"
+},
+"fetch_interval_ms": {
+"default": 200.0,
+"title": "Fetch Interval Ms",
+"type": "number"
+},
+"heartbeat_timeout_ms": {
+"default": 2000.0,
+"title": "Heartbeat Timeout Ms",
+"type": "number"
+},
+"host": {
+"default": "127.0.0.1",
+"title": "Host",
+"type": "string"
+},
+"hp_window_ms": {
+"default": 5.0,
+"title": "Hp Window Ms",
+"type": "number"
+},
+"port": {
+"default": 4142,
+"title": "Port",
+"type": "integer"
+},
+"refractory_ms": {
+"default": 1.0,
+"title": "Refractory Ms",
+"type": "number"
+},
+"sim_baseline_hz": {
+"default": 3.0,
+"title": "Sim Baseline Hz",
+"type": "number"
+},
+"sim_channels": {
+"default": 8,
+"title": "Sim Channels",
+"type": "integer"
+},
+"sim_duration_ms": {
+"default": 80.0,
+"title": "Sim Duration Ms",
+"type": "number"
+},
+"sim_latency_ms": {
+"default": 40.0,
+"title": "Sim Latency Ms",
+"type": "number"
+},
+"sim_peak_hz": {
+"default": 60.0,
+"title": "Sim Peak Hz",
+"type": "number"
+},
+"sim_respond_to": {
+"default": "PROBE_ON",
+"title": "Sim Respond To",
+"type": "string"
+},
+"sim_rf_centers_dva": {
+"anyOf": [
+{
+"items": {
+"maxItems": 2,
+"minItems": 2,
+"prefixItems": [
+{
+"type": "number"
+},
+{
+"type": "number"
+}
+],
+"type": "array"
+},
+"type": "array"
+},
+{
+"type": "null"
+}
+],
+"default": null,
+"title": "Sim Rf Centers Dva"
+},
+"sim_rf_sigma_dva": {
+"default": 1.5,
+"title": "Sim Rf Sigma Dva",
+"type": "number"
+},
+"sim_seed": {
+"default": 0,
+"title": "Sim Seed",
+"type": "integer"
+},
+"stream": {
+"default": "imec0",
+"title": "Stream",
+"type": "string"
+},
+"threshold_sigmas": {
+"default": 4.5,
+"title": "Threshold Sigmas",
+"type": "number"
+}
+},
+"required": [
+"backend"
+],
+"title": "SpikeSourceConfig",
+"type": "object"
+},
+"SyncHwConfig": {
+"additionalProperties": false,
+"description": "TTL sync outputs: ``nidaq`` pulses real digital lines for an external\nrecording system, ``simulated`` records them, ``none`` disables sync.\n\n``event_lines`` maps the *experiment's own* event names to physical\nlines, e.g. ``{\"STIM_ON\": \"Dev1/port0/line0\"}``. It is the single source\nof truth for which events reach hardware: an event with no entry pulses\nnothing, by design. Keys are validated against the experiment's\nEventSchema when the session is built (session/builder.py).",
+"properties": {
+"backend": {
+"enum": [
+"nidaq",
+"simulated",
+"none",
+"datapixx"
+],
+"title": "Backend",
+"type": "string"
+},
+"event_lines": {
+"additionalProperties": {
+"type": "string"
+},
+"default": {},
+"title": "Event Lines",
+"type": "object"
+},
+"pulse_ms": {
+"default": 2.0,
+"title": "Pulse Ms",
+"type": "number"
+}
+},
+"required": [
+"backend"
+],
+"title": "SyncHwConfig",
+"type": "object"
+}
+},
+"additionalProperties": false,
+"description": "One physical machine: its display, its devices, and where data lands.",
+"properties": {
+"data_root": {
+"format": "path",
+"title": "Data Root",
+"type": "string"
+},
+"database": {
+"$ref": "#/$defs/DatabaseConfig",
+"default": {
+"artifact_max_bytes": 10000000,
+"enabled": true
+}
+},
+"devices": {
+"$ref": "#/$defs/DevicesConfig",
+"default": {
+"eyetracker": null,
+"recording": null,
+"reward": null,
+"spikes": null,
+"sync": null
+}
+},
+"display": {
+"$ref": "#/$defs/DisplayConfig",
+"default": {
+"backend": "psychopy",
+"feedback_beeps": true,
+"frame_qa": {
+"max_consecutive_recycles": 5,
+"max_dropped_fraction": 0.1,
+"max_dropped_per_trial": 3,
+"policy": "warn",
+"tolerance": 0.5
+},
+"photodiode": null,
+"refresh_tolerance_hz": 5.0,
+"warmup_flips": 30
+}
+},
+"live_monitor": {
+"$ref": "#/$defs/LiveMonitorConfig",
+"default": {
+"auto_open": true,
+"camera": true,
+"enabled": false,
+"gaze_traces": true,
+"max_rows": 1000,
+"port": 0
+}
+},
+"monitor": {
+"$ref": "#/$defs/MonitorConfig"
+},
+"real_data": {
+"default": true,
+"title": "Real Data",
+"type": "boolean"
+}
+},
+"required": [
+"monitor",
+"data_root"
+],
+"title": "RigConfig",
+"type": "object"
+}

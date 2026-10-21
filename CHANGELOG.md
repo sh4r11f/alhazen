@@ -25,6 +25,44 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+- **Several rig configs per machine, synced with the platform.** A dashboard's machine now
+  keeps one or more named rig configs (an EyeLink set-up, a keyboard-only one, a monkey's
+  DAQ), one of them the default, instead of one machine rig
+  ([Rigs §10](docs/rigs.md#10-in-the-dashboard-this-machines-rig-configs)). The General page's
+  **This machine's rig configs** adds one (from a copy, a registered experiment's rig or one of
+  alhazen's shared rigs — the only place those are offered now), edits it by section or as
+  YAML, renames it (with its gamma and reward files), makes it the default, deletes it (to
+  `trash/`) and shows its history. The Run page offers only this machine's configs, the default
+  chosen; `?rig=<name>` and `alhazen dashboard --rig-config <name>` open it with another chosen,
+  and **Save to <config>** replaces "Save to this machine's rig". A launch names its config
+  (`rig_config`); run records carry its id, and event lines are carried per config.
+  `alhazen rig init` adds a config (`--default`), `rig list` lists them, `rig show --config`.
+- **From 3.5.0.** The machine rig 3.5.0 set up becomes the first config and the default, where
+  it is: nothing is moved or rewritten, and a 3.5.0 dashboard on the same state folder keeps
+  running exactly that config (and its edits are picked up). The old
+  `/api/machine-rig`, `/api/machine-rig/setup|save|check` routes are replaced by
+  `/api/machine-rigs*`.
+- **Platform: Machines show and edit rig configs.** Over the library connection the dashboard
+  syncs its configs with the platform (`GET`/`POST /api/rigs/machine/<id>`, allowed to machine
+  tokens); `alhazen platform local` and `serve` keep them in `rigs.sqlite3` and offer owner
+  routes (`/api/rigs...`, capability `rigConfigs`), and Mana keeps them in the viewer's own
+  space. The machine validates every platform edit as a launch would before taking it and
+  refuses one that fails with the reason; every write is compare-and-set on a revision, so a
+  change the other side has not seen is never overwritten, and a conflict keeps both versions
+  until the person keeps one. A platform without rig configs, an unreachable one or no library
+  leaves everything on the machine.
+
+| Decision | Why |
+|---|---|
+| Configs per machine, chosen per session; shared and experiment rigs only as templates for a new config | Sessions should only offer this machine's set-ups; the old choice at set-up offered rigs of other machines. |
+| 3.5.0's machine rig stays in place as the first config | Non-destructive, and an older dashboard on the same folder neither breaks nor silently loses its rig. |
+| The machine's files run and work offline; the platform holds a synced copy | No session depends on a server. |
+| The machine validates platform edits; refusals carry the reason | Only the machine's alhazen can check a rig as a launch would. |
+| Compare-and-set revisions; conflicts keep both versions | Neither side overwrites what it has not seen. |
+| A machine is a state folder with a random id | Stable, and no host name ever enters a repository. |
+
 ## 3.5.0 - 2026-10-19
 
 - **Dashboard: Shut down.** A Shut down button at the right of the top bar stops the

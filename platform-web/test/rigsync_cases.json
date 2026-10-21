@@ -1,0 +1,1908 @@
+{
+ "sha256": {
+  "": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "abc": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "# Überprüfung: ünïcode — ok\nmonitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+  "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "44f8354494a5ba03ba1792a8d3e9c534c47a9181980fde7a3f44b06ef2ae7c7f"
+ },
+ "cases": [
+  {
+   "title": "edit, rename and create",
+   "mid": "mc_0123456789abcdef",
+   "start": {
+    "schema": 1,
+    "id": "mc_0123456789abcdef",
+    "label": "Booth",
+    "alhazen": "3.6.0",
+    "seenAt": 1000,
+    "token": null,
+    "default": "c1a2b3c4d5e",
+    "defaultRev": 1,
+    "defaultBy": "machine",
+    "rigSchema": null,
+    "rigSchemaSha": null,
+    "templates": null,
+    "configs": {
+     "c1a2b3c4d5e": {
+      "id": "c1a2b3c4d5e",
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": {
+       "name": "booth",
+       "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+       "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+       "problem": null,
+       "at": 1000
+      },
+      "rejection": null,
+      "conflict": null,
+      "calibration": {
+       "gamma": {
+        "at": "2026-10-20T10:00:00"
+       }
+      }
+     },
+     "c2b3c4d5e6f": {
+      "id": "c2b3c4d5e6f",
+      "name": "keyboard",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+      "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": null,
+      "rejection": null,
+      "conflict": null,
+      "calibration": null
+     }
+    }
+   },
+   "steps": [
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+      "base": 1,
+      "basedOn": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+      "now": 2000
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 2,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2000,
+        "updatedBy": "platform",
+        "basedOn": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 2,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2000,
+        "updatedBy": "platform",
+        "basedOn": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "booth-2",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+      "base": 2,
+      "basedOn": null,
+      "now": 2100
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth-2",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 3,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2100,
+        "updatedBy": "platform",
+        "basedOn": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth-2",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 3,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2100,
+        "updatedBy": "platform",
+        "basedOn": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c9z8y7x6w5v",
+     "args": {
+      "name": "monkey",
+      "text": "# Überprüfung: ünïcode — ok\nmonitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 0,
+      "basedOn": "",
+      "now": 2200
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth-2",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 3,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2100,
+        "updatedBy": "platform",
+        "basedOn": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       },
+       "c9z8y7x6w5v": {
+        "id": "c9z8y7x6w5v",
+        "name": "monkey",
+        "text": "# Überprüfung: ünïcode — ok\nmonitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+        "sha256": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "revision": 1,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2200,
+        "updatedBy": "platform",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth-2",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 3,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2100,
+        "updatedBy": "platform",
+        "basedOn": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       },
+       "c9z8y7x6w5v": {
+        "id": "c9z8y7x6w5v",
+        "name": "monkey",
+        "sha256": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "revision": 1,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2200,
+        "updatedBy": "platform",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c9z8y7x6w5v",
+     "args": {
+      "name": "monkey",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 0,
+      "basedOn": null,
+      "now": 2300
+     },
+     "error": {
+      "kind": "conflict",
+      "message": "This rig config changed since you opened it; reopen it and make the change again"
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c9z8y7x6w5v",
+     "args": {
+      "name": "keyboard",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 1,
+      "basedOn": null,
+      "now": 2400
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "This machine already has a rig config named 'keyboard'"
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c9z8y7x6w5v",
+     "args": {
+      "name": " monkey2 ",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 1,
+      "basedOn": null,
+      "now": 2500
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth-2",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 3,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2100,
+        "updatedBy": "platform",
+        "basedOn": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       },
+       "c9z8y7x6w5v": {
+        "id": "c9z8y7x6w5v",
+        "name": "monkey2",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 2,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2500,
+        "updatedBy": "platform",
+        "basedOn": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth-2",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 3,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2100,
+        "updatedBy": "platform",
+        "basedOn": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       },
+       "c9z8y7x6w5v": {
+        "id": "c9z8y7x6w5v",
+        "name": "monkey2",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 2,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2500,
+        "updatedBy": "platform",
+        "basedOn": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "title": "refusals",
+   "mid": "mc_0123456789abcdef",
+   "start": {
+    "schema": 1,
+    "id": "mc_0123456789abcdef",
+    "label": "Booth",
+    "alhazen": "3.6.0",
+    "seenAt": 1000,
+    "token": null,
+    "default": "c1a2b3c4d5e",
+    "defaultRev": 1,
+    "defaultBy": "machine",
+    "rigSchema": null,
+    "rigSchemaSha": null,
+    "templates": null,
+    "configs": {
+     "c1a2b3c4d5e": {
+      "id": "c1a2b3c4d5e",
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": {
+       "name": "booth",
+       "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+       "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+       "problem": null,
+       "at": 1000
+      },
+      "rejection": null,
+      "conflict": null,
+      "calibration": {
+       "gamma": {
+        "at": "2026-10-20T10:00:00"
+       }
+      }
+     },
+     "c2b3c4d5e6f": {
+      "id": "c2b3c4d5e6f",
+      "name": "keyboard",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+      "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": null,
+      "rejection": null,
+      "conflict": null,
+      "calibration": null
+     }
+    }
+   },
+   "steps": [
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "bad name",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 1,
+      "basedOn": null,
+      "now": 2000
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "A rig config's name is letters, digits, '.', '_' or '-', starting with a letter or digit, at most 64 characters (it becomes the rig's file name, rig-<name>.yaml)"
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "booth",
+      "text": "   ",
+      "base": 1,
+      "basedOn": null,
+      "now": 2000
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "A rig config's text is empty"
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": -1,
+      "basedOn": null,
+      "now": 2000
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "base must be a whole number of at least 0"
+     }
+    },
+    {
+     "op": "put",
+     "cid": "x",
+     "args": {
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 1,
+      "basedOn": null,
+      "now": 2000
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "A rig config id is 2 to 40 letters, digits, '_' or '-'"
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 1,
+      "basedOn": null,
+      "now": 2000
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "A rig config's name is letters, digits, '.', '_' or '-', starting with a letter or digit, at most 64 characters (it becomes the rig's file name, rig-<name>.yaml)"
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "booth",
+      "text": {
+       "repeat": "x",
+       "times": 262145
+      },
+      "base": 1,
+      "basedOn": null,
+      "now": 2000
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "A rig config must be at most 256 KiB"
+     }
+    },
+    {
+     "op": "delete",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "base": 1,
+      "now": 2000
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "This is the machine's default rig config: make another the default first"
+     }
+    },
+    {
+     "op": "delete",
+     "cid": "nope-config",
+     "args": {
+      "base": 0,
+      "now": 2000
+     },
+     "error": {
+      "kind": "missing",
+      "message": "This machine has no such rig config"
+     }
+    },
+    {
+     "op": "default",
+     "cid": "nope-config",
+     "args": {
+      "base": 0,
+      "now": 2000
+     },
+     "error": {
+      "kind": "missing",
+      "message": "This machine has no such rig config"
+     }
+    },
+    {
+     "op": "default",
+     "cid": "c2b3c4d5e6f",
+     "args": {
+      "base": 5,
+      "now": 2000
+     },
+     "error": {
+      "kind": "conflict",
+      "message": "The default changed since you opened this page; reload it"
+     }
+    },
+    {
+     "op": "resolve",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "keep": "machine",
+      "now": 2000
+     },
+     "error": {
+      "kind": "conflict",
+      "message": "This rig config has no conflict to settle"
+     }
+    }
+   ]
+  },
+  {
+   "title": "default and delete",
+   "mid": "mc_0123456789abcdef",
+   "start": {
+    "schema": 1,
+    "id": "mc_0123456789abcdef",
+    "label": "Booth",
+    "alhazen": "3.6.0",
+    "seenAt": 1000,
+    "token": null,
+    "default": "c1a2b3c4d5e",
+    "defaultRev": 1,
+    "defaultBy": "machine",
+    "rigSchema": null,
+    "rigSchemaSha": null,
+    "templates": null,
+    "configs": {
+     "c1a2b3c4d5e": {
+      "id": "c1a2b3c4d5e",
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": {
+       "name": "booth",
+       "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+       "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+       "problem": null,
+       "at": 1000
+      },
+      "rejection": null,
+      "conflict": null,
+      "calibration": {
+       "gamma": {
+        "at": "2026-10-20T10:00:00"
+       }
+      }
+     },
+     "c2b3c4d5e6f": {
+      "id": "c2b3c4d5e6f",
+      "name": "keyboard",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+      "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": null,
+      "rejection": null,
+      "conflict": null,
+      "calibration": null
+     }
+    }
+   },
+   "steps": [
+    {
+     "op": "default",
+     "cid": "c2b3c4d5e6f",
+     "args": {
+      "base": 1,
+      "now": 2000
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c2b3c4d5e6f",
+      "defaultRev": 2,
+      "defaultBy": "platform",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c2b3c4d5e6f",
+      "defaultRev": 2,
+      "defaultBy": "platform",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    },
+    {
+     "op": "default",
+     "cid": "c2b3c4d5e6f",
+     "args": {
+      "base": 2,
+      "now": 2100
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c2b3c4d5e6f",
+      "defaultRev": 2,
+      "defaultBy": "platform",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c2b3c4d5e6f",
+      "defaultRev": 2,
+      "defaultBy": "platform",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    },
+    {
+     "op": "delete",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "base": 1,
+      "now": 2200
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c2b3c4d5e6f",
+      "defaultRev": 2,
+      "defaultBy": "platform",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 2,
+        "state": "pending",
+        "deleted": true,
+        "updatedAt": 2200,
+        "updatedBy": "platform",
+        "basedOn": null,
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c2b3c4d5e6f",
+      "defaultRev": 2,
+      "defaultBy": "platform",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 2,
+        "state": "pending",
+        "deleted": true,
+        "updatedAt": 2200,
+        "updatedBy": "platform",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    },
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 2,
+      "basedOn": null,
+      "now": 2300
+     },
+     "error": {
+      "kind": "conflict",
+      "message": "This rig config is being deleted"
+     }
+    },
+    {
+     "op": "delete",
+     "cid": "c2b3c4d5e6f",
+     "args": {
+      "base": 1,
+      "now": 2400
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "This is the machine's default rig config: make another the default first"
+     }
+    }
+   ]
+  },
+  {
+   "title": "never ran: dropped at once",
+   "mid": "mc_0123456789abcdef",
+   "start": {
+    "schema": 1,
+    "id": "mc_0123456789abcdef",
+    "label": "Booth",
+    "alhazen": "3.6.0",
+    "seenAt": 1000,
+    "token": null,
+    "default": "c1a2b3c4d5e",
+    "defaultRev": 1,
+    "defaultBy": "machine",
+    "rigSchema": null,
+    "rigSchemaSha": null,
+    "templates": null,
+    "configs": {
+     "c1a2b3c4d5e": {
+      "id": "c1a2b3c4d5e",
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": {
+       "name": "booth",
+       "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+       "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+       "problem": null,
+       "at": 1000
+      },
+      "rejection": null,
+      "conflict": null,
+      "calibration": {
+       "gamma": {
+        "at": "2026-10-20T10:00:00"
+       }
+      }
+     },
+     "c2b3c4d5e6f": {
+      "id": "c2b3c4d5e6f",
+      "name": "keyboard",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+      "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": null,
+      "rejection": null,
+      "conflict": null,
+      "calibration": null
+     }
+    }
+   },
+   "steps": [
+    {
+     "op": "delete",
+     "cid": "c2b3c4d5e6f",
+     "args": {
+      "base": 1,
+      "now": 2000
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1000,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "title": "conflict kept by machine",
+   "mid": "mc_0123456789abcdef",
+   "start": {
+    "schema": 1,
+    "id": "mc_0123456789abcdef",
+    "label": "Booth",
+    "alhazen": "3.6.0",
+    "seenAt": 1500,
+    "token": null,
+    "default": "c1a2b3c4d5e",
+    "defaultRev": 1,
+    "defaultBy": "machine",
+    "rigSchema": null,
+    "rigSchemaSha": null,
+    "templates": null,
+    "configs": {
+     "c1a2b3c4d5e": {
+      "id": "c1a2b3c4d5e",
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": {
+       "name": "booth",
+       "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+       "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+       "problem": null,
+       "at": 1000
+      },
+      "rejection": null,
+      "conflict": {
+       "text": "# Überprüfung: ünïcode — ok\nmonitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+       "sha256": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+       "at": 1500
+      },
+      "calibration": {
+       "gamma": {
+        "at": "2026-10-20T10:00:00"
+       }
+      }
+     },
+     "c2b3c4d5e6f": {
+      "id": "c2b3c4d5e6f",
+      "name": "keyboard",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+      "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": null,
+      "rejection": null,
+      "conflict": null,
+      "calibration": null
+     }
+    }
+   },
+   "steps": [
+    {
+     "op": "resolve",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "keep": "other",
+      "now": 2000
+     },
+     "error": {
+      "kind": "invalid",
+      "message": "Keep \"machine\" or \"platform\""
+     }
+    },
+    {
+     "op": "resolve",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "keep": "machine",
+      "now": 2000
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1500,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "text": "# Überprüfung: ünïcode — ok\nmonitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+        "sha256": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "revision": 2,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2000,
+        "updatedBy": "platform",
+        "basedOn": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1500,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "sha256": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "revision": 2,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2000,
+        "updatedBy": "platform",
+        "basedOn": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    },
+    {
+     "op": "resolve",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "keep": "machine",
+      "now": 2100
+     },
+     "error": {
+      "kind": "conflict",
+      "message": "This rig config has no conflict to settle"
+     }
+    }
+   ]
+  },
+  {
+   "title": "conflict kept by platform",
+   "mid": "mc_0123456789abcdef",
+   "start": {
+    "schema": 1,
+    "id": "mc_0123456789abcdef",
+    "label": "Booth",
+    "alhazen": "3.6.0",
+    "seenAt": 1500,
+    "token": null,
+    "default": "c1a2b3c4d5e",
+    "defaultRev": 1,
+    "defaultBy": "machine",
+    "rigSchema": null,
+    "rigSchemaSha": null,
+    "templates": null,
+    "configs": {
+     "c1a2b3c4d5e": {
+      "id": "c1a2b3c4d5e",
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": {
+       "name": "booth",
+       "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+       "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+       "problem": null,
+       "at": 1000
+      },
+      "rejection": null,
+      "conflict": {
+       "text": "# Überprüfung: ünïcode — ok\nmonitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+       "sha256": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+       "at": 1500
+      },
+      "calibration": {
+       "gamma": {
+        "at": "2026-10-20T10:00:00"
+       }
+      }
+     },
+     "c2b3c4d5e6f": {
+      "id": "c2b3c4d5e6f",
+      "name": "keyboard",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+      "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+      "revision": 1,
+      "state": "synced",
+      "deleted": false,
+      "updatedAt": 1000,
+      "updatedBy": "machine",
+      "basedOn": null,
+      "running": null,
+      "rejection": null,
+      "conflict": null,
+      "calibration": null
+     }
+    }
+   },
+   "steps": [
+    {
+     "op": "resolve",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "keep": "platform",
+      "now": 2000
+     },
+     "record": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1500,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchema": null,
+      "rigSchemaSha": null,
+      "templates": null,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 2,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2000,
+        "updatedBy": "platform",
+        "basedOn": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "running": {
+         "name": "booth",
+         "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+         "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+         "problem": null,
+         "at": 1000
+        },
+        "rejection": null,
+        "conflict": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        }
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 60\n  refresh_rate_hz: 60\n",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "running": null,
+        "rejection": null,
+        "conflict": null,
+        "calibration": null
+       }
+      }
+     },
+     "summary": {
+      "schema": 1,
+      "id": "mc_0123456789abcdef",
+      "label": "Booth",
+      "alhazen": "3.6.0",
+      "seenAt": 1500,
+      "token": null,
+      "default": "c1a2b3c4d5e",
+      "defaultRev": 1,
+      "defaultBy": "machine",
+      "rigSchemaSha": null,
+      "hasSchema": false,
+      "configs": {
+       "c1a2b3c4d5e": {
+        "id": "c1a2b3c4d5e",
+        "name": "booth",
+        "sha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "revision": 2,
+        "state": "pending",
+        "deleted": false,
+        "updatedAt": 2000,
+        "updatedBy": "platform",
+        "basedOn": "e0d46874ca46210a6a176409b87344b0f79a927bcc3c95dde4c82168d5355301",
+        "rejection": null,
+        "calibration": {
+         "gamma": {
+          "at": "2026-10-20T10:00:00"
+         }
+        },
+        "runningSha256": "72ffc3432683963d9ef3a3c08da9c5535889a75bccc962dcbc8b8e859b2b7751",
+        "problem": null,
+        "hasConflict": false
+       },
+       "c2b3c4d5e6f": {
+        "id": "c2b3c4d5e6f",
+        "name": "keyboard",
+        "sha256": "70b44bf20e7f09ae0b2ab1c6d264535cf9645b3b15d56eab673902bbd7806a4b",
+        "revision": 1,
+        "state": "synced",
+        "deleted": false,
+        "updatedAt": 1000,
+        "updatedBy": "machine",
+        "basedOn": null,
+        "rejection": null,
+        "calibration": null,
+        "runningSha256": null,
+        "problem": null,
+        "hasConflict": false
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "title": "not synced yet",
+   "mid": "mc_0123456789abcdef",
+   "start": null,
+   "steps": [
+    {
+     "op": "put",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "name": "booth",
+      "text": "monitor:\n  width_px: 1920\n  height_px: 1080\n  width_cm: 53\n  distance_cm: 57\n  refresh_rate_hz: 60\n",
+      "base": 0,
+      "basedOn": null,
+      "now": 2000
+     },
+     "error": {
+      "kind": "missing",
+      "message": "This machine has not synced with the platform yet"
+     }
+    },
+    {
+     "op": "delete",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "base": 0,
+      "now": 2000
+     },
+     "error": {
+      "kind": "missing",
+      "message": "This machine has not synced with the platform yet"
+     }
+    },
+    {
+     "op": "default",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "base": 0,
+      "now": 2000
+     },
+     "error": {
+      "kind": "missing",
+      "message": "This machine has not synced with the platform yet"
+     }
+    },
+    {
+     "op": "resolve",
+     "cid": "c1a2b3c4d5e",
+     "args": {
+      "keep": "machine",
+      "now": 2000
+     },
+     "error": {
+      "kind": "missing",
+      "message": "This machine has not synced with the platform yet"
+     }
+    }
+   ]
+  }
+ ]
+}

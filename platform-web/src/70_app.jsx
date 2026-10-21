@@ -70,7 +70,10 @@ function PlatformApp({ host }) {
     } catch (e) { setBusy(''); setFlash({ kind: 'bad', text: 'Could not fork: ' + (e.message || e) }); }
   }
 
-  const startJob = (forkId, fork, kind, request, machine) => host.startJob({ ...fork, id: forkId }, kind, request, machine);
+  const startJob = (forkId, fork, kind, request, machine, options) => host.startJob({ ...fork, id: forkId }, kind, request, machine, options);
+  const rigFlash = (kind, text) => setFlash({ kind, text });
+  // A rig config editor (or the new-config form) is its own screen of Machines: ?ehv=machines&ehid=<machine>&ehtab=<config|new>.
+  const rigEditor = () => (caps.rigConfigs && route.id ? <RigConfigEditor key={route.id + ':' + route.tab} host={host} mid={route.id} cid={route.tab || 'new'} go={go} onFlash={rigFlash} homeLabel={caps.machines ? 'My machines' : 'Machines'} /> : null);
 
   async function newExperiment(title, request) {
     const forkId = await host.newExperiment(title, request);
@@ -481,11 +484,12 @@ function PlatformApp({ host }) {
           </div>
           : <div className="empty"><h3>No machine is paired yet</h3><p>Pair a rig in Mana Terminal, then type <span className="cmd">mana</span> in a terminal on it.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-primary" onClick={openTerminalApp}>Pair a machine</button></div></div>}
         {machines.installed && devices.length ? <p className="eh-muted" style={{ margin: '12px 0 0', fontSize: 14 }}>{online.length ? `Runs go to the newest open window unless you pick another.` : <>No terminal window is open. On the rig, open a terminal and type <span className="cmd">mana</span>.</>}</p> : null}
+        {caps.rigConfigs ? <RigConfigsSection host={host} go={go} onFlash={rigFlash} /> : null}
         <div className="eh-sechead" style={{ marginTop: 36 }}><h2 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>Runs</h2></div>
         {forks === null ? <p className="eh-muted">Loading…</p> : runs.length ? <div className="list">
           {runs.slice(0, 30).map((j) => (
             <div key={j.fork.id + '~' + j.id} className="row eh-run-row">
-              <div className="row-main"><div className="row-title">{j.fork.title} <span className="eh-muted" style={{ fontWeight: 500 }}>on {j.machine ? sessionLabel(j.machine) : 'my machine'}</span></div>
+              <div className="row-main"><div className="row-title">{j.fork.title} <span className="eh-muted" style={{ fontWeight: 500 }}>on {j.machine ? sessionLabel(j.machine) : 'my machine'}{j.rigConfig ? ' with ' + j.rigConfig : ''}</span></div>
                 <div className="row-sub">{j.summary || (j.status === 'running' ? 'Mana is working on it.' : '')}{j.url ? <> · Dashboard: <span className="mono">{j.url.split('#')[0]}</span></> : null}</div>
                 <div className="row-sub">Started {ago(j.startedAt)}{j.updatedAt && j.status !== 'running' ? ' · updated ' + ago(j.updatedAt) : ''}</div></div>
               {statusChip(j.status)}
@@ -509,7 +513,7 @@ function PlatformApp({ host }) {
     const send = async () => { const text = draft.trim(); if (!text) return; setDraft(''); setBusy('Asking Mana'); try { await startJob(f.id, f, 'change', text); setBusy(''); go({ v: 'fork', id: f.id, tab: 'changes' }, true); } catch (e) { setBusy(''); setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } };
     const jobRow = (j) => (
       <div key={j.id} className="row">
-        <div className="row-main"><div className="row-title">{j.kind === 'run' ? 'Run on ' + (j.machine || 'my machine') : j.kind === 'create' ? 'Build the experiment' : j.request}</div>
+        <div className="row-main"><div className="row-title">{j.kind === 'run' ? 'Run on ' + (j.machine || 'my machine') + (j.rigConfig ? ' with ' + j.rigConfig : '') : j.kind === 'create' ? 'Build the experiment' : j.request}</div>
           <div className="row-sub">{j.summary || (j.status === 'running' ? 'Mana is working on it.' : '')}{j.url ? <> · Dashboard on the rig: <span className="mono">{j.url.split('#')[0]}</span></> : null}{j.dir ? <> · Folder <span className="mono">{j.dir}</span></> : null}</div>
           <div className="row-sub">Started {ago(j.startedAt)}{j.updatedAt && j.status !== 'running' ? ' · updated ' + ago(j.updatedAt) : ''}</div></div>
         {statusChip(j.status)}
@@ -594,11 +598,12 @@ function PlatformApp({ host }) {
           {caps.runOnMachines ? <>
           <div style={{ marginBottom: 20 }}>{machinesPanel(true)}</div>
           <div className="panel" style={{ marginBottom: 20 }}><h3>What Run does</h3>
-            <p>Mana copies this revision to <span className="cmd">~/alhazen-experiments/{slug(f.title)}</span> on the rig, builds its Python environment with uv from the experiment's lock file (PsychoPy included), and starts the alhazen dashboard there, where you choose the rig, subject and task and run sessions. Your terminal asks you before each step that changes the machine. Data stays on the rig.</p>
+            <p>Mana copies this revision to <span className="cmd">~/alhazen-experiments/{slug(f.title)}</span> on the rig, builds its Python environment with uv from the experiment's lock file (PsychoPy included), and starts the alhazen dashboard there, with the rig config you choose, where you pick the subject and task and run sessions. Your terminal asks you before each step that changes the machine. Data stays on the rig.</p>
             <div className="eh-actions" style={{ marginTop: 14 }}><button className="btn btn-primary" disabled={!head || !!busy} onClick={() => setDialog({ kind: 'run', f, machine: '' })}>Run on my machine</button></div></div>
           {runs.length ? <div className="list">{runs.map(jobRow)}</div> : null}
           </> : <>{caps.machineTokens ? <div className="panel" style={{ marginBottom: 20 }}><h3>From the rig's dashboard</h3>
-            <p>Connect the rig's alhazen dashboard to your library once: make a token for it under <button className="eh-inline-link" onClick={() => go({ v: 'machines' })}>Machines</button> and run the command it shows on the rig. The dashboard then lists {f.title} with your other copies, downloads it when you run it, builds its environment, and tells this platform when it closes.</p></div> : null}
+            <p>Connect the rig's alhazen dashboard to your library once: make a token for it under <button className="eh-inline-link" onClick={() => go({ v: 'machines' })}>Machines</button> and run the command it shows on the rig. The dashboard then lists {f.title} with your other copies, downloads it when you run it, builds its environment, and tells this platform when it closes.</p>
+            {caps.rigConfigs ? <RigConfigsBrief host={host} /> : null}</div> : null}
           <div className="panel eh-run-steps"><h3>{caps.machineTokens ? 'Or by hand' : 'Run it on a rig'}</h3>
             <p>The platform does not run experiments. On the rig (with <a href="https://docs.astral.sh/uv/" target="_blank" rel="noreferrer">uv</a> installed):</p>
             <ol className="eh-steps-list">
@@ -612,6 +617,16 @@ function PlatformApp({ host }) {
     </> : null;
     return <EHDocumentationBoundary key={f.id + ':' + (d ? (d.metadata && d.metadata.updatedAt) || d.__loadError || 'ready' : 'loading')}><EHExperimentPage L={L} d={d} route={route} art={art} actions={actions} renderTabs={tabs} renderFiles={(p) => (head ? filesTab(p) : <p className="eh-muted">No files yet: Mana is still building this experiment.</p>)} renderReplication={replication} go={go} onFile={onFile}
       nav={nav} crumb={crumb} sheetHead={sheetHead} extraTabs={[['changes', 'Changes'], ['run', 'Run'], ['files', 'Files']]} renderExtra={renderExtra} overviewExtra={overviewExtra} scopeNote={scopeNote} versionsView={versionsView} /></EHDocumentationBoundary>;
+  }
+
+  // The device label of the terminal window a run goes to (the chosen one, else the newest), which
+  // names the dashboard machine whose rig configs the Run dialog offers.
+  function runDeviceLabel(sessionId) {
+    const list = machines.sessions.slice().sort((x, y) => (y.startedAt || 0) - (x.startedAt || 0));
+    const s = sessionId ? machines.sessions.find((x) => x.id === sessionId) : list[0];
+    if (!s) return '';
+    const dv = machines.devices.find((x) => x.id === s.device) || {};
+    return dv.label || dv.host || '';
   }
 
   function Dialog() {
@@ -629,8 +644,9 @@ function PlatformApp({ host }) {
     else if (d.kind === 'run') body = <>
       <h2>Run on my machine</h2><p>Mana copies {d.f.title} to the rig, builds its environment and opens the alhazen dashboard. Approve each step in the terminal.</p>
       {machines.sessions.length > 1 ? <div className="field"><label htmlFor="eh-m">Terminal window</label><select id="eh-m" value={d.machine} onChange={(e) => setDialog({ ...d, machine: e.target.value })}><option value="">Newest window</option>{machines.sessions.map((s) => { const dv = machines.devices.find((x) => x.id === s.device) || {}; return <option key={s.id} value={s.id}>{(dv.label || s.device) + ' · ' + (s.tty || s.id)}</option>; })}</select></div> : null}
+      {caps.rigConfigs ? <RigConfigPicker host={host} deviceLabel={runDeviceLabel(d.machine)} value={d.rigConfig || ''} onChange={(v) => setDialog({ ...d, rigConfig: v })} /> : null}
       <div style={{ marginTop: 14 }}>{machinesPanel(true)}</div>
-      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={async () => { close(); try { await startJob(d.f.id, d.f, 'run', '', d.machine); go({ v: 'fork', id: d.f.id, tab: 'run' }, true); } catch (e) { setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } }}>Run</button></div></>;
+      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={async () => { close(); try { await startJob(d.f.id, d.f, 'run', '', d.machine, { rigConfig: d.rigConfig ? d.rigConfig.slice(d.rigConfig.indexOf('|') + 1) : '' }); go({ v: 'fork', id: d.f.id, tab: 'run' }, true); } catch (e) { setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } }}>Run</button></div></>;
     else if (d.kind === 'share') { const fm = d.form; const set = (k, v) => setDialog({ ...d, form: { ...fm, [k]: v } });
       const togg = (k) => set('subjects', fm.subjects.includes(k) ? fm.subjects.filter((x) => x !== k) : [...fm.subjects, k]);
       body = <>
@@ -716,6 +732,7 @@ function PlatformApp({ host }) {
                 : <button className="btn btn-quiet btn-small" onClick={() => setRevoking(m.id)}>Revoke</button>}
             </div>))}</div>
           : <p className="eh-muted" style={{ marginBottom: 28 }}>No machine is connected yet.</p>}
+        {caps.rigConfigs ? <RigConfigsSection host={host} go={go} onFlash={rigFlash} /> : null}
         <h2 style={{ fontSize: 18, fontWeight: 800, margin: '0 0 12px' }}>Recent activity</h2>
         {data && data.events && data.events.length ? <div className="list">{data.events.map((ev) => (
           <div key={ev.id} className="row">
@@ -728,7 +745,7 @@ function PlatformApp({ host }) {
     );
   }
 
-  const machinesView = () => (caps.machines ? Machines() : caps.machineTokens ? MachineTokens() : Home());
+  const machinesView = () => rigEditor() || (caps.machines ? Machines() : caps.machineTokens ? MachineTokens() : Home());
   const view = route.v === 'browse' ? Browse() : route.v === 'exp' ? Exp() : route.v === 'mine' ? Mine() : route.v === 'machines' ? machinesView() : route.v === 'fork' ? Fork() : Home();
   const navCur = route.v === 'exp' ? 'browse' : route.v === 'fork' ? 'mine' : route.v;
   return (

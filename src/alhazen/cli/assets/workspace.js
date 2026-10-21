@@ -137,6 +137,13 @@ let rigEpoch = 0;
  * launch sends as `rig_values`. Null before it is read, or while the machine
  * has no rig (the set-up card shows then). */
 let sessionRig = null;
+/* The rig config the person chose on the Run page (an id), or the one the
+ * address named (?rig=<name or id>), kept across experiments: the configs
+ * are the machine's, not an experiment's. Null: the default. */
+let rigConfigChoice = new URLSearchParams(location.search || '').get('rig') || null;
+/* The configs as last read for the Run page (rigSignature), so a poll reads
+ * the Rig section again only when one was added, renamed, saved or deleted. */
+let loadedRigSignature = null;
 /* RigConfig's JSON schema (GET /api/machine-rig/schema), read once, for the
  * rig settings' choices; null until read, or when it cannot be. */
 let rigSchema = null;
@@ -255,7 +262,13 @@ async function api(path, body) {
   }
   const response = await fetch(path, init);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    // The status travels with the message: a 409 is a file changed since it
+    // was read, which a caller words differently from a refusal.
+    const failure = new Error(data.error || `Request failed (${response.status})`);
+    failure.status = response.status;
+    throw failure;
+  }
   return data;
 }
 
@@ -514,11 +527,12 @@ function groupedOptions(select, groups, previous) {
 /* Rigs                                                                */
 /* ------------------------------------------------------------------ */
 
-/* Every session the workspace launches runs on this machine's rig
- * (alhazen/cli/machine_rig.py; a project's `machine_rig` is {name, file,
- * data_root}, null before it is set up). Runs launched before it named an
- * experiment's rig or a shared one, which the history still shows by their
- * qualified names (rigName). */
+/* Every session the workspace launches runs on one of this machine's rig
+ * configs (docs/design/machine-rig-configs.md; a project's `machine_rigs` is
+ * {default, configs: [{id, name, default, problem}]}, and `machine_rig` the
+ * default's brief, null before there is one). Runs launched before 3.5 named
+ * an experiment's rig or a shared one, which the history still shows by
+ * their qualified names (rigName). */
 
 /** Rig `name`'s qualified name: `alhazen/<name>` for a shared rig
  *  (`source` 'alhazen'), `<slug>/<name>` for one of experiment `slug`'s own
@@ -528,15 +542,51 @@ function rigName(name, source, slug) {
   return `${source === 'alhazen' ? 'alhazen' : slug}/${name}`;
 }
 
-/** The Rig section's heading for project `p`: this machine's rig by name,
- *  with the way to edit it, or the set-up card while the machine has none.
- *  There is no menu: every session here runs on this machine's rig. */
-function machineHeader(p) {
-  const machine = p?.machine_rig;
-  $('rig-machine').textContent = machine ? `This machine · ${machine.name}` : 'This machine has no rig yet';
-  $('rig-machine-edit').hidden = !machine;
+/** This machine's rig configs as the Run page lists them ([{id, name,
+ *  default, problem}]); a project from a 3.5 dashboard's answer has only the
+ *  one machine rig, listed as the default. */
+function rigChoices(p) {
+  if (Array.isArray(p?.machine_rigs?.configs)) return p.machine_rigs.configs;
+  const m = p?.machine_rig;
+  return m ? [{id: m.id || m.name, name: m.name, default: true, problem: m.problem ?? null}] : [];
+}
+
+/** What the Rig section was read from, to notice a change on a poll. */
+function rigSignature(p) {
+  const choices = rigChoices(p).map((c) => [c.id, c.name, !!c.default, c.problem || null, c.sha256 || null]);
+  return JSON.stringify([choices, p?.machine_rig?.sha256 || null]);
+}
+
+/** The Rig section's heading and config menu for project `p`: this
+ *  machine's configs, `chosen` (an id) selected, the ones that do not load
+ *  listed but not selectable, with why. */
+function machineHeader(p, choices = rigChoices(p), chosen = null) {
+  const count = choices.length;
+  $('rig-machine').textContent = count
+    ? `${count} config${count === 1 ? '' : 's'} on this machine`
+    : 'This machine has no rig config yet';
+  $('rig-machine-edit').hidden = !chosen;
   $('rig-note').textContent = '';
   $('rig-note').hidden = true;
+  $('rig-config-field').hidden = !count;
+  const menu = $('rig-config');
+  menu.replaceChildren();
+  for (const c of choices) {
+    const label = `${c.name}${c.default ? ' (default)' : ''}${c.problem ? ' — does not load' : ''}`;
+    const option = node('option', '', label);
+    option.value = c.id;
+    option.disabled = !!c.problem;
+    menu.append(option);
+  }
+  menu.value = chosen || '';
+  const broken = choices.filter((c) => c.problem);
+  const help = $('rig-config-help');
+  const why = (problem) => RigEditorOr()?.problemText(problem) || problem;
+  help.textContent = broken.length
+    ? broken.map((c) => `${c.name} cannot be chosen until it loads: ${why(c.problem)}.`).join(' ')
+      + ' Fix it on the General page.'
+    : '';
+  help.hidden = !broken.length;
 }
 
 /**
@@ -763,14 +813,15 @@ function developmentRigWarning(mode, name) {
   if (mode === 'training' && !rehearsing() && name) {
     return `${label('training')} drives a real subject, and ${name} is a development rig `
       + '(real_data: false): this launch will be refused before anything is written. Tick '
-      + 'Rehearse to try the stage on this machine, or set real_data: true in this machine’s '
-      + 'rig if the monkey works here.';
+      + 'Rehearse to try the stage on this machine, or choose a config that collects (or set '
+      + 'real_data: true in this one on the General page) if the monkey works here.';
   }
   if (mode !== 'run' || !name) return null;
   return `${label('run')} records real data, and ${name} is a development rig `
     + '(real_data: false): this launch will be refused before anything is written. Use '
-    + `${label('test')} or ${label('simulate')} to try the session on this machine, or set `
-    + 'real_data: true in this machine’s rig if subjects are recorded here.';
+    + `${label('test')} or ${label('simulate')} to try the session on this machine, or choose a `
+    + 'config that collects (or set real_data: true in this one on the General page) if subjects '
+    + 'are recorded here.';
 }
 
 /**
@@ -1068,7 +1119,10 @@ function launchDraft() {
   if (calibrationTarget) draft.calibration_target = calibrationTarget;
   // The rig: this machine's, as the Rig section left it for this session
   // (its changes and event lines); the server records what differs.
-  if (sessionRig) draft.rig_values = sessionRig.current;
+  if (sessionRig) {
+    draft.rig_values = sessionRig.current;
+    draft.rig_config = sessionRig.config?.id ?? '';
+  }
   // Parameters travel as the editor shows them: the raw text from the text
   // editor (the server parses and validates it) or the edited values from
   // the fields. Modes that take no parameters send neither.
@@ -1084,7 +1138,7 @@ function launchDraft() {
  * launch draft, or why there is none to ask about yet. */
 function estimateDraft() {
   const p = project();
-  if (!p || !p.available || !p.machine_rig || !sessionRig || p.tasks_error) return null;
+  if (!p || !p.available || !sessionRig || p.tasks_error) return null;
   if (usesParameters() && (loadingConfig || loadingSchema)) {
     return {waiting: 'Waiting for the task parameters…'};
   }
@@ -1101,7 +1155,6 @@ function updateLaunch() {
   const p = project();
   const waitingForParameters = usesParameters() && (loadingConfig || loadingSchema);
   $('launch').disabled = !!state.active
-    || !p?.machine_rig
     || !sessionRig
     || launching
     || waitingForParameters
@@ -1123,8 +1176,13 @@ function updateLaunch() {
     mode, p ? rigDevelopment[`${p.id}:${$('rig').value}`] : null,
   );
   let note;
-  if (p && !p.machine_rig) {
-    note = 'Set up this machine’s rig first, in the Rig section: every session here runs on it.';
+  const noConfig = p && !rigChoices(p).length;
+  const noUsable = p && !noConfig && !RigEditorOr()?.pickConfig(rigChoices(p), null);
+  if (noConfig) {
+    note = 'Add a rig config for this machine first, in the Rig section: every session here runs '
+      + 'on one.';
+  } else if (noUsable) {
+    note = 'None of this machine’s rig configs loads; fix one on the General page to launch.';
   } else if (p?.tasks_error) {
     // Before the active-run note: this one asks the reader to fix run.py,
     // which a finished run does not change.
@@ -1163,7 +1221,7 @@ function updateLaunch() {
   $('launch-note').classList.toggle(
     'launch-warning',
     note === development || note === psychopy || note === calibrationProblem()
-      || (p && !p.machine_rig)
+      || noConfig || noUsable
       || note === identityProblem() || note === trainingProblem(),
   );
 }
@@ -1507,63 +1565,84 @@ function rigKey() {
 }
 
 /**
- * Read this machine's rig for the open experiment (GET /api/session-rig):
- * the machine's settings, what a session of the chosen task starts from
- * (the event lines and settings carried from its last session here), and
- * the task's events. Until the machine has a rig, the set-up card stands in
- * for the whole section. The person's own changes to the settings are kept
- * across a change of task or mode (RigEditor.carryChanges); the event lines
- * start over for the new task. The epoch drops a stale answer.
+ * Read the chosen rig config for the open experiment (GET /api/session-rig
+ * with config=<id>): the config's settings, what a session of the chosen
+ * task starts from (the event lines and settings carried from its last
+ * session on this config), and the task's events. Until the machine has a
+ * config, the add-a-config card stands in for the whole section. The
+ * person's own changes to the settings are kept across a change of task or
+ * mode (RigEditor.carryChanges), but not across a change of config: the
+ * settings start over for the new one, which is said. The epoch drops a
+ * stale answer.
  */
 async function loadRig() {
   const epoch = ++rigEpoch;
   const p = project();
   if (!p) return;
-  machineHeader(p);
   const editor = RigEditorOr();
-  if (!p.machine_rig) {
+  let choices = rigChoices(p);
+  loadedRigSignature = rigSignature(p);
+  if (!choices.length) {
+    machineHeader(p, choices, null);
     sessionRig = null;
     $('rig-summary').hidden = true;
     $('rig-events').hidden = true;
     $('rig-edit').hidden = true;
     $('rig-setup').hidden = false;
-    $('rig-setup').replaceChildren(node('p', 'help', 'Reading the rigs this machine can start from…'));
     setCalibrationRig(p, {});
     measureRig = null;
     updateLaunch();
-    const status = await api('/api/machine-rig');
-    if (epoch !== rigEpoch) return;
-    if (status.configured) {
-      // Set up meanwhile, from another page or a terminal.
-      await refresh();
-      return;
-    }
     if (editor) {
-      editor.setupCard($('rig-setup'), status, {
-        node, api,
-        onDone: async () => {
+      await editor.createForm($('rig-setup'), {
+        node, api, configs: [], first: true,
+        onDone: async (rigs) => {
+          rigConfigChoice = rigs.created || null;
           await refresh();
           await loadRig();
         },
       });
     } else {
-      $('rig-setup').replaceChildren(node('p', 'help', 'This machine has no rig yet: run '
-        + '`alhazen rig init` in a terminal.'));
+      $('rig-setup').replaceChildren(node('p', 'help', 'This machine has no rig config yet: add one '
+        + 'on the General page.'));
     }
     return;
   }
   $('rig-setup').hidden = true;
+  $('rig-setup').replaceChildren();
+  const chosen = editor ? editor.pickConfig(choices, rigConfigChoice)
+    : (choices.find((c) => c.default && !c.problem) || choices.find((c) => !c.problem) || null);
+  machineHeader(p, choices, chosen?.id ?? null);
+  if (!chosen) {
+    // Every config fails to load: listed, none chosen, nothing to launch.
+    sessionRig = null;
+    $('rig-summary').hidden = true;
+    $('rig-events').hidden = true;
+    $('rig-edit').hidden = true;
+    $('rig-note').textContent = 'None of this machine’s rig configs loads, so no session can '
+      + 'start. Fix one on the General page.';
+    $('rig-note').hidden = false;
+    setCalibrationRig(p, {});
+    measureRig = null;
+    updateLaunch();
+    return;
+  }
   $('rig-summary').hidden = false;
-  if (!sessionRig) $('rig-summary').textContent = 'Reading this machine’s rig…';
+  if (!sessionRig) $('rig-summary').textContent = 'Reading the rig config…';
   const key = rigKey();
-  const query = new URLSearchParams({project: p.id, mode: key.mode});
+  const query = new URLSearchParams({project: p.id, mode: key.mode, config: chosen.id});
   if (key.task) query.set('task', key.task);
   const data = await api(`/api/session-rig?${query}`);
   if (epoch !== rigEpoch) return;
+  const config = data.config || {id: chosen.id, name: chosen.name};
+  if (Array.isArray(data.configs)) {
+    choices = data.configs;
+    machineHeader(p, choices, config.id);
+  }
   const next = {
     project: p.id,
     key: key.text,
-    machine: data.machine,
+    config,
+    machine: {...data.machine, id: config.id, name: data.machine?.name ?? config.name},
     prefill: data.values,
     current: JSON.parse(JSON.stringify(data.values)),
     events: data.events ?? null,
@@ -1572,9 +1651,14 @@ async function loadRig() {
     dropped: data.dropped || [],
     rewardCalibration: data.reward_calibration ?? null,
   };
-  if (editor && sessionRig && sessionRig.project === p.id
-      && sessionRig.machine.sha256 === next.machine.sha256) {
-    editor.carryChanges(sessionRig, next);
+  let leftBehind = null;
+  if (editor && sessionRig && sessionRig.project === p.id) {
+    if (sessionRig.config?.id === config.id && sessionRig.machine.sha256 === next.machine.sha256) {
+      editor.carryChanges(sessionRig, next);
+    } else if (sessionRig.config?.id !== config.id) {
+      const dropped = editor.settingChanges(sessionRig).length;
+      if (dropped) leftBehind = {count: dropped, from: sessionRig.config?.name ?? sessionRig.machine.name};
+    }
   }
   sessionRig = next;
   // The Live monitor switches start where this rig was last launched from
@@ -1592,6 +1676,25 @@ async function loadRig() {
   renderMeasurements();
   if (editor && rigSchema === null) loadRigSchema();
   renderRig();
+  if (leftBehind) {
+    $('rig-note').textContent = `The ${leftBehind.count} setting${leftBehind.count === 1 ? '' : 's'} `
+      + `changed for this session on ${leftBehind.from} ${leftBehind.count === 1 ? 'was' : 'were'} left `
+      + `behind: the settings start over from ${config.name}.`;
+    $('rig-note').hidden = false;
+  }
+}
+
+/** Choose another of this machine's configs for this session: remembered,
+ *  put in the address (?rig=<name>, so a reload keeps it), and read. */
+function chooseRigConfig() {
+  const id = $('rig-config').value;
+  if (!id) return;
+  rigConfigChoice = id;
+  const choice = rigChoices(project()).find((c) => c.id === id);
+  const query = new URLSearchParams(location.search || '');
+  query.set('rig', choice?.name || id);
+  history.replaceState(null, '', `${location.pathname}?${query}`);
+  return loadRig();
 }
 
 /* Why the rig settings' choices could not be read, said under them; null. */
@@ -1654,14 +1757,16 @@ function renderRig({fields = true} = {}) {
   }
   const changed = editor.settingChanges(sessionRig).length;
   $('rig-edit-count').textContent = changed ? `${changed} changed` : 'as saved';
+  $('rig-save').textContent = `Save to ${sessionRig.config?.name ?? sessionRig.machine.name}`;
   $('rig-save').disabled = measuring || !changed;
   $('rig-reset-all').disabled = measuring
     || (!changed && editor.same(sessionRig.current, sessionRig.prefill));
+  const configName = sessionRig.config?.name ?? sessionRig.machine.name;
   $('rig-edit-help').textContent = measuring
-    ? 'Measure rig measures this machine’s rig as it is saved, and keeps what it measures '
-      + 'beside it, so it runs without this session’s changes.'
-    : 'Changes here are for this session only and are recorded with it. Save to this '
-      + 'machine’s rig to keep them for every later session on this machine.';
+    ? `Measure rig measures ${configName} as it is saved, and keeps what it measures beside it, `
+      + 'so it runs without this session’s changes.'
+    : 'Changes here are for this session only and are recorded with it. Save them to '
+      + `${configName} to keep them for every later session on it.`;
   if (rigSchemaError) {
     $('rig-edit-help').textContent += ` The settings’ choices could not be read (${rigSchemaError}), `
       + 'so every value is typed.';
@@ -1699,7 +1804,7 @@ function describeRig(p, rigState) {
   // Whether real data may be collected on it: only an explicit false makes a
   // development rig (the model's default is true).
   const development = rig.real_data === false;
-  const name = `this machine’s rig (${rigState.machine.name})`;
+  const name = `the rig config ${rigState.config?.name ?? rigState.machine.name}`;
   rigDevelopment[`${p.id}:${value}`] = development ? name : null;
   const editor = RigEditorOr();
   const changed = editor ? editor.settingChanges(rigState).length : 0;
@@ -1717,52 +1822,67 @@ function describeRig(p, rigState) {
   ];
   rigFacts(facts);
   if (rigState.machine.problem) {
-    $('rig-note').textContent = `This machine’s rig does not load: ${rigState.machine.problem}`;
+    $('rig-note').textContent = `${rigState.config?.name ?? 'This rig config'} does not load: ${rigState.machine.problem}`;
     $('rig-note').hidden = false;
   }
 }
 
-/** Ask, in place, before a session's changes become this machine's. */
+/** Ask, in place, before a session's changes become its config's. */
 function askSaveRig() {
   const editor = RigEditorOr();
   if (!editor || !sessionRig) return;
   const changes = editor.settingChanges(sessionRig);
   if (!changes.length) return;
+  const name = sessionRig.config?.name ?? sessionRig.machine.name;
   const box = $('rig-save-confirm');
   box.replaceChildren();
   box.append(node('p', '', `Save ${changes.length} change${changes.length === 1 ? '' : 's'} to `
-    + `this machine’s rig (${sessionRig.machine.name})? Every later session on this machine, of `
-    + 'every experiment, starts from it. Event lines stay with this session.'));
+    + `${name}? Every later session on it, of every experiment, starts from it. Event lines stay `
+    + 'with this session.'));
   const list = node('ul', 'rig-change-list');
   for (const c of changes) {
     list.append(node('li', '', `${c.path}: ${editor.show(c.absent === 'machine' ? undefined : c.machine)} → `
       + `${editor.show(c.absent === 'session' ? undefined : c.session)}`));
   }
+  const problem = node('p', 'rig-problem');
+  problem.hidden = true;
+  problem.setAttribute('role', 'alert');
   const actions = node('div', 'rig-confirm-actions');
-  const yes = node('button', 'primary', 'Save to this machine’s rig');
+  const yes = node('button', 'primary', `Save to ${name}`);
   yes.type = 'button';
   const no = node('button', 'quiet', 'Cancel');
   no.type = 'button';
   no.addEventListener('click', () => { box.hidden = true; });
-  yes.addEventListener('click', guard(async () => {
+  yes.addEventListener('click', async () => {
     yes.disabled = true;
+    problem.hidden = true;
     try {
-      const answer = await api('/api/machine-rig/save', {
-        values: sessionRig.current, sha256: sessionRig.machine.sha256,
+      const rigs = await api('/api/machine-rigs/save', {
+        id: sessionRig.config.id, values: sessionRig.current, sha256: sessionRig.machine.sha256,
       });
+      const saved = (rigs.configs || []).find((c) => c.id === sessionRig.config.id);
+      if (!saved) throw new Error(`${name} is no longer on this machine.`);
       sessionRig.machine = {
-        name: answer.name, file: answer.file, sha256: answer.sha256, values: answer.values,
-        problem: answer.problem,
+        id: saved.id, name: saved.name, file: saved.file, sha256: saved.sha256, values: saved.values,
+        problem: saved.problem,
       };
-      sessionRig.rewardCalibration = answer.reward_calibration ?? sessionRig.rewardCalibration;
+      sessionRig.config = {id: saved.id, name: saved.name};
+      sessionRig.rewardCalibration = saved.reward_calibration ?? sessionRig.rewardCalibration;
       box.hidden = true;
       renderRig();
+      guard(refresh)();
+    } catch (e) {
+      problem.textContent = e.status === 409 || /changed since/.test(e.message)
+        ? `${name} was changed since this page read it (on the General page, in another tab or by a `
+          + 'sync), so nothing was saved. Choose it again to read the new version.'
+        : e.message;
+      problem.hidden = false;
     } finally {
       yes.disabled = false;
     }
-  }));
+  });
   actions.append(yes, no);
-  box.append(list, actions);
+  box.append(list, problem, actions);
   box.hidden = false;
 }
 
@@ -2590,6 +2710,12 @@ function pageHelpers() {
     register: () => openProject(false),
     peopleChanged,
     refresh: () => guard(refresh)(),
+    /* RigConfig's JSON schema for the config editor's menus; null when it
+     * cannot be read. */
+    rigSchema: async () => {
+      if (rigSchema === null || rigSchema === false) await loadRigSchema();
+      return rigSchema || null;
+    },
     viewRun: (id) => {
       runId = id;
       gallerySignature = '';
@@ -3045,11 +3171,9 @@ async function refresh() {
     return;
   }
   renderState();
-  // This machine's rig set up, edited or saved on another page or in a
-  // terminal: the Run page reads it again.
-  const machine = project()?.machine_rig;
-  if (selected && view === 'run' && (!!machine !== !!sessionRig
-      || (machine && sessionRig && machine.sha256 !== sessionRig.machine.sha256))) {
+  // A config added, renamed, saved, deleted or made the default on another
+  // page, in a terminal or by a sync: the Run page reads the section again.
+  if (selected && view === 'run' && rigSignature(project()) !== loadedRigSignature) {
     await loadRig();
   }
   if (selected) await refreshRun();
@@ -3147,9 +3271,12 @@ $('rig-reset-all').addEventListener('click', () => {
   rigChanged();
 });
 $('rig-save').addEventListener('click', askSaveRig);
+$('rig-config').addEventListener('change', guard(chooseRigConfig));
 $('rig-machine-edit').addEventListener('click', guard(async () => {
+  const id = sessionRig?.config?.id;
+  if (id) window.WorkspaceManage?.focusRig?.(id);
   await navigate(selected, 'general');
-  document.getElementById('m-machine')?.scrollIntoView?.({block: 'start'});
+  if (!id) document.getElementById('m-machine')?.scrollIntoView?.({block: 'start'});
 }));
 // Headless simulate opens no window, so the PsychoPy warning follows it.
 $('headless').addEventListener('change', updateLaunch);
