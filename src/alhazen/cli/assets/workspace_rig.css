@@ -379,6 +379,17 @@
   font-size: 14px;
 }
 
+.mrc-connection-machine {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.mrc-connection-machine .m-lamp {
+  align-self: center;
+}
+
 .mrc-connection-text {
   flex: 1 1 22rem;
   min-width: 0;

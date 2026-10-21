@@ -918,8 +918,12 @@
     const state = rigs.sync?.state;
     const kind = state === 'synced' ? 'ok' : (state === 'offline' || state === 'error' ? 'warn' : 'idle');
     const word = 'This machine';
-    // The lamp names the machine (its colour and the sentence say the state).
-    line.append(lamp(kind, rigs.machine?.label || word));
+    // The machine by name, its lamp beside it; the sentence says the state.
+    const machine = el('span', 'mrc-connection-machine');
+    const light = el('span', `m-lamp m-lamp-${kind}`);
+    light.append(el('span', 'm-lamp-dot'));
+    machine.append(light, el('strong', '', rigs.machine?.label || word));
+    line.append(machine);
     const text = el('span', 'mrc-connection-text');
     text.textContent = window.RigEditor.connectionText(rigs.sync, when);
     line.append(text);
@@ -1091,7 +1095,7 @@
       col.append(pre);
       col.append(el('p', 'm-hint', differing
         ? `${differing} line${differing === 1 ? '' : 's'} not in the other version, marked.`
-        : 'Every line is also in the other version (the order differs).'));
+        : 'Nothing here that the other version lacks.'));
       return col;
     };
     const by = c.by ? ` by the ${c.by}` : '';
