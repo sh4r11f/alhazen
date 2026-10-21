@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from http.client import HTTPConnection
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ import yaml
 
 from alhazen.cli import machine_rig as mr
 from alhazen.cli import workspace as workspace_module
+from alhazen.cli.dashboard import DashboardServer, with_rig_config
 from alhazen.cli.main import _read_rig_origin, main
 from alhazen.cli.workspace import Launch, Workspace
 from alhazen.cli.workspace_data import data_roots
@@ -561,3 +564,82 @@ class TestASimulatedSession:
         ]
         assert origin["workspace_run"] == run["id"]
         assert "distance_cm: 61.5" in (cards[0].parent / "rig-source.yaml").read_text()
+
+
+class TestTheDashboardRoutes:
+    def test_the_pages_api_adds_edits_renames_defaults_and_deletes(self, workspace):
+        server = DashboardServer(workspace)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def call(path, body=None):
+            conn = HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+            headers = {"X-Alhazen-Token": server.token}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            conn.request(
+                "POST" if body is not None else "GET",
+                path,
+                json.dumps(body) if body is not None else None,
+                headers,
+            )
+            response = conn.getresponse()
+            data = json.loads(response.read() or b"null")
+            conn.close()
+            return response.status, data
+
+        try:
+            pid = workspace.projects[0]["id"]
+            status, rigs = call("/api/machine-rigs")
+            assert (
+                status == 200 and rigs["configs"] == [] and rigs["machine"]["id"].startswith("mc_")
+            )
+            assert rigs["sync"]["state"] == "not-connected"
+            status, templates = call("/api/machine-rigs/templates")
+            assert f"{pid}:configs/rig-lab.yaml" in {t["id"] for t in templates["templates"]}
+            status, made = call(
+                "/api/machine-rigs/create",
+                {"name": "booth", "template": f"{pid}:configs/rig-sim.yaml"},
+            )
+            assert status == 201 and made["default"] == made["created"]
+            status, made = call("/api/machine-rigs/create", {"name": "spare", "copy_of": "booth"})
+            spare = next(c for c in made["configs"] if c["name"] == "spare")
+            assert spare["origin"]["kind"] == "copy" and spare["sync"]["state"] == "not-synced"
+            status, checked = call("/api/machine-rigs/check", {"id": spare["id"], "text": "- a\n"})
+            assert status == 400
+            status, saved = call(
+                "/api/machine-rigs/save",
+                {
+                    "id": spare["id"],
+                    "sha256": spare["sha256"],
+                    "text": spare["text"].replace("distance_cm: 60.0", "distance_cm: 64.0"),
+                },
+            )
+            assert status == 200 and saved["saved"] == ["monitor.distance_cm"]
+            status, stale = call(
+                "/api/machine-rigs/save",
+                {"id": spare["id"], "sha256": spare["sha256"], "text": spare["text"]},
+            )
+            assert status == 400 and "changed since" in stale["error"]
+            status, renamed = call("/api/machine-rigs/rename", {"id": spare["id"], "name": "desk"})
+            assert "desk" in [c["name"] for c in renamed["configs"]]
+            status, defaulted = call("/api/machine-rigs/default", {"id": spare["id"]})
+            assert defaulted["default"] == spare["id"]
+            status, chosen = call(f"/api/session-rig?project={pid}&mode=simulate&config=booth")
+            assert chosen["config"]["name"] == "booth"
+            booth = next(c for c in defaulted["configs"] if c["name"] == "booth")
+            status, history = call(f"/api/machine-rigs/history?id={spare['id']}")
+            assert [s.get("by") for s in history["saves"]][:2] == ["general page", "general page"]
+            status, deleted = call("/api/machine-rigs/delete", {"id": booth["id"]})
+            assert [c["name"] for c in deleted["configs"]] == ["desk"]
+            status, synced = call("/api/machine-rigs/sync", {})
+            assert status == 200 and synced["sync"]["state"] == "not-connected"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_the_page_can_be_opened_with_a_config_chosen(self):
+        url = "http://127.0.0.1:5/#token=abc"
+        assert with_rig_config(url, "eye link") == "http://127.0.0.1:5/?rig=eye%20link#token=abc"
+        assert with_rig_config(url, None) == url
