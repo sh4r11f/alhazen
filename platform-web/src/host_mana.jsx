@@ -170,13 +170,14 @@ function UserDiv() {
       if (!MINE) return;
       return FS.onValue(FS.ref(FS.db, MINE + '/machines'), (s) => {
         const all = s.val() || {};
-        const machines = [];
+        const machines = [], problems = [];
         for (const [mid, node] of Object.entries(all)) {
           if (mid === 'metadata' || !node || typeof node !== 'object') continue;
+          // A record under a key that is not a machine id is listed as a problem, not skipped silently.
           try { machines.push(rigSummary(rigFromFirebase(node, mid))); }
-          catch (e) { console.warn('Alhazen Experiment Platform: skipped a machine record that is not readable (' + mid + ').', e); }
+          catch (e) { if (!(e instanceof RigSyncError)) throw e; problems.push(mid + ': ' + e.message); }
         }
-        cb({ machines });
+        cb({ machines, problems });
       }, onError);
     },
     subscribeRigMachine(mid, cb, onError) {

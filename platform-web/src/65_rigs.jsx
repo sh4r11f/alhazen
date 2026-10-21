@@ -181,16 +181,22 @@ function rigLiveConfigs(record) {
     .sort((a, b) => (a.id === record.default ? -1 : b.id === record.default ? 1 : String(a.name).localeCompare(String(b.name))));
 }
 
+// The machine's templates ({list, error}): JSON text it sent at its last sync. Text that is not a JSON
+// list is reported to the person (error), not passed over.
 function rigTemplatesOf(record) {
-  if (!record || typeof record.templates !== 'string') return [];
-  try { const list = JSON.parse(record.templates); return Array.isArray(list) ? list.filter((t) => t && typeof t.text === 'string') : []; }
-  catch (e) { console.warn('A machine sent rig templates that are not JSON; none are offered.', e); return []; }
+  if (!record || typeof record.templates !== 'string') return { list: [], error: null };
+  let list;
+  try { list = JSON.parse(record.templates); }
+  catch (e) { if (!(e instanceof SyntaxError)) throw e; return { list: [], error: 'The templates ' + rigMachineName(record) + ' sent are not JSON (' + e.message + ').' }; }
+  if (!Array.isArray(list)) return { list: [], error: 'The templates ' + rigMachineName(record) + ' sent are not a list.' };
+  return { list: list.filter((t) => t && typeof t.text === 'string'), error: null };
 }
 
+// The machine's rig schema ({schema, error}); without one the form chooses controls by value.
 function rigSchemaOf(record) {
-  if (!record || typeof record.rigSchema !== 'string') return null;
-  try { return JSON.parse(record.rigSchema); }
-  catch (e) { console.warn('A machine sent a rig schema that is not JSON; its fields are shown by value.', e); return null; }
+  if (!record || typeof record.rigSchema !== 'string') return { schema: null, error: null };
+  try { return { schema: JSON.parse(record.rigSchema), error: null }; }
+  catch (e) { if (!(e instanceof SyntaxError)) throw e; return { schema: null, error: 'The rig schema ' + rigMachineName(record) + ' sent is not JSON (' + e.message + '), so each setting is edited by the kind of value it has.' }; }
 }
 
 function rigNewId() {
@@ -282,6 +288,9 @@ function RigConfigsSection({ host, go, onFlash }) {
     <p className="eh-muted eh-rigs-lede">The rig settings each machine runs its sessions with. Change them here or on the machine's dashboard; the two stay in step, and the machine checks every change before it uses it.</p>
     {data === undefined ? <p className="eh-muted">Loading…</p>
       : data.error ? <p className="eh-rig-error" role="alert">The rig configs could not be read: {data.error}</p>
+      : null}
+    {data && data.problems && data.problems.length ? <p className="eh-rig-error" role="alert">{data.problems.length === 1 ? 'One machine record' : data.problems.length + ' machine records'} could not be read: {data.problems.join('; ')}</p> : null}
+    {data === undefined || data.error ? null
       : !machines.length ? <div className="empty"><h3>No machine has synced its rig configs yet</h3><p>A machine appears here once its alhazen dashboard (3.6 or newer) is connected to this library.</p></div>
       : machines.map((m) => {
         const configs = rigLiveConfigs(m);
@@ -318,7 +327,9 @@ function RigField({ id, path, value, schema, disabled, onSet }) {
   const shown = raw !== null ? raw : kind.kind === 'json' ? JSON.stringify(value) : value === null || value === undefined ? '' : String(value);
   function commitTyped(text) {
     if (kind.kind === 'json') {
-      try { onSet(JSON.parse(text)); setBad(''); setRaw(null); } catch (e) { setBad('Not valid JSON'); }
+      let value;
+      try { value = JSON.parse(text); } catch (e) { if (!(e instanceof SyntaxError)) throw e; setBad('Not valid JSON: ' + e.message); return; }
+      onSet(value); setBad(''); setRaw(null);
       return;
     }
     const t = text.trim();
@@ -371,7 +382,7 @@ function RigNewConfig({ host, record, go, onFlash, homeLabel = 'Machines' }) {
   const { Y, error: yamlError } = useRigYaml(host);
   const label = rigMachineName(record);
   const configs = rigLiveConfigs(record);
-  const templates = rigTemplatesOf(record);
+  const { list: templates, error: templatesError } = rigTemplatesOf(record);
   const [name, setName] = React.useState('');
   const [from, setFrom] = React.useState(configs.length ? 'c:' + configs[0].id : templates.length ? 't:0' : '');
   const [busy, setBusy] = React.useState(false);
@@ -416,6 +427,7 @@ function RigNewConfig({ host, record, go, onFlash, homeLabel = 'Machines' }) {
       </select> : <p className="eh-muted">{label} sent no configs or templates to start from.</p>}
       {source && source.summary ? <small>{source.summary}{typeof source.real_data === 'boolean' ? (source.real_data ? ' Records real data.' : ' Does not record real data.') : ''}</small> : null}</div>
     {yamlError ? <p className="eh-rig-error" role="alert">The YAML reader could not be loaded: {yamlError}</p> : null}
+    {templatesError ? <p className="eh-rig-error" role="alert">{templatesError}</p> : null}
     {problem ? <p className="eh-rig-error" role="alert">{problem}</p> : null}
     {err ? <p className="eh-rig-error" role="alert">{err}</p> : null}
     <div className="eh-actions eh-rig-actions"><button className="btn btn-primary" type="submit" disabled={busy || !text || !name.trim() || nameTaken}>{busy ? 'Adding…' : 'Add the config'}</button>
@@ -431,7 +443,7 @@ function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }
   const { Y, error: yamlError } = useRigYaml(host);
   const config = record && record.configs ? record.configs[cid] : null;
   const label = rigMachineName(record);
-  const schema = React.useMemo(() => rigSchemaOf(record), [record && record.rigSchemaSha, record && record.rigSchema && record.rigSchema.length]);
+  const { schema, error: schemaError } = React.useMemo(() => rigSchemaOf(record), [record && record.rigSchemaSha, record && record.rigSchema && record.rigSchema.length]);
   // The draft: what the editor started from (revision, text, name) and what it holds now.
   const [draft, setDraft] = React.useState(null);
   const [view, setView] = React.useState('form');
@@ -532,6 +544,7 @@ function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }
       {[['form', 'Settings'], ['yaml', 'YAML']].map(([k, l]) => <button key={k} role="tab" aria-selected={view === k} aria-current={view === k ? 'page' : undefined} onClick={() => setView(k)}>{l}</button>)}
     </div>
     {yamlError ? <p className="eh-rig-error" role="alert">The YAML reader could not be loaded ({yamlError}); edit the text in the YAML view.</p> : null}
+    {schemaError && view === 'form' ? <p className="eh-rig-error" role="alert">{schemaError}</p> : null}
     {view === 'form' && !yamlError ? (!parsed ? <p className="eh-muted">Loading…</p>
       : parsed.error ? <p className="eh-rig-error" role="alert">The YAML does not parse: {parsed.error}. Fix it in the YAML view.</p>
       : <RigForm values={parsed.values} schema={schema} disabled={!!busy} onSet={setValue} />)

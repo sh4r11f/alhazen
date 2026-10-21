@@ -17,7 +17,7 @@ const esbuild = require('esbuild');
 const Y = require('yaml');
 const code = esbuild.transformSync(fs.readFileSync(path.join(HERE, '..', 'src', '65_rigs.jsx'), 'utf8'), { loader: 'jsx' }).code;
 const H = new Function('React', 'window', code + '\nreturn { rigSectionOf, rigSectionDepth, rigLeaves, rigIsEventPath, rigEventPathsIn, rigSchemaAt, '
-  + 'rigFieldKind, rigParse, rigSetValue, rigDeletePaths, rigChanges, rigConfigState, rigLiveConfigs, rigTemplatesOf, rigPickerGroups, rigNewId };')(
+  + 'rigFieldKind, rigParse, rigSetValue, rigDeletePaths, rigChanges, rigConfigState, rigLiveConfigs, rigTemplatesOf, rigSchemaOf, rigPickerGroups, rigNewId };')(
   {}, { crypto: globalThis.crypto });
 const schema = JSON.parse(fs.readFileSync(path.join(HERE, 'rig_schema_sample.json'), 'utf8'));
 
@@ -139,9 +139,14 @@ test('the Run dialog offers the configs of the window\'s machine, else all, grou
 });
 
 test('templates and ids', () => {
-  assert.deepEqual(H.rigTemplatesOf({ templates: '[{"id":"lab","text":"a: 1"},{"id":"bad"}]' }).map((t) => t.id), ['lab']);
-  assert.deepEqual(H.rigTemplatesOf({ templates: 'not json' }), []);
-  assert.deepEqual(H.rigTemplatesOf(null), []);
+  assert.deepEqual(H.rigTemplatesOf({ templates: '[{"id":"lab","text":"a: 1"},{"id":"bad"}]' }).list.map((t) => t.id), ['lab']);
+  const bad = H.rigTemplatesOf({ label: 'Booth', templates: 'not json' });
+  assert.deepEqual(bad.list, []);
+  assert.match(bad.error, /^The templates Booth sent are not JSON/);
+  assert.match(H.rigTemplatesOf({ label: 'Booth', templates: '{}' }).error, /not a list/);
+  assert.deepEqual(H.rigTemplatesOf(null), { list: [], error: null });
+  assert.match(H.rigSchemaOf({ label: 'Booth', rigSchema: '{' }).error, /not JSON/);
+  assert.deepEqual(H.rigSchemaOf({ rigSchema: '{"type":"object"}' }), { schema: { type: 'object' }, error: null });
   const id = H.rigNewId();
   assert.match(id, /^c[0-9a-f]{10}$/);
   assert.notEqual(H.rigNewId(), id);
