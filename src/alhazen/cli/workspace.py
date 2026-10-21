@@ -2657,17 +2657,12 @@ class Workspace:
 
     def _machine_choices(self) -> dict[str, Any] | None:
         """This machine's rig configs as the Run page's chooser lists them: id, name,
-        whether it is the default and why it cannot be run, if it cannot."""
-        status = self.machine.status()
-        if status.get("error"):
+        whether it is the default and why it cannot be run, if it cannot. None when the
+        folder cannot be read (the General page says why)."""
+        try:
+            return self.machine.choices()
+        except (mr.MachineRigError, OSError):
             return None
-        return {
-            "default": status["default"],
-            "configs": [
-                {"id": c["id"], "name": c["name"], "default": c["default"], "problem": c["problem"]}
-                for c in status["configs"]
-            ],
-        }
 
     def machine_templates(self) -> list[dict[str, Any]]:
         """The rigs this machine's rig can be set up from: the workspace's own
