@@ -468,10 +468,6 @@
   margin-bottom: 10px;
 }
 
-.mrc-config-actions {
-  justify-content: flex-start;
-}
-
 .mrc-config-work:not(:empty) {
   margin-top: 4px;
 }
