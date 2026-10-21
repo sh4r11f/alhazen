@@ -118,6 +118,12 @@ def main(argv: list[str] | None = None) -> int:
     dashboard.add_argument(
         "--no-browser", action="store_true", help="print the URL without opening it"
     )
+    dashboard.add_argument(
+        "--rig-config",
+        default=None,
+        metavar="NAME",
+        help="open the Run page with this machine's rig config NAME chosen",
+    )
     # `alhazen platform ...` (alhazen.experiment_platform.cli): its parser is
     # stdlib-only, so adding it costs a plain install nothing.
     from alhazen.experiment_platform.cli import add_parser as add_platform_parser

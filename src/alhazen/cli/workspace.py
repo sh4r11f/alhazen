@@ -38,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from alhazen.cli import machine_rig as mr
 from alhazen.cli.launch_failure import launch_failure
+from alhazen.cli.machine_rig_sync import rig_sync_view
 from alhazen.cli.people import PeopleError, PeopleRegistry
 from alhazen.cli.workspace_schema import EVENTS_KEY, TASK_EVENTS_KEY, TASK_NAME_KEY
 from alhazen.config.calibration_images import NAME_PATTERN
@@ -1132,6 +1133,9 @@ class Launch(BaseModel):
     # the last session of the same experiment and task (``prefill``). Only
     # with ``rig`` empty.
     rig_values: dict[str, Any] | None = None
+    # Which of this machine's rig configs the session runs on, by id or name (the Run
+    # page's chooser); empty: the machine's default config.
+    rig_config: str = ""
     parameters_yaml: str | None = None
     parameters: dict[str, Any] | None = None
     subject: str = ""
@@ -1655,6 +1659,12 @@ def _stimulus_preview_command(
 MACHINE_SPEC = "machine"
 
 
+def machine_spec(machine: mr.Machine) -> str:
+    """The key a rig config's remembered Live monitor switches are kept under: "machine"
+    for the first config (as 3.5.0 kept them), "machine:<id>" for the others."""
+    return MACHINE_SPEC if machine.legacy else f"{MACHINE_SPEC}:{machine.id}"
+
+
 @dataclass
 class LaunchRig:
     """The rig one launch runs on, resolved: what ``--rig`` is given, the
@@ -1694,6 +1704,7 @@ class LaunchRig:
         return {
             "kind": "machine",
             "machine": self.machine.name,
+            "config": self.machine.id,
             "file": str(self.machine.path),
             "sha256": self.machine.sha256,
             "changes": self.changes or [],
@@ -1937,7 +1948,10 @@ class Workspace:
             _load_record(registry, list) if registry.exists() else []
         )
         # This machine's rig: the one every session here runs on (machine_rig.py).
-        self.machine = mr.MachineRig(self.directory)
+        self.machine = mr.MachineRigs(self.directory)
+        # The sync of this machine's rig configs with the platform (machine_rig_sync); the
+        # dashboard sets it when it serves the pages, None for a workspace used on its own.
+        self.rig_sync: Any = None
         self.runs: dict[str, dict[str, Any]] = {}
         for path in sorted((self.directory / "runs").glob("*/run.json")):
             run = _load_record(path, dict)
@@ -2119,6 +2133,8 @@ class Workspace:
             # This machine's rig, which every session here runs on: its name,
             # file and data_root; None before it is set up (machine_rig.py).
             "machine_rig": self._machine_brief(),
+            # Every rig config of this machine, for the Run page's chooser.
+            "machine_rigs": self._machine_choices(),
             # Why the Rig menu offers no shared rigs, when that is because the
             # registration predates them; None otherwise.
             "rigs_note": REGISTER_AGAIN if shared is None else None,
@@ -2622,9 +2638,9 @@ class Workspace:
     # -- this machine's rig (cli/machine_rig.py) --------------------------------------
 
     def _machine_brief(self) -> dict[str, Any] | None:
-        """This machine's rig in a line: name, file, data_root; None before it
-        is set up, or when its folder cannot be read (the pages say why from
-        /api/machine-rig)."""
+        """The default rig config in a line: id, name, file, data_root; None before this
+        machine has a config, or when its folder cannot be read (the pages say why from
+        /api/machine-rigs)."""
         try:
             machine = self.machine.read()
         except (mr.MachineRigError, ConfigError, OSError):
@@ -2632,11 +2648,21 @@ class Workspace:
         if machine is None:
             return None
         return {
+            "id": machine.id,
             "name": machine.name,
             "file": str(machine.path),
             "sha256": machine.sha256,
             "data_root": machine.values.get("data_root"),
         }
+
+    def _machine_choices(self) -> dict[str, Any] | None:
+        """This machine's rig configs as the Run page's chooser lists them: id, name,
+        whether it is the default and why it cannot be run, if it cannot. None when the
+        folder cannot be read (the General page says why)."""
+        try:
+            return self.machine.choices()
+        except (mr.MachineRigError, OSError):
+            return None
 
     def machine_templates(self) -> list[dict[str, Any]]:
         """The rigs this machine's rig can be set up from: the workspace's own
@@ -2695,20 +2721,44 @@ class Workspace:
         return None
 
     def machine_status(self) -> dict[str, Any]:
-        """This machine's rig for the pages: its file, settings and history,
-        or, before it is set up, the rigs it can be set up from."""
+        """This machine's rig configs for the pages (docs/design/machine-rig-configs.md §3
+        ``Rigs``): each with its file, settings, history, calibrations and sync state, and
+        the connection to the platform."""
         status = self.machine.status()
-        if status["configured"]:
-            status["reward_calibration"] = _reward_calibration_summary(Path(status["file"]))
-            return status
+        data = None
+        if not status.get("error"):
+            data = self.machine.index()
+        for config in status["configs"]:
+            config["reward_calibration"] = (
+                _reward_calibration_summary(Path(config["file"])) if config.get("text") else None
+            )
+            entry = (data or {}).get("configs", {}).get(config["id"], {})
+            config["sync"] = rig_sync_view(config, entry.get("sync") or {}, self.rig_sync)
+        status["sync"] = (
+            self.rig_sync.state()
+            if self.rig_sync is not None
+            else {
+                "connected": False,
+                "state": "not-connected",
+                "at": None,
+                "error": None,
+                "platform": None,
+            }
+        )
+        if status.get("machine") and self.rig_sync is not None:
+            status["machine"]["label"] = self.rig_sync.label()
+        return status
+
+    def machine_template_list(self) -> dict[str, Any]:
+        """GET /api/machine-rigs/templates: the rigs a new config can start from."""
         templates = self.machine_templates()
-        return {**status, "templates": templates, "suggested": self._suggested_template(templates)}
+        return {"templates": templates, "suggested": self._suggested_template(templates)}
 
     def _template_source(self, template: str) -> tuple[Path, dict[str, Path] | None, dict]:
         """The file, the shared rigs to merge it over, and how to name it, for
         a template id from `machine_templates`."""
         if not isinstance(template, str) or not template:
-            raise ValueError("Choose the rig this machine starts from")
+            raise ValueError("Choose the rig this config starts from")
         if template.startswith(SHARED_PREFIX):
             name = template.removeprefix(SHARED_PREFIX)
             files = shared_rig_files()
@@ -2726,36 +2776,143 @@ class Workspace:
         meta = {"kind": "experiment", "label": label, "project": project["name"]}
         return path, _shared_rigs(project), meta
 
+    def template_texts(self) -> list[dict[str, Any]]:
+        """Every template with the text a config made from it would start with (merged,
+        event names left out), for the platform's Add config (machine_rig_sync). One that
+        cannot be read is listed with ``error`` and no text, so the platform can say why."""
+        out = []
+        for t in self.machine_templates():
+            entry = {k: t.get(k) for k in ("id", "label", "kind", "name", "summary", "real_data")}
+            if t.get("error"):
+                out.append({**entry, "error": str(t["error"])})
+                continue
+            try:
+                path, shared, meta = self._template_source(t["id"])
+                text, _removed, _meta = mr.template_text(
+                    t["name"], path, shared=shared, template=meta
+                )
+            except (ValueError, ConfigError, mr.MachineRigError, OSError) as exc:
+                out.append({**entry, "error": str(exc)})
+                continue
+            out.append({**entry, "text": text})
+        return out
+
+    def _changed_rigs(self) -> None:
+        """Tell the platform sync that a config changed here (in the background)."""
+        if self.rig_sync is not None:
+            self.rig_sync.soon()
+
     def setup_machine(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Set this machine's rig up from a template (POST /api/machine-rig/setup)."""
+        """A new rig config (POST /api/machine-rigs/create): ``name`` and one of
+        ``template`` (a shared or an experiment's rig), ``copy_of`` (another config) or
+        ``text``. The first config becomes the default."""
         if not isinstance(body, dict):
-            raise ValueError("Send the machine's name and the rig it starts from")
-        path, shared, meta = self._template_source(body.get("template"))
-        with self.lock:
-            status = self.machine.setup(body.get("name"), path, shared=shared, template=meta)
-        status["reward_calibration"] = _reward_calibration_summary(Path(status["file"]))
-        return status
+            raise ValueError("Send the config's name and what it starts from")
+        name = body.get("name")
+        if body.get("template"):
+            path, shared, meta = self._template_source(str(body["template"]))
+            with self.lock:
+                created = self.machine.setup(
+                    name, path, shared=shared, template=meta, by="general page"
+                )
+            config_id = created["id"]
+        elif body.get("copy_of"):
+            source = self.machine.require(str(body["copy_of"]))
+            with self.lock:
+                config = self.machine.create(
+                    name,
+                    source.text,
+                    origin={"kind": "copy", "of": source.id, "name": source.name},
+                    by="general page",
+                )
+            config_id = config.id
+        elif isinstance(body.get("text"), str):
+            with self.lock:
+                config = self.machine.create(
+                    name, body["text"], origin={"kind": "text"}, by="general page"
+                )
+            config_id = config.id
+        else:
+            raise ValueError("Say what the config starts from: a template, a copy or its text")
+        self._changed_rigs()
+        return {**self.machine_status(), "created": config_id}
 
     def save_machine(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Save this machine's rig (POST /api/machine-rig/save): ``text`` from
-        the General page's editor, or ``values`` from the Run page's "Save to
-        this machine's rig"; ``sha256`` is the file as the page read it."""
+        """Save a rig config (POST /api/machine-rigs/save): ``text`` from the General page's
+        YAML editor, or ``values`` from its form or the Run page's "Save to <config>";
+        ``sha256`` is the file as the page read it."""
         if not isinstance(body, dict):
             raise ValueError("Send the rig to save")
         expected = body.get("sha256")
+        ref = body.get("id") or None
         with self.lock:
             if "text" in body:
-                status = self.machine.save_text(body["text"], expected, by="general page")
+                saved = self.machine.save_text(ref, body["text"], expected, by="general page")
             elif "values" in body:
-                status = self.machine.save_values(body["values"], expected, by="run page")
+                saved = self.machine.save_values(
+                    ref, body["values"], expected, by=str(body.get("by") or "run page")[:40]
+                )
             else:
                 raise ValueError("Send the rig's text or its settings")
-        status["reward_calibration"] = _reward_calibration_summary(Path(status["file"]))
-        return status
+        if saved["saved"] or "text" in body:
+            self._changed_rigs()
+        return {**self.machine_status(), "saved": saved["saved"]}
 
-    def check_machine(self, text: str) -> dict[str, Any]:
-        """Check edited machine-rig text without saving it."""
-        return self.machine.check_text(text)
+    def check_machine(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Check edited rig-config text without saving it."""
+        if not isinstance(body, dict) or not isinstance(body.get("text"), str):
+            raise ValueError("The rig must be text")
+        return self.machine.check_text(body.get("id") or None, body["text"])
+
+    def rename_machine(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise ValueError("Send the config and its new name")
+        with self.lock:
+            self.machine.rename(
+                body.get("id"), body.get("name"), body.get("sha256"), by="general page"
+            )
+        self._changed_rigs()
+        return self.machine_status()
+
+    def default_machine(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body, dict) or not body.get("id"):
+            raise ValueError("Say which config becomes the default")
+        with self.lock:
+            self.machine.set_default(str(body["id"]))
+        self._changed_rigs()
+        return self.machine_status()
+
+    def delete_machine(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body, dict) or not body.get("id"):
+            raise ValueError("Say which config to delete")
+        with self.lock:
+            removed = self.machine.delete(str(body["id"]), body.get("sha256"), by="general page")
+        if self.rig_sync is not None:
+            self.rig_sync.deleted_here(removed)
+        self._changed_rigs()
+        return {**self.machine_status(), "deleted": removed["id"]}
+
+    def machine_history(self, ref: str) -> dict[str, Any]:
+        return self.machine.history(ref)
+
+    def machine_version(self, ref: str, file: str) -> dict[str, Any]:
+        return {"text": self.machine.version(ref, file)}
+
+    def resolve_machine(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Settle a sync conflict here (POST /api/machine-rigs/resolve)."""
+        if self.rig_sync is None:
+            raise ValueError("This dashboard is not connected to a platform")
+        if not isinstance(body, dict) or not body.get("id"):
+            raise ValueError("Say which config's conflict to settle")
+        self.rig_sync.resolve(str(body["id"]), body.get("keep"))
+        return self.machine_status()
+
+    def sync_machine(self) -> dict[str, Any]:
+        """POST /api/machine-rigs/sync: sync with the platform now (never raises for a
+        platform that cannot be reached; the reason is in ``sync``)."""
+        if self.rig_sync is not None:
+            self.rig_sync.sync()
+        return self.machine_status()
 
     def _events_task(self, project: dict[str, Any], request: Launch) -> str | None:
         """The task whose events a launch's rig may name, as its run record
@@ -2805,7 +2962,11 @@ class Workspace:
             for r in self.runs.values()
             if r.get("project") == project["id"]
             and r.get("rig_source") == MACHINE_SPEC
-            and r.get("rig_name") == machine.name
+            and (
+                r.get("rig_config") == machine.id
+                # A 3.5.0 session, from before configs had ids: the same rig by name.
+                or (not r.get("rig_config") and r.get("rig_name") == machine.name)
+            )
             and r.get("mode") in {m.value for m in Mode if m is not Mode.MEASURE}
             and (r.get("task") or None) == (task or None)
             and isinstance(r.get("rig_carried"), dict)
@@ -2817,7 +2978,7 @@ class Workspace:
                 "run": newest["id"],
                 "started": newest["started"],
                 "mode": newest.get("mode"),
-                "label": f"as in the last session of this task on this machine "
+                "label": f"as in the last session of this task with this rig config "
                 f"({newest['started'][:10]}, {newest.get('mode')})",
             }
         root = Path(project["path"])
@@ -2883,12 +3044,19 @@ class Workspace:
                 dropped.append(f"{text}: this machine's rig has no {'.'.join(path[:-1])}")
         return values, source, dropped
 
-    def session_rig(self, key: str, task: str | None = None, mode: str | None = None) -> dict:
-        """What the Run page's Rig section starts from (GET /api/session-rig):
-        this machine's rig, the settings a session of ``task`` starts with,
-        the task's events and where the carried settings came from."""
+    def session_rig(
+        self,
+        key: str,
+        task: str | None = None,
+        mode: str | None = None,
+        config: str | None = None,
+    ) -> dict:
+        """What the Run page's Rig section starts from (GET /api/session-rig): the
+        chosen rig config of this machine (``config``, by id or name; the default when
+        none), the settings a session of ``task`` starts with, the task's events and where
+        the carried settings came from, and every config the chooser offers."""
         project = self.project(key)
-        machine = self.machine.require()
+        machine = self.machine.require(config or None)
         task = task or None
         is_mode = mode is None or mode in {m.value for m in Mode}
         declared = self._declared_events(project, task) if is_mode else None
@@ -2896,22 +3064,26 @@ class Workspace:
             values, source, dropped = copy.deepcopy(machine.values), None, []
         else:
             values, source, dropped = self._prefilled(project, task, machine, declared)
-        status = self.machine.status()
+        choices = self._machine_choices() or {"default": None, "configs": []}
+        problem = next((c["problem"] for c in choices["configs"] if c["id"] == machine.id), None)
         return {
             "machine": {
+                "id": machine.id,
                 "name": machine.name,
                 "file": str(machine.path),
                 "sha256": machine.sha256,
                 "values": machine.values,
-                "problem": status.get("problem"),
+                "problem": problem,
             },
+            "config": {"id": machine.id, "name": machine.name},
+            "configs": choices["configs"],
             "values": values,
             "events": declared,
             "task_events": self._task_events(project, task) if declared is not None else None,
             "events_source": source,
             "dropped": dropped,
             "reward_calibration": _reward_calibration_summary(machine.path),
-            "live_streams": self._live_stream_defaults(key, MACHINE_SPEC, values),
+            "live_streams": self._live_stream_defaults(key, machine_spec(machine), values),
         }
 
     def rig_schema(self) -> dict[str, Any]:
@@ -2925,14 +3097,16 @@ class Workspace:
         if request.rig:
             if request.rig_values is not None:
                 raise ValueError(
-                    "Rig settings for a session go with this machine's rig, not with a rig "
-                    "named by its file"
+                    "Rig settings for a session go with one of this machine's rig configs, not "
+                    "with a rig named by its file"
                 )
+            if request.rig_config:
+                raise ValueError("Name either a rig config of this machine or a rig file, not both")
             ref, shared = self._launch_rig(project, request.rig)
             merged = rig_mapping(ref.path, shared=shared)
             spec = ref.spec if ref.source == "alhazen" else str(ref.path)
             return LaunchRig(ref.name, ref.source, spec, ref.path, merged, ref)
-        machine = self.machine.require()
+        machine = self.machine.require(request.rig_config or None)
         if request.mode == Mode.MEASURE.value:
             if request.rig_values is not None:
                 session, _removed = mr.strip_events(request.rig_values)
@@ -3306,7 +3480,11 @@ class Workspace:
             # position on the Run page next time (_live_stream_defaults).
             sent_streams = self._live_streams(project, request)
             if sent_streams is not None:
-                self._remember_live_streams(project["id"], launched_rig, sent_streams)
+                self._remember_live_streams(
+                    project["id"],
+                    machine_spec(launch_rig.machine) if launch_rig.machine else launched_rig,
+                    sent_streams,
+                )
             (run_dir / "media").mkdir(parents=True)
             started = now()
             # The launch as it was decided, written once and never again
@@ -3324,6 +3502,8 @@ class Workspace:
                 "rig": launched_rig,
                 "rig_name": launch_rig.name,
                 "rig_source": launch_rig.source,
+                # Which of this machine's rig configs, by id (None for a named rig).
+                "rig_config": launch_rig.machine.id if launch_rig.machine else None,
                 # For a session on this machine's rig: where it came from and
                 # what this session changed (rig-origin.json holds the same).
                 "rig_origin": launch_rig.origin(key),
@@ -3399,6 +3579,9 @@ class Workspace:
                 # not the file) and for anyone reading run.json.
                 "rig_name": launch_rig.name,
                 "rig_source": launch_rig.source,
+                # Which of this machine's rig configs it ran on, by id (None for a
+                # named rig): what the next session's event lines are carried from.
+                "rig_config": launch_rig.machine.id if launch_rig.machine else None,
                 # This machine's rig only: what the session changed from it
                 # ({path, machine, session}), the settings each experiment
                 # adds as this session had them (carried to the next session

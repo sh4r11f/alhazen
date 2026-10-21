@@ -79,6 +79,12 @@ you answer *Update the files, keep the data* (files are written over the old one
 deleted). Copies already on this machine with saved sessions are registered when the library
 is refreshed, so their data shows on the Data and History pages.
 
+The same connection keeps this machine's **rig configs** in step with the platform (alhazen
+3.6 or newer on both sides): the platform's Machines page (My machines in Mana) shows each
+config, edits it, adds or deletes one; the machine takes an edit at its next sync after the
+checks a launch makes, refuses one that fails them with the reason, and never overwrites a
+change the other side has not seen ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig-configs)).
+
 The folders are remembered. Next time, `alhazen dashboard` is enough. Add more
 with **Add experiment**, using the path to a checkout containing `run.py`.
 Nothing is installed by registering a folder. Choose a Python interpreter in
@@ -107,7 +113,7 @@ expand or collapse are remembered in the browser:
 
 | Page | What it is |
 | --- | --- |
-| **General** | The experiment's notes (description, notes), its registration (folder, interpreter, versions, whether its alhazen records the experimenter), and Project settings / Archive. Its **subjects** and **experimenters**: add, edit, archive, import from the data folders' `participants.tsv`, and read back an edited CSV copy. **This machine's rig**: the one rig every session on this machine runs on ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig)), with its facts and an editor; until it exists, the card that sets it up. |
+| **General** | The experiment's notes (description, notes), its registration (folder, interpreter, versions, whether its alhazen records the experimenter), and Project settings / Archive. Its **subjects** and **experimenters**: add, edit, archive, import from the data folders' `participants.tsv`, and read back an edited CSV copy. **This machine's rig configs**: the rigs sessions on this machine run on ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig-configs)): add one (from a copy, an experiment's rig or a shared rig), edit (by section or as YAML), rename, make default, delete, history, and their sync with the platform (Sync now; a refused platform edit and a conflict are shown with both versions); until the machine has one, the card that adds the first. |
 | **Run** | The launch form as before, with **Subject** and **Experimenter** menus of the records on General (a subject that is not registered can still be typed under *Type an unregistered subject instead*). |
 | **Data** | The Data view ([below](#data)). |
 | **History** | Every session folder in the experiment's data folders — launched from here or from a terminal — and every launch this workspace made, joined where a launch's console names its folder. A session opens to its records, its log, its files (downloads) and its saved live monitor page; a launch to its console, `launch.json` and `run.json`. The details appear above the lists, and Open jumps the page to them. What a record does not say is "not recorded", not a guess. |
@@ -211,12 +217,13 @@ flowchart LR
         DASH["dashboard.py<br/>routes, token, CSP"]
         WS["workspace.py<br/>registry, describe, launch"]
         MAN["workspace_manage.py<br/>people, history"]
-        MACH["machine_rig.py<br/>this machine's rig"]
+        MACH["machine_rig.py<br/>this machine's rig configs"]
+        MSYNC["machine_rig_sync.py<br/>configs synced with the platform"]
         PEO["people.py<br/>people.sqlite3, CSV copies"]
         EXP["config/experiment.py<br/>experiment_title"]
         RIGS["config/rigs.py<br/>list_rigs, resolve_rig"]
     end
-    JS -- "/api/state, /api/session-rig, /api/machine-rig, /api/config, /api/runs" --> DASH
+    JS -- "/api/state, /api/session-rig, /api/machine-rigs, /api/config, /api/runs" --> DASH
     JS -- "show(project, helpers) / hide()" --> DJS
     JS -- "renderHome / showGeneral / showHistory" --> MJS
     MJS -- "/api/manage/*" --> DASH
@@ -281,32 +288,34 @@ the light theme; the dark theme is unchanged.
 1. Select an experiment in the sidebar.
 2. Choose a mode and its options (the Mode menu lists the modes and the
    experiment's scripts by name, and opens on Preview images when the
-   experiment has it, else on Simulate). **Rig** is this machine's rig: every session the workspace
-   launches runs on it, so there is no menu ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig)).
-   The heading names the machine (**This machine · lab**) with a button to
-   its editor on the General page. Under it, the rig's facts as this session
+   experiment has it, else on Simulate). **Rig** offers this machine's rig
+   configs and nothing else: a chooser with the default chosen (or the one
+   the page was opened for, `?rig=<name>`); a config that cannot run is
+   listed with the reason but cannot be chosen
+   ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig-configs)).
+   Changing it starts the section again from that config. A button opens
+   the config's editor on the General page. Under it, the rig's facts as this session
    will run it — **Screen**, **Size**, **Display**, **Live monitor**, **Reward**
    and **Rig**, which says whether the session changed it (`lab · 1 changed
    for this session`). A development rig — one whose settings say
    `real_data: false` ([Rigs](rigs.md#5-real-data-only-on-a-rig-meant-for-it)) —
    adds **Real data: refused**, and in **Run experiment** the note above the
    launch button says, before anything is sent, that the launch will be
-   refused and that `real_data` is set in this machine's rig.
+   refused and that `real_data` is set in the config.
    **Event lines** assigns the task's events to the machine's sync lines and
    photodiode: the task's own events first, each with a line and a
    photodiode tick, those every task has folded away, and one line saying how
    many go out on a line; it starts from the last session of the same task on
-   this machine (else the experiment's own rig of this machine's name, else
+   this config (else the experiment's own rig of the config's name, else
    none) and says which. On a tracker, the EDF file name and a calibration
    limit sit under it. **Rig settings for this session** (folded) lists every
    setting under the Monitor, Display, Eye tracker, Reward, Sync, Live monitor
    and Data headings, with a search box; a changed setting is marked and has a
-   reset button, **Reset all** undoes every change, and **Save to this
-   machine's rig** — asked first, listing each change — makes them the
-   machine's. A change is kept when the task or the mode changes; the event
+   reset button, **Reset all** undoes every change, and **Save to <config>**
+   — asked first, listing each change — makes them the config's. A change is kept when the task or the mode changes; the event
    lines start over for another task. For Measure rig the settings are read
-   only. Until the machine has a rig the section is the set-up card, and
-   nothing can be launched.
+   only. Until the machine has a config the section is the card that adds
+   the first, and nothing can be launched.
    For a rig with an EyeLink or a TRACKPixx3, the section ends with the
    **Calibration target** ([Eye tracker](eye-tracker.md#the-calibration-target)):
    *Looks like* Standard, Chosen pictures or Random pictures, *Motion* Still
@@ -656,19 +665,19 @@ a copy of the rig, the actual argument list and working directory, console
 output, and its own media folder. Source configuration files are never edited.
 The experiment's parameter model still validates values before a session
 starts, so unsupported values produce the same errors as the CLI. An
-Each session runs on this machine's rig: its own copy, `rig-<name>.yaml` in
-the run folder (with the machine's gamma and reward calibration beside it),
-passed as `--rig <that file>` and copied as `rig.yaml` for the History page;
-Measure rig runs the machine's file itself. Relative paths in it (a relative
+Each session runs on one of this machine's rig configs: its own copy,
+`rig-<name>.yaml` in the run folder (with the config's gamma and reward
+calibration beside it), passed as `--rig <that file>` and copied as
+`rig.yaml` for the History page; Measure rig runs the config's file itself. Relative paths in it (a relative
 `data_root`) keep their meaning, because the session's working directory is
-the experiment's folder. `run.json` records `rig: "machine"`, the machine's
-name (`rig_name`), `rig_source: "machine"`, what the session changed
+the experiment's folder. `run.json` records `rig: "machine"`, the config's
+name (`rig_name`) and id (`rig_config`), `rig_source: "machine"`, what the session changed
 (`rig_changes`, each `{path, machine, session}`), the settings each
 experiment adds as it ran them (`rig_carried`, which the next session of the
-same task on this machine starts from), where its event lines came from
+same task on this config starts from), where its event lines came from
 (`rig_events_source`) and the machine's file and hash (`machine_rig`); an
 alhazen that takes `--rig-origin` records the same in `session.json`'s
-`rig.origin` ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig)). A
+`rig.origin` ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig-configs)). A
 launch request that names a rig (an experiment's file, or `alhazen/<name>`)
 still runs it as before: a shared rig by name, an experiment's at its own
 path, with `rig.yaml` the merged rig and `rig-source.yaml` the file as

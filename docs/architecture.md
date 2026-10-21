@@ -2346,7 +2346,7 @@ implementation is a tool whose OK means nothing.
 | `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number (within the experiment's version), prompts for subject, session and — in `run` and `test` — the subject's initials if omitted, runs the task's own params file when `--params` is not given, applies its params hook, and shows the subject its instructions (§5.1). An experiment's `run.py` starts the same session through the same dispatch |
 | `alhazen validate --rig` | is this config file well-formed? |
 | `alhazen rigs` | which rigs can `--rig` name from here, whose is each, and what does each extend? |
-| `alhazen rig init` / `alhazen rig show` | set up, once, the one rig the dashboard runs every session on (this machine's), or show it ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig)) |
+| `alhazen rig init` / `rig list` / `rig show` | add a rig config to this machine (the dashboard's sessions run on one of them), list them, or show one ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig-configs)) |
 | `alhazen preview --rig --out` | draw every stimulus the experiment declares (`[tool.alhazen] stimuli`) as PNGs at the rig's pixel scale, with an index; no task and no parameter file, because neither changes what the experiment shows. The workspace's Preview images runs it |
 | `alhazen check-rig --rig` | is this rig actually wired? Constructs the real backends; `--pulse` fires the pump and the sync lines |
 | `alhazen sim-sorter` | publish the sorted-spike wire contract, so `check-rig` can be rehearsed with no sorter and no probe; `--fault` publishes a named non-conformance instead |
