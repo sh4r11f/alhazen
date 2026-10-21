@@ -399,3 +399,45 @@ def test_the_default_store_is_under_the_home_directory(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     assert platform_cli.default_store() == tmp_path / ".alhazen" / "platform"
+
+
+def test_a_new_listing_takes_the_refresh_access_and_an_existing_one_keeps_its_own(
+    store: FileStore, repo: Path
+):
+    refresh.refresh(store, [spec(repo)], LAB, access={"visibility": "private"})
+    assert store.listing("lab", "fixation-demo")["access"] == {"visibility": "private"}
+    (repo / "README.md").write_text("# Fixation demo\n\nLook harder.\n", encoding="utf-8")
+    git(repo, "commit", "-qam", "second")
+    [result] = refresh.refresh(store, [spec(repo)], LAB, access={"visibility": "public"})
+    assert result.status == "created"
+    assert store.listing("lab", "fixation-demo")["access"] == {"visibility": "private"}
+    assert "lab" not in PlatformService(store).catalogue(ADA)
+
+
+def test_a_listing_from_before_access_is_refreshed_as_public_explicitly(
+    store: FileStore, repo: Path
+):
+    refresh.refresh(store, [spec(repo)], LAB)
+    legacy = store.listing("lab", "fixation-demo")
+    legacy.pop("access")
+    store.put_listing("lab", "fixation-demo", legacy)
+    (repo / "README.md").write_text("# Fixation demo\n\nAgain.\n", encoding="utf-8")
+    git(repo, "commit", "-qam", "third")
+    refresh.refresh(store, [spec(repo)], LAB, access={"visibility": "private"})
+    assert store.listing("lab", "fixation-demo")["access"] == {"visibility": "public"}
+
+
+def test_refresh_from_the_command_line_sets_access_for_a_new_listing(
+    tmp_path: Path, repo: Path, capsys
+):
+    store_dir = tmp_path / "cli-access"
+    base = ["platform", "refresh", str(repo), "--ref", "main", "--store", str(store_dir)]
+    assert alhazen_main([*base, "--visibility", "people"]) == 1
+    assert "needs --people" in capsys.readouterr().err
+    # A local store has no accounts, so there is no one to name.
+    assert alhazen_main([*base, "--visibility", "people", "--people", "ux"]) == 1
+    assert "no other accounts" in capsys.readouterr().err
+    assert alhazen_main([*base, "--visibility", "private"]) == 0
+    assert FileStore(store_dir).listing("local", "fixation-demo")["access"] == {
+        "visibility": "private"
+    }
