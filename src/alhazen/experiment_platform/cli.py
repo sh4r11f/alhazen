@@ -396,7 +396,7 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901 - one branch per subcom
         if args.action == "list":
             for user in accounts.users():
                 print(
-                    f"{user['username']:<24} {user['name']:<30} "
+                    f"{user['username']:<24} {user['uid']:<14} {user['name']:<30} "
                     f"{'disabled' if user['disabled'] else ''}"
                 )
             return 0
