@@ -35,6 +35,7 @@ from alhazen.experiment_platform.errors import (
     StoreError,
 )
 from alhazen.experiment_platform.machines import Machines
+from alhazen.experiment_platform.rigstore import RigStore
 from alhazen.experiment_platform.service import PlatformService, Principal
 
 log = logging.getLogger("alhazen.experiment_platform")
@@ -94,8 +95,16 @@ class Gate(Protocol):
 
 
 # What a machine token may ask (machines.py): its owner's library, revisions of their own
-# copies, and reports from the machine.
-MACHINE_ROUTES = {"forks", "bundle_archive", "machine_event"}
+# copies, reports from the machine, and its own rig configs (rigsync.py).
+MACHINE_ROUTES = {
+    "forks",
+    "bundle_archive",
+    "machine_event",
+    "rigs_machine_get",
+    "rigs_machine_sync",
+}
+# A machine's sync carries its rig schema and the templates it can start a config from.
+MAX_RIG_SYNC_BYTES = 8 * 1024 * 1024
 
 
 class Request:
@@ -148,11 +157,11 @@ class Request:
             raise InvalidRequest("The request body ended early")
         return self._body
 
-    def json(self) -> dict[str, Any]:
+    def json(self, limit: int = MAX_JSON_BYTES) -> dict[str, Any]:
         if not (self.header("Content-Type") or "").startswith("application/json"):
             raise InvalidRequest("Send JSON (Content-Type: application/json)")
         try:
-            value = json.loads(self.body(MAX_JSON_BYTES) or b"{}")
+            value = json.loads(self.body(limit) or b"{}")
         except ValueError as error:
             raise InvalidRequest("The request body is not valid JSON") from error
         if not isinstance(value, dict):
@@ -192,6 +201,15 @@ _ROUTES: list[tuple[str, re.Pattern[str], str]] = [
         ("POST", r"/api/machines", "machine_add"),
         ("POST", r"/api/machines/events", "machine_event"),
         ("DELETE", r"/api/machines/(?P<machine>[^/]+)", "machine_revoke"),
+        ("GET", r"/api/rigs", "rigs"),
+        ("GET", r"/api/rigs/machine/(?P<mid>[^/]+)", "rigs_machine_get"),
+        ("POST", r"/api/rigs/machine/(?P<mid>[^/]+)/sync", "rigs_machine_sync"),
+        ("GET", r"/api/rigs/(?P<mid>[^/]+)", "rigs_get"),
+        ("DELETE", r"/api/rigs/(?P<mid>[^/]+)", "rigs_forget"),
+        ("PUT", r"/api/rigs/(?P<mid>[^/]+)/default", "rigs_default"),
+        ("PUT", r"/api/rigs/(?P<mid>[^/]+)/configs/(?P<cid>[^/]+)", "rigs_put"),
+        ("DELETE", r"/api/rigs/(?P<mid>[^/]+)/configs/(?P<cid>[^/]+)", "rigs_delete"),
+        ("POST", r"/api/rigs/(?P<mid>[^/]+)/configs/(?P<cid>[^/]+)/resolve", "rigs_resolve"),
     ]
 ]
 
@@ -207,10 +225,12 @@ class PlatformApp:
         max_upload: int = 64 * 1024 * 1024,
         web_dir: Path | None = None,
         machines: Machines | None = None,
+        rigs: RigStore | None = None,
     ) -> None:
         self.service = service
         self.gate = gate
         self.machines = machines
+        self.rigs = rigs
         self.max_upload = max_upload
         self.web_dir = web_dir or _web_dir()
         assets = self.web_dir / "assets.json"
@@ -262,11 +282,12 @@ class PlatformApp:
         )
 
     def _machine_caps(self, info: dict[str, Any], *, signed_in: bool) -> dict[str, Any]:
-        """The session answer with ``machineTokens``: true when this host keeps machine
-        tokens and someone is signed in to make them."""
+        """The session answer with ``machineTokens`` (and ``rigConfigs``): true when this host
+        keeps machine tokens (and rig configs) and someone is signed in to use them."""
         caps = info.get("capabilities")
         if isinstance(caps, dict):
             caps["machineTokens"] = self.machines is not None and signed_in
+            caps["rigConfigs"] = self.rigs is not None and signed_in
         return info
 
     def _machine(self, token: str) -> tuple[Principal, tuple[str, str]]:
@@ -315,6 +336,67 @@ class PlatformApp:
             return self._json(200, {"machine": record, "token": token})
         self.machines.revoke(principal.uid, args["machine"])
         return self._json(200, {})
+
+    def _rigs_route(
+        self,
+        name: str,
+        request: Request,
+        principal: Principal | None,
+        machine: tuple[str, str] | None,
+        args: dict[str, str],
+    ) -> tuple[int, list[tuple[str, str]], bytes]:
+        """A machine's rig configs (rigstore.py, docs/design/machine-rig-configs.md §4): the
+        machine reads and syncs its own record; the person reads and edits theirs."""
+        if self.rigs is None:
+            raise NotFound("This platform keeps no rig configs")
+        if principal is None:
+            raise AuthError("Sign in to see your machines' rig configs")
+        uid, rigs = principal.uid, self.rigs
+        if name == "rigs_machine_get":
+            return self._json(200, {"record": rigs.get(uid, args["mid"])})
+        if name == "rigs_machine_sync":
+            record, results = rigs.push(
+                uid,
+                args["mid"],
+                request.json(MAX_RIG_SYNC_BYTES),
+                token=machine[0] if machine else None,
+            )
+            return self._json(200, {"record": record, "results": results})
+        if machine is not None:  # pragma: no cover - MACHINE_ROUTES refuses these first
+            raise Forbidden("A machine token syncs its own rig configs only")
+        if name == "rigs":
+            return self._json(200, {"machines": rigs.list(uid)})
+        if name == "rigs_get":
+            return self._json(200, {"record": rigs.require(uid, args["mid"])})
+        if name == "rigs_forget":
+            rigs.forget(uid, args["mid"])
+            return self._json(200, {})
+        if name == "rigs_default":
+            body = request.json()
+            return self._json(
+                200,
+                {
+                    "record": rigs.set_default(
+                        uid, args["mid"], body.get("config"), body.get("base")
+                    )
+                },
+            )
+        if name == "rigs_put":
+            record = rigs.put(uid, args["mid"], args["cid"], request.json())
+            return self._json(200, {"record": record, "config": record["configs"][args["cid"]]})
+        if name == "rigs_delete":
+            base = request.query.get("base", "")
+            if not base.isdigit():
+                raise InvalidRequest("Say which revision you are deleting (?base=<revision>)")
+            return self._json(
+                200, {"record": rigs.delete(uid, args["mid"], args["cid"], int(base))}
+            )
+        if name == "rigs_resolve":
+            body = request.json()
+            return self._json(
+                200, {"record": rigs.resolve(uid, args["mid"], args["cid"], body.get("keep"))}
+            )
+        raise NotFound("No such API route")  # pragma: no cover
 
     def _error(self, error: PlatformError) -> tuple[int, list[tuple[str, str]], bytes]:
         status = (
@@ -387,6 +469,8 @@ class PlatformApp:
             return self._json(200, self._machine_caps(info, signed_in=principal is not None))
         if name in ("machines", "machine_add", "machine_revoke", "machine_event"):
             return self._machines_route(name, request, principal, machine, args)
+        if name.startswith("rigs"):
+            return self._rigs_route(name, request, principal, machine, args)
         if name == "logout":
             return self._json(200, {}, self.gate.logout(request))
         if name == "assets":
@@ -473,5 +557,6 @@ def capabilities(*, sign_in: bool) -> dict[str, bool]:
         "newWithMana": False,
         "machines": False,
         "machineTokens": False,
+        "rigConfigs": False,
         "signIn": sign_in,
     }

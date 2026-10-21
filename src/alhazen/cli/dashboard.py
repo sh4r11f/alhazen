@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from alhazen import __version__
 from alhazen.cli.console_break import interrupt_on_console_break
+from alhazen.cli.machine_rig_sync import RigSync
 from alhazen.cli.people import Conflict
 from alhazen.cli.workspace import (
     MEDIA_TYPES,
@@ -244,6 +245,15 @@ class DashboardServer(ThreadingHTTPServer):
         self.uploads = Uploads(workspace, self.data)
         # The owner's library on a platform (workspace_library.py).
         self.library = Library(workspace)
+        # This machine's rig configs, synced with the same library's platform
+        # (machine_rig_sync.py); the timer starts with serving (_serve).
+        workspace.rig_sync = self.rig_sync = RigSync(
+            workspace.machine,
+            self._rig_connection,
+            templates=workspace.template_texts,
+            schema=workspace.rig_schema,
+            version=__version__,
+        )
         # Set once the page asked to shut down (request_shutdown); a launch
         # arriving after that is refused rather than started and then stopped.
         self.shutting_down = False
@@ -252,6 +262,13 @@ class DashboardServer(ThreadingHTTPServer):
         self.started = now()
         self.close_reason = "stopped"
         super().__init__(("127.0.0.1", port), Handler)
+
+    def _rig_connection(self) -> Any:
+        """The library's connection and a client for it, or None when none is set up."""
+        source = self.library.source()
+        if source is None:
+            return None
+        return source, self.library._client_factory(source)
 
     def request_shutdown(self) -> None:
         """Stop serving shortly, unless a session is running (Conflict)."""
@@ -382,12 +399,23 @@ class Handler(BaseHTTPRequestHandler):
                 # it extends a shared one (Workspace.rig). `rig` is the menu's
                 # value — a project-relative path, or alhazen/<name>.
                 self._json(workspace.rig(query.get("project", [""])[0], query.get("rig", [""])[0]))
-            elif path == "/api/machine-rig":
-                # This machine's rig (Workspace.machine_status): its file and
-                # settings, or the rigs it can be set up from.
+            elif path == "/api/machine-rigs":
+                # This machine's rig configs (Workspace.machine_status): each with its
+                # file, settings, calibrations and sync state; a due sync starts behind.
+                self.server.rig_sync.due()
                 self._json(workspace.machine_status())
+            elif path == "/api/machine-rigs/templates":
+                # The rigs a new config can start from: registered experiments' and
+                # alhazen's shared rigs (the only place they are offered).
+                self._json(workspace.machine_template_list())
+            elif path == "/api/machine-rigs/history":
+                self._json(workspace.machine_history(query.get("id", [""])[0]))
+            elif path == "/api/machine-rigs/version":
+                self._json(
+                    workspace.machine_version(query.get("id", [""])[0], query.get("file", [""])[0])
+                )
             elif path == "/api/machine-rig/schema":
-                # RigConfig's JSON schema, for the Run page's rig fields.
+                # RigConfig's JSON schema, for the rig fields' choices.
                 self._json(workspace.rig_schema())
             elif path == "/api/session-rig":
                 # What the Run page's Rig section starts from for one task
@@ -398,6 +426,7 @@ class Handler(BaseHTTPRequestHandler):
                         query.get("project", [""])[0],
                         query.get("task", [None])[0] or None,
                         query.get("mode", [None])[0] or None,
+                        query.get("config", [None])[0] or None,
                     )
                 )
             elif path.startswith("/api/runs/"):
@@ -506,14 +535,22 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.shutting_down:
                     raise Conflict("The dashboard is shutting down; start it again to run.")
                 self._json(workspace.start(Launch.model_validate(body)), 201)
-            elif path == "/api/machine-rig/setup":
+            elif path == "/api/machine-rigs/create":
                 self._json(workspace.setup_machine(body), 201)
-            elif path == "/api/machine-rig/save":
+            elif path == "/api/machine-rigs/save":
                 self._json(workspace.save_machine(body))
-            elif path == "/api/machine-rig/check":
-                if not isinstance(body.get("text"), str):
-                    raise ValueError("The rig must be text")
-                self._json(workspace.check_machine(body["text"]))
+            elif path == "/api/machine-rigs/check":
+                self._json(workspace.check_machine(body))
+            elif path == "/api/machine-rigs/rename":
+                self._json(workspace.rename_machine(body))
+            elif path == "/api/machine-rigs/default":
+                self._json(workspace.default_machine(body))
+            elif path == "/api/machine-rigs/delete":
+                self._json(workspace.delete_machine(body))
+            elif path == "/api/machine-rigs/resolve":
+                self._json(workspace.resolve_machine(body))
+            elif path == "/api/machine-rigs/sync":
+                self._json(workspace.sync_machine())
             elif path == "/api/estimate":
                 self._json(self.server.estimates.estimate(EstimateRequest.model_validate(body)))
             elif path == "/api/stop":
@@ -648,9 +685,19 @@ def serve(args: argparse.Namespace) -> int:
         # workspace: show them that one (the refusal still says which process
         # holds it, and the exit code stays 1).
         if exc.url and not args.no_browser:
-            webbrowser.open(exc.url)
-            print(f"Opened the dashboard that is already running: {exc.url}", flush=True)
+            opened = with_rig_config(exc.url, getattr(args, "rig_config", None))
+            webbrowser.open(opened)
+            print(f"Opened the dashboard that is already running: {opened}", flush=True)
         raise
+
+
+def with_rig_config(url: str, rig_config: str | None) -> str:
+    """The page's address with ``?rig=<config>``, which the Run page preselects."""
+    if not rig_config:
+        return url
+    head, hash_mark, fragment = url.partition("#")
+    joiner = "&" if "?" in head else "?"
+    return f"{head}{joiner}rig={quote(rig_config, safe='')}{hash_mark}{fragment}"
 
 
 def _serve(args: argparse.Namespace, directory: Path) -> int:
@@ -666,14 +713,19 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     # Now that the port is known, the holder record can carry the address a
     # second `alhazen dashboard` should open instead of starting its own.
     record_holder(workspace.directory, url=server.url)
-    print(f"Alhazen dashboard: {server.url}", flush=True)
+    server.rig_sync.start()
+    print(
+        f"Alhazen dashboard: {with_rig_config(server.url, getattr(args, 'rig_config', None))}",
+        flush=True,
+    )
     print(
         f"Workspace: {workspace.directory}\nCtrl+C stops the server and any active run; "
         "Shut down on the page stops it when no session is running.",
         flush=True,
     )
     if not args.no_browser:
-        threading.Timer(0.25, webbrowser.open, args=(server.url,)).start()
+        opened = with_rig_config(server.url, getattr(args, "rig_config", None))
+        threading.Timer(0.25, webbrowser.open, args=(opened,)).start()
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
@@ -683,6 +735,7 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
         # a crash to the person who just asked it to stop.
         server.close_reason = "interrupted (Ctrl+C)"
     finally:
+        server.rig_sync.close()
         server.server_close()
         server.uploads.close()
         workspace.close()

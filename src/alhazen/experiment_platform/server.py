@@ -46,6 +46,8 @@ from alhazen.experiment_platform.accounts import Accounts
 from alhazen.experiment_platform.errors import AuthError, Forbidden, InvalidRequest
 from alhazen.experiment_platform.machines import FILE as MACHINES_FILE
 from alhazen.experiment_platform.machines import Machines
+from alhazen.experiment_platform.rigstore import FILE as RIGS_FILE
+from alhazen.experiment_platform.rigstore import RigStore
 from alhazen.experiment_platform.service import PlatformService, Principal
 from alhazen.experiment_platform.store import FileStore
 from alhazen.experiment_platform.webapp import PlatformApp, Request, capabilities
@@ -256,6 +258,7 @@ def build_app(config: ServerConfig) -> PlatformApp:
         ServerGate(config, accounts),
         max_upload=config.max_upload_mb * 1024 * 1024,
         machines=Machines(config.store / MACHINES_FILE),
+        rigs=RigStore(config.store / RIGS_FILE),
     )
 
 

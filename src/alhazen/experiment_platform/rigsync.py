@@ -217,8 +217,12 @@ def apply_push(
             continue
         name = check_name(w["name"])
         if _name_taken(rec, name, cid):
-            results[cid] = {"ok": False, "conflict": True, "revision": revision,
-                            "reason": f"another config on this machine is named {name!r}"}
+            results[cid] = {
+                "ok": False,
+                "conflict": True,
+                "revision": revision,
+                "reason": f"another config on this machine is named {name!r}",
+            }
             continue
         if current is None:
             if len(_live(rec)) >= MAX_CONFIGS:
@@ -246,8 +250,12 @@ def apply_push(
             if a["ok"]:
                 del rec["configs"][a["id"]]
             else:
-                current.update(deleted=False, state="rejected",
-                               rejection=_rejection(a, now), text=current["text"])
+                current.update(
+                    deleted=False,
+                    state="rejected",
+                    rejection=_rejection(a, now),
+                    text=current["text"],
+                )
             continue
         if a["ok"]:
             current.update(state="synced", rejection=None, conflict=None)
@@ -316,7 +324,11 @@ def _short(text: Any) -> str | None:
 
 
 def _rejection(ack: dict[str, Any], now: int) -> dict[str, Any]:
-    return {"revision": ack["revision"], "reason": _short(ack.get("reason")) or "refused", "at": now}
+    return {
+        "revision": ack["revision"],
+        "reason": _short(ack.get("reason")) or "refused",
+        "at": now,
+    }
 
 
 # ---------------------------------------------------------------------- the owner's side
@@ -388,12 +400,20 @@ def owner_delete(record: Record | None, mid: str, cid: str, *, base: Any, now: i
             "This rig config changed since you opened it; reopen it before deleting it", "conflict"
         )
     if rec["default"] == cid:
-        raise RigSyncError("This is the machine's default rig config: make another the default first")
+        raise RigSyncError(
+            "This is the machine's default rig config: make another the default first"
+        )
     if current["running"] is None:
         del rec["configs"][cid]
         return rec
-    current.update(deleted=True, state="pending", revision=current["revision"] + 1,
-                   updatedAt=now, updatedBy="platform", rejection=None)
+    current.update(
+        deleted=True,
+        state="pending",
+        revision=current["revision"] + 1,
+        updatedAt=now,
+        updatedBy="platform",
+        rejection=None,
+    )
     return rec
 
 
@@ -444,11 +464,7 @@ def summary(record: Record) -> Record:
     out = {k: v for k, v in record.items() if k not in ("rigSchema", "templates", "configs")}
     out["hasSchema"] = bool(record.get("rigSchema"))
     out["configs"] = {
-        cid: {
-            k: v
-            for k, v in c.items()
-            if k not in ("text", "running", "conflict")
-        }
+        cid: {k: v for k, v in c.items() if k not in ("text", "running", "conflict")}
         | {
             "runningSha256": (c.get("running") or {}).get("sha256"),
             "problem": (c.get("running") or {}).get("problem"),

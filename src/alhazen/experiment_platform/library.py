@@ -68,6 +68,11 @@ class LibraryError(Exception):
     in words for the person at the rig; it never contains the token."""
 
 
+class RigsUnsupported(LibraryError):
+    """The platform has no rig configs (an alhazen before 3.6, or a host without a store):
+    its answer to the rig-config requests was 404. The rig's configs stay local."""
+
+
 class CopyConflict(LibraryError):
     """A folder already holds another revision (or an unknown one) and session data: it is
     not overwritten unless the person says so (``replace=True``)."""
@@ -299,7 +304,9 @@ class LibraryClient:
                 data = response.read(limit + 1)
                 kind = response.headers.get("Content-Type", "")
         except urllib.error.HTTPError as error:
-            raise LibraryError(self._refusal(error)) from None
+            refusal = LibraryError(self._refusal(error))
+            refusal.status = error.code  # type: ignore[attr-defined]
+            raise refusal from None
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             reason = getattr(error, "reason", error)
             raise LibraryError(f"{self.source.label} cannot be reached: {reason}") from None
@@ -354,6 +361,37 @@ class LibraryClient:
         except ValueError:
             return {}
         return answer if isinstance(answer, dict) else {}
+
+    # ------------------------------------------------------------------ rig configs
+    def _rigs(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            data, _ = self._send(method, path, 32 * 1024 * 1024, body)
+        except LibraryError as error:
+            if getattr(error, "status", None) == 404:
+                raise RigsUnsupported(
+                    f"{self.source.label} keeps no rig configs (it needs alhazen 3.6 or newer)"
+                ) from None
+            raise
+        try:
+            answer = json.loads(data or b"{}")
+        except ValueError as error:
+            raise LibraryError(f"{self.source.label} did not answer with JSON") from error
+        if not isinstance(answer, dict):
+            raise LibraryError(f"{self.source.label} answered the rig configs with no object")
+        return answer
+
+    def rig_record(self, machine_id: str) -> dict[str, Any] | None:
+        """This machine's rig configs as the platform has them (``GET
+        /api/rigs/machine/<id>``), or None before its first sync. RigsUnsupported when the
+        platform keeps none."""
+        answer = self._rigs("GET", f"/api/rigs/machine/{urllib.parse.quote(machine_id)}")
+        record = answer.get("record")
+        return record if isinstance(record, dict) else None
+
+    def rig_sync(self, machine_id: str, push: dict[str, Any]) -> dict[str, Any]:
+        """Send this machine's side of a sync (``POST /api/rigs/machine/<id>/sync``):
+        ``{record, results}``."""
+        return self._rigs("POST", f"/api/rigs/machine/{urllib.parse.quote(machine_id)}/sync", push)
 
     def archive(self, handle: str) -> bytes:
         """A revision's files as a zip (everything under one folder)."""

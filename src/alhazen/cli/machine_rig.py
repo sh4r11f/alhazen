@@ -1,22 +1,29 @@
-"""This machine's rig: the one rig a dashboard workspace runs every session on.
+"""This machine's rig configs: the rigs a dashboard workspace runs its sessions on.
 
 A dashboard workspace is one machine. Its experiments are registered there and
-run there, so the rig a session runs on is not a choice to make at each launch:
-it is the machine the dashboard is running on. The workspace keeps that machine
-as ONE complete rig file in its own state folder,
+run there, so the rigs a session can run on are this machine's own: one or
+more named **rig configs** (an EyeLink set-up, a keyboard-only one, the monkey
+DAQ), one of them the **default**, kept as complete rig files in the
+workspace's state folder (docs/design/machine-rig-configs.md §2):
 
-    <state>/machine-rig/rig-<name>.yaml      the machine (no ``extends``)
-    <state>/machine-rig/rig-<name>_gamma.yaml, rig-<name>.reward.yaml
+    <state>/machine-rig/rig-<name>.yaml      3.5.0's single machine rig, left
+                                             where it was: the first config
+    <state>/machine-rig/configs.json         the index: ids, names, default,
+                                             sync state with the platform
+    <state>/machine-rig/configs/<name>/rig-<name>.yaml
+                                             every other config, each with
+    .../rig-<name>_gamma.yaml, rig-<name>.reward.yaml
                                              what Measure rig and
                                              ``alhazen calibrate`` keep beside it
-    <state>/machine-rig/machine.json         where it came from, and each save
-    <state>/machine-rig/history/             every earlier version of the file
+    .../config.json (machine.json for the first), history/
+                                             each save, every earlier version
+    <state>/machine-rig/trash/               deleted configs, moved, not destroyed
 
-and a session runs on that rig, changed for the session only where the Run
-page changed it. The rig a session ran is written into its run folder, named
-like the machine's (so PsychoPy's monitor registration, a measured gamma and
-a reward calibration are found exactly as they are for the machine's own
-file), and launched as ``--rig <that file>``.
+and a session runs on the config chosen on the Run page, changed for the
+session only where the Run page changed it. The rig a session ran is written
+into its run folder, named like the config's (so PsychoPy's monitor
+registration, a measured gamma and a reward calibration are found exactly as
+they are for the config's own file), and launched as ``--rig <that file>``.
 
 Why one flat file rather than ``extends``: an experiment's rig that extends a
 shared one is two files merged, and which settings a session got depended on
@@ -43,8 +50,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import secrets
 import shutil
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -60,7 +70,13 @@ from alhazen.errors import ConfigError
 
 FOLDER = "machine-rig"
 META_FILE = "machine.json"
+CONFIG_META = "config.json"
+INDEX = "configs.json"
+CONFIGS = "configs"
+TRASH = "trash"
 HISTORY = "history"
+LEGACY = "."
+INDEX_SCHEMA = 1
 MAX_RIG_BYTES = 256 * 1024
 # How many saves machine.json lists; history/ keeps every earlier file.
 MAX_SAVES = 200
@@ -82,8 +98,8 @@ CARRIED_PATHS = (
 MACHINE_ONLY = (("real_data",),)
 
 NOT_SET_UP = (
-    "This machine has no rig yet. Open the Run page (or an experiment's General page) and set "
-    "up this machine's rig once, or run `alhazen rig init` in a terminal."
+    "This machine has no rig config yet. Add one on an experiment's General page (This "
+    "machine's rig configs) or run `alhazen rig init` in a terminal."
 )
 
 
@@ -178,12 +194,20 @@ def sha256_text(text: str) -> str:
 
 
 def check_name(name: Any) -> str:
-    if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name.strip()):
+    if (
+        not isinstance(name, str)
+        or len(name.strip()) > 64
+        or not NAME_PATTERN.fullmatch(name.strip())
+    ):
         raise MachineRigError(
-            "A machine's name is letters, digits, '.', '_' or '-', starting with a letter or "
-            "digit (it becomes the rig's file name, rig-<name>.yaml)"
+            "A rig config's name is letters, digits, '.', '_' or '-', starting with a letter or "
+            "digit, at most 64 characters (it becomes the rig's file name, rig-<name>.yaml)"
         )
     return name.strip()
+
+
+def new_id(prefix: str, nbytes: int) -> str:
+    return prefix + secrets.token_hex(nbytes)
 
 
 def dump(values: dict[str, Any], header: str) -> str:
@@ -200,176 +224,302 @@ def validate(values: dict[str, Any], path: Path) -> None:
 
 @dataclass(frozen=True)
 class Machine:
-    """This machine's rig as read: its name, its file and its settings."""
+    """One of this machine's rig configs as read: its id, its name, its file and its
+    settings. (Called Machine since 3.5.0, when a machine had one rig.)"""
 
     name: str
     path: Path
     text: str
     values: dict[str, Any]
+    id: str = ""
+    legacy: bool = False
 
     @property
     def sha256(self) -> str:
         return sha256_text(self.text)
 
 
-class MachineRig:
-    """The workspace's machine rig; see the module."""
+@dataclass
+class Config:
+    """A config as the index knows it: where its file is, before it is read."""
+
+    id: str
+    name: str
+    folder: Path
+    legacy: bool
+    entry: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def file(self) -> Path:
+        return self.folder / f"{FILE_PREFIX}{self.name}.yaml"
+
+    @property
+    def meta_file(self) -> Path:
+        return self.folder / (META_FILE if self.legacy else CONFIG_META)
+
+
+def _rig_files(folder: Path) -> list[Path]:
+    """The rig files directly in ``folder`` (not the gamma or reward files beside them)."""
+    if not folder.is_dir():
+        return []
+    return sorted(
+        p
+        for p in folder.iterdir()
+        if p.is_file()
+        and p.name.startswith(FILE_PREFIX)
+        and p.suffix in {".yaml", ".yml"}
+        and not p.name.endswith(GAMMA_FILENAME_SUFFIX)
+        and not p.name.endswith(REWARD_CALIBRATION_SUFFIX)
+    )
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    replace_atomically(path, json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+class MachineRigs:
+    """This machine's rig configs; see the module. Every change holds ``lock``, so the
+    pages and the background sync with the platform never interleave writes."""
 
     def __init__(self, state_dir: Path):
         self.folder = Path(state_dir) / FOLDER
+        self.lock = threading.RLock()
 
-    # -- reading ----------------------------------------------------------------
+    # -- the index ----------------------------------------------------------------
 
-    def file(self) -> Path | None:
-        """The machine's rig file, or None before it is set up. Two rig files
-        in the folder are refused rather than one picked: whichever were
-        picked, sessions would silently run on the other machine's numbers."""
-        if not self.folder.is_dir():
-            return None
-        files = sorted(
-            p
-            for p in self.folder.iterdir()
-            if p.is_file()
-            and p.name.startswith(FILE_PREFIX)
-            and p.suffix in {".yaml", ".yml"}
-            and not p.name.endswith(GAMMA_FILENAME_SUFFIX)
-            and not p.name.endswith(REWARD_CALIBRATION_SUFFIX)
-        )
+    def _legacy_file(self) -> Path | None:
+        """3.5.0's machine rig, the first config, at the folder's top. Two rig files there
+        are refused rather than one picked, as 3.5.0 refused them."""
+        files = _rig_files(self.folder)
         if len(files) > 1:
             raise MachineRigError(
                 f"{self.folder} holds {len(files)} rig files ({', '.join(p.name for p in files)}); "
-                "a machine has one rig. Move the one that is not this machine's out of the folder"
+                "the folder's top holds one (the first config). Move the one that is not this "
+                "machine's out of the folder"
             )
         return files[0] if files else None
 
-    def meta(self) -> dict[str, Any]:
-        path = self.folder / META_FILE
-        if not path.is_file():
-            return {}
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return data if isinstance(data, dict) else {}
+    def index(self) -> dict[str, Any]:
+        """configs.json, made or brought up to date on the way: a 3.5.0 machine rig becomes
+        the first config (``migrated``), and a rig file a 3.5.0 dashboard set up at the top
+        since is adopted. Written only when something changed."""
+        with self.lock:
+            path = self.folder / INDEX
+            data = _read_json(path)
+            changed = False
+            if not data:
+                data = {"schema": INDEX_SCHEMA, "configs": {}, "default": None, "default_rev": 0}
+            data.setdefault("configs", {})
+            data.setdefault("default", None)
+            data.setdefault("default_rev", 0)
+            data.setdefault("deleted", {})
+            data.setdefault("sync", {})
+            if not data.get("machine_id"):
+                data["machine_id"] = new_id("mc_", 8)
+                changed = True
+            legacy = self._legacy_file()
+            has_legacy = any(e.get("folder") == LEGACY for e in data["configs"].values())
+            if legacy is not None and not has_legacy:
+                cid = new_id("c", 5)
+                name = legacy.stem.removeprefix(FILE_PREFIX)
+                meta = _read_json(self.folder / META_FILE)
+                data["configs"][cid] = {
+                    "name": name,
+                    "folder": LEGACY,
+                    "created": meta.get("created") or now(),
+                    "origin": {
+                        "kind": "3.5.0" if not data["configs"] else "older-dashboard",
+                        "template": meta.get("template"),
+                    },
+                    "revision": len(meta.get("saves") or []) or 1,
+                }
+                if not data.get("default") or data["default"] not in data["configs"]:
+                    data["default"] = cid
+                if len(data["configs"]) == 1:
+                    data["migrated"] = {"from": "3.5.0", "config": cid, "at": now()}
+                changed = True
+            elif legacy is not None:
+                # 3.5.0 never renames, but a person may: follow the file's name.
+                for entry in data["configs"].values():
+                    if entry.get("folder") == LEGACY:
+                        name = legacy.stem.removeprefix(FILE_PREFIX)
+                        if entry.get("name") != name:
+                            entry["name"] = name
+                            changed = True
+            if data["default"] not in data["configs"]:
+                data["default"] = next(iter(data["configs"]), None)
+                changed = changed or data["default"] is not None
+            if changed:
+                # Written at once, so the machine's id is the same from the first read on.
+                _write_json(path, data)
+            return data
 
-    def read(self) -> Machine | None:
-        path = self.file()
-        if path is None:
+    def _save_index(self, data: dict[str, Any]) -> None:
+        _write_json(self.folder / INDEX, data)
+
+    def machine_id(self) -> str:
+        return str(self.index()["machine_id"])
+
+    def _config(self, cid: str, entry: dict[str, Any]) -> Config:
+        legacy = entry.get("folder") == LEGACY
+        folder = self.folder if legacy else self.folder / CONFIGS / str(entry.get("name"))
+        return Config(cid, str(entry.get("name")), folder, legacy, entry)
+
+    def configs(self) -> list[Config]:
+        """Every config, the default first, then by name."""
+        data = self.index()
+        out = [self._config(cid, e) for cid, e in data["configs"].items()]
+        return sorted(out, key=lambda c: (c.id != data["default"], c.name.lower()))
+
+    def default_id(self) -> str | None:
+        return self.index().get("default")
+
+    def find(self, ref: str | None = None) -> Config:
+        """A config by id or name; None or "" is the default."""
+        data = self.index()
+        if not data["configs"]:
+            raise MachineRigError(NOT_SET_UP)
+        if not ref:
+            ref = data["default"]
+        if ref in data["configs"]:
+            return self._config(str(ref), data["configs"][ref])
+        for cid, entry in data["configs"].items():
+            if entry.get("name") == ref:
+                return self._config(cid, entry)
+        names = ", ".join(sorted(str(e.get("name")) for e in data["configs"].values()))
+        raise MachineRigError(f"This machine has no rig config {ref!r} (it has: {names})")
+
+    # -- reading ------------------------------------------------------------------
+
+    def read(self, ref: str | None = None) -> Machine | None:
+        """A config's file and settings; None before the machine has any config."""
+        if not self.index()["configs"]:
             return None
-        text = path.read_text(encoding="utf-8-sig")
-        return Machine(path.stem.removeprefix(FILE_PREFIX), path, text, read_mapping(path))
+        config = self.find(ref)
+        return self._read(config)
 
-    def require(self) -> Machine:
-        machine = self.read()
+    def _read(self, config: Config) -> Machine:
+        path = config.file
+        if not path.is_file():
+            raise MachineRigError(
+                f"The rig config {config.name!r} has no file ({path}); it was moved or deleted "
+                "outside the dashboard. Delete the config, or put the file back"
+            )
+        text = path.read_text(encoding="utf-8-sig")
+        return Machine(config.name, path, text, read_mapping(path), config.id, config.legacy)
+
+    def require(self, ref: str | None = None) -> Machine:
+        machine = self.read(ref)
         if machine is None:
             raise MachineRigError(NOT_SET_UP)
         return machine
 
-    def status(self) -> dict[str, Any]:
-        """What the pages show about this machine's rig."""
+    def config_status(self, config: Config, default: str | None) -> dict[str, Any]:
+        """What the pages show about one config."""
+        meta = _read_json(config.meta_file)
+        base = {
+            "id": config.id,
+            "name": config.name,
+            "default": config.id == default,
+            "legacy": config.legacy,
+            "folder": str(config.folder),
+            "file": str(config.file),
+            "created": config.entry.get("created"),
+            "origin": config.entry.get("origin"),
+            "revision": config.entry.get("revision", 0),
+            "saves": (meta.get("saves") or [])[-5:],
+        }
         try:
-            machine = self.read()
-        except (MachineRigError, ConfigError) as exc:
-            return {"configured": False, "error": str(exc), "folder": str(self.folder)}
-        if machine is None:
-            return {"configured": False, "error": None, "folder": str(self.folder)}
+            machine = self._read(config)
+        except (MachineRigError, ConfigError, OSError) as exc:
+            return {**base, "text": None, "sha256": None, "values": None, "problem": str(exc)}
         problem = None
         try:
             validate(machine.values, machine.path)
+            names = event_names(machine.values)
+            if names:
+                problem = f"names events ({', '.join(names)}); event lines are chosen per session"
+            elif "extends" in machine.values:
+                problem = "extends a shared rig; a machine's rig config is one complete file"
         except ConfigError as exc:
             problem = str(exc)
-        meta = self.meta()
+        gamma = machine.path.parent / f"{machine.path.stem}{GAMMA_FILENAME_SUFFIX}"
         return {
-            "configured": True,
-            "error": None,
-            "name": machine.name,
-            "file": str(machine.path),
-            "folder": str(self.folder),
+            **base,
             "text": machine.text,
             "sha256": machine.sha256,
             "values": machine.values,
             "problem": problem,
-            "created": meta.get("created"),
-            "template": meta.get("template"),
-            "saves": (meta.get("saves") or [])[-5:],
+            "gamma": ({"file": str(gamma), "at": _mtime(gamma)} if gamma.is_file() else None),
         }
 
-    # -- writing ----------------------------------------------------------------
+    def status(self) -> dict[str, Any]:
+        """Every config, for the pages (docs/design/machine-rig-configs.md §3 ``Rigs``,
+        without the sync line, which the workspace adds)."""
+        try:
+            data = self.index()
+        except (MachineRigError, OSError) as exc:
+            return {
+                "machine": None,
+                "default": None,
+                "configs": [],
+                "error": str(exc),
+                "folder": str(self.folder),
+                "migrated": None,
+            }
+        default = data.get("default")
+        configs = [self.config_status(c, default) for c in self.configs()]
+        return {
+            "machine": {"id": data["machine_id"]},
+            "default": default,
+            "configs": configs,
+            "error": None,
+            "folder": str(self.folder),
+            "migrated": data.get("migrated"),
+        }
 
-    def _write(self, name: str, text: str, entry: dict[str, Any]) -> Path:
-        """Write the machine's file atomically, keeping the one it replaces in
-        history/, and note the save in machine.json."""
-        self.folder.mkdir(parents=True, exist_ok=True)
-        target = self.folder / f"{FILE_PREFIX}{name}.yaml"
-        old = self.file()
-        if old is not None:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            (self.folder / HISTORY).mkdir(exist_ok=True)
-            shutil.copy2(old, self.folder / HISTORY / f"{old.stem}.{stamp}{old.suffix}")
+    # -- writing ------------------------------------------------------------------
+
+    def _write(self, config: Config, text: str, entry: dict[str, Any]) -> Path:
+        """Write a config's file atomically, keeping the one it replaces in its history/,
+        and note the save in its meta file and the index."""
+        config.folder.mkdir(parents=True, exist_ok=True)
+        target = config.file
+        if target.is_file():
+            (config.folder / HISTORY).mkdir(exist_ok=True)
+            shutil.copy2(
+                target, config.folder / HISTORY / f"{target.stem}.{_stamp()}{target.suffix}"
+            )
         replace_atomically(target, text)
-        meta = self.meta()
+        meta = _read_json(config.meta_file)
         saves = list(meta.get("saves") or [])
         saves.append({**entry, "at": now(), "sha256": sha256_text(text)})
         meta["saves"] = saves[-MAX_SAVES:]
         meta.setdefault("created", now())
-        meta["name"] = name
-        replace_atomically(self.folder / META_FILE, json.dumps(meta, indent=2, ensure_ascii=False))
-        return target
-
-    def setup(
-        self,
-        name: str,
-        source: Path,
-        *,
-        shared: dict[str, Path] | None,
-        template: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Set up this machine's rig from ``source``, a shared rig or one of a
-        registered experiment's, written out complete (``extends`` merged).
-
-        A source that extends nothing and names no event is copied byte for
-        byte, comments and all; any other is written as its merged settings
-        under a header saying what it was made from. Event names are taken
-        out (they are each experiment's) and returned, so the caller can say
-        so. Refused when the machine already has a rig: this is set up once,
-        and edited after (`save_text`)."""
-        name = check_name(name)
-        if self.file() is not None:
-            raise MachineRigError(
-                "This machine already has a rig; edit it on an experiment's General page "
-                "(This machine's rig) instead of setting it up again"
+        meta["name"] = config.name
+        _write_json(config.meta_file, meta)
+        data = self.index()
+        if config.id in data["configs"]:
+            data["configs"][config.id]["revision"] = (
+                int(data["configs"][config.id].get("revision", 0)) + 1
             )
-        merged = rig_mapping(Path(source), shared=shared)
-        values, removed = strip_events(merged.values)
-        target = self.folder / f"{FILE_PREFIX}{name}.yaml"
-        validate(values, target)
-        if merged.base is None and not removed:
-            text = Path(source).read_text(encoding="utf-8-sig")
-        else:
-            made = [f"This machine's rig, '{name}': one complete file, made {now()[:10]} from"]
-            made.append(f"{template.get('label') or source} ({source})")
-            if merged.base is not None:
-                made.append(f"merged over alhazen's shared rig '{merged.extends}' ({merged.base}).")
-            if removed:
-                made.append(
-                    "Event names were left out: which of a task's events go out on which line is "
-                    "chosen per session on the Run page."
-                )
-            text = dump(values, "\n".join(made))
-        meta_template = {
-            **template,
-            "file": str(source),
-            "sha256": hashlib.sha256(Path(source).read_bytes()).hexdigest(),
-        }
-        if merged.base is not None:
-            meta_template["extends"] = merged.extends
-        self._write(name, text, {"by": "setup", "template": meta_template.get("label")})
-        meta = self.meta()
-        meta["template"] = meta_template
-        if removed:
-            meta["left_out"] = removed
-        replace_atomically(self.folder / META_FILE, json.dumps(meta, indent=2, ensure_ascii=False))
-        return {**self.status(), "left_out": removed}
+            self._save_index(data)
+        return target
 
     def _check_text(self, text: str, path: Path) -> dict[str, Any]:
         if not isinstance(text, str) or not text.strip():
@@ -384,13 +534,13 @@ class MachineRig:
             raise MachineRigError("A rig file is a YAML mapping (key: value lines)")
         if "extends" in values:
             raise MachineRigError(
-                "This machine's rig is one complete file and extends nothing: write out the "
+                "A machine's rig config is one complete file and extends nothing: write out the "
                 "settings it would take from the shared rig"
             )
         names = event_names(values)
         if names:
             raise MachineRigError(
-                f"This machine's rig names events ({', '.join(names)}). Event names are each "
+                f"This rig config names events ({', '.join(names)}). Event names are each "
                 "experiment's: choose which go out on which line on the Run page, per session. "
                 "Leave event_lines and the photodiode's events empty here"
             )
@@ -400,77 +550,318 @@ class MachineRig:
             raise MachineRigError(str(exc)) from exc
         return values
 
-    def check_text(self, text: str) -> dict[str, Any]:
-        machine = self.require()
-        values = self._check_text(text, machine.path)
-        return {"ok": True, "changes": rig_changes(machine.values, values)}
+    def _unique(self, name: str, but: str | None = None) -> None:
+        for cid, entry in self.index()["configs"].items():
+            if cid != but and entry.get("name") == name:
+                raise MachineRigError(f"This machine already has a rig config named {name!r}")
 
-    def save_text(self, text: str, expected_sha: str | None, *, by: str) -> dict[str, Any]:
-        """Replace the machine's file with ``text`` (the General page's editor),
-        refused if the file changed since it was read (``expected_sha``)."""
-        machine = self.require()
+    def _expect(self, machine: Machine, expected_sha: str | None) -> None:
         if expected_sha is not None and expected_sha != machine.sha256:
             raise MachineRigError(
-                "This machine's rig changed since it was opened (another page saved it); "
-                "reopen it and make the change again"
+                f"The rig config {machine.name!r} changed since it was opened (another page or "
+                "the platform saved it); reopen it and make the change again"
             )
-        values = self._check_text(text, machine.path)
-        changes = rig_changes(machine.values, values)
-        self._write(machine.name, text, {"by": by, "changes": [c["path"] for c in changes]})
-        return self.status()
+
+    def create(
+        self,
+        name: Any,
+        text: str,
+        *,
+        origin: dict[str, Any],
+        by: str,
+        cid: str | None = None,
+        make_default: bool = False,
+    ) -> Config:
+        """A new config with ``text`` (checked as a launch checks a rig), in
+        configs/<name>/. ``cid`` keeps an id the platform chose."""
+        with self.lock:
+            name = check_name(name)
+            self._unique(name)
+            data = self.index()
+            cid = cid or new_id("c", 5)
+            if cid in data["configs"]:
+                raise MachineRigError("This machine already has a rig config with that id")
+            folder = self.folder / CONFIGS / name
+            if folder.exists():
+                raise MachineRigError(
+                    f"{folder} already exists; move it out of the way or choose another name"
+                )
+            self._check_text(text, folder / f"{FILE_PREFIX}{name}.yaml")
+            entry = {
+                "name": name,
+                "folder": f"{CONFIGS}/{name}",
+                "created": now(),
+                "origin": origin,
+                "revision": 0,
+            }
+            config = self._config(cid, entry)
+            data["configs"][cid] = entry
+            if make_default or not data.get("default"):
+                data["default"] = cid
+                data["default_rev"] = int(data.get("default_rev", 0)) + 1
+            self._save_index(data)
+            self._write(config, text, {"by": by, "created": True})
+            return config
+
+    def setup(
+        self,
+        name: Any,
+        source: Path,
+        *,
+        shared: dict[str, Path] | None,
+        template: dict[str, Any],
+        by: str = "setup",
+    ) -> dict[str, Any]:
+        """A new config from ``source``, a shared rig or one of a registered experiment's,
+        written out complete (``extends`` merged).
+
+        A source that extends nothing and names no event is copied byte for byte, comments
+        and all; any other is written as its merged settings under a header saying what it
+        was made from. Event names are taken out (they are each experiment's) and returned
+        as ``left_out``, so the caller can say so."""
+        text, removed, meta_template = template_text(name, source, shared=shared, template=template)
+        config = self.create(
+            name, text, origin={"kind": "template", "template": meta_template}, by=by
+        )
+        status = self.config_status(config, self.default_id())
+        return {**status, "left_out": removed}
+
+    def check_text(self, ref: str | None, text: str) -> dict[str, Any]:
+        machine = self.read(ref)
+        path = machine.path if machine else self.folder / f"{FILE_PREFIX}check.yaml"
+        values = self._check_text(text, path)
+        return {"ok": True, "changes": rig_changes(machine.values, values) if machine else []}
+
+    def save_text(
+        self, ref: str | None, text: str, expected_sha: str | None, *, by: str
+    ) -> dict[str, Any]:
+        """Replace a config's file with ``text`` (the General page's YAML editor, or a
+        platform edit), refused if the file changed since it was read (``expected_sha``)."""
+        with self.lock:
+            config = self.find(ref)
+            machine = self._read(config)
+            self._expect(machine, expected_sha)
+            values = self._check_text(text, machine.path)
+            changes = rig_changes(machine.values, values)
+            self._write(config, text, {"by": by, "changes": [c["path"] for c in changes]})
+            return {"id": config.id, "saved": [c["path"] for c in changes]}
 
     def save_values(
-        self, values: dict[str, Any], expected_sha: str | None, *, by: str
+        self, ref: str | None, values: dict[str, Any], expected_sha: str | None, *, by: str
     ) -> dict[str, Any]:
-        """Save a session's rig settings as this machine's (the Run page's
-        "Save to this machine's rig"). Event names are left out: they stay the
-        session's. The file is written from the settings, so its comments
-        go; the previous file is kept in history/."""
-        machine = self.require()
-        if expected_sha is not None and expected_sha != machine.sha256:
-            raise MachineRigError(
-                "This machine's rig changed since this page read it; reload the page and make "
-                "the change again"
+        """Save settings as a config's (the Run page's "Save to <config>", the General page's
+        form). Event names are left out: they stay the session's. The file is written from
+        the settings, so its comments go; the previous file is kept in history/."""
+        with self.lock:
+            config = self.find(ref)
+            machine = self._read(config)
+            self._expect(machine, expected_sha)
+            if not isinstance(values, dict):
+                raise MachineRigError("The rig settings must be a mapping")
+            clean, _removed = strip_events(values)
+            if "extends" in clean:
+                raise MachineRigError("A machine's rig config extends nothing")
+            try:
+                validate(clean, machine.path)
+            except ConfigError as exc:
+                raise MachineRigError(str(exc)) from exc
+            changes = rig_changes(machine.values, clean)
+            if not changes:
+                return {"id": config.id, "saved": []}
+            header = (
+                f"This machine's rig config '{machine.name}'. Saved {now()[:10]} from the "
+                f"{by} (changed: {', '.join(c['path'] for c in changes)}); earlier versions are "
+                f"in {HISTORY}/ beside this file."
             )
-        if not isinstance(values, dict):
-            raise MachineRigError("The rig settings must be a mapping")
-        clean, _removed = strip_events(values)
-        if "extends" in clean:
-            raise MachineRigError("This machine's rig extends nothing")
-        try:
-            validate(clean, machine.path)
-        except ConfigError as exc:
-            raise MachineRigError(str(exc)) from exc
-        changes = rig_changes(machine.values, clean)
-        if not changes:
-            return {**self.status(), "saved": []}
-        header = (
-            f"This machine's rig, '{machine.name}'. Saved {now()[:10]} from the Run page "
-            f"(changed: {', '.join(c['path'] for c in changes)}); earlier versions are in "
-            f"{HISTORY}/ beside this file."
-        )
-        self._write(
-            machine.name, dump(clean, header), {"by": by, "changes": [c["path"] for c in changes]}
-        )
-        return {**self.status(), "saved": [c["path"] for c in changes]}
+            self._write(
+                config, dump(clean, header), {"by": by, "changes": [c["path"] for c in changes]}
+            )
+            return {"id": config.id, "saved": [c["path"] for c in changes]}
 
-    # -- a session's rig ----------------------------------------------------------
+    def rename(self, ref: str | None, name: Any, expected_sha: str | None, *, by: str) -> Config:
+        """Rename a config: its file and the gamma and reward files beside it take the new
+        name (PsychoPy's monitor and a session's copy are named like it); its history keeps
+        the old names. The first config stays where a 3.5.0 dashboard looks for it."""
+        with self.lock:
+            config = self.find(ref)
+            machine = self._read(config)
+            self._expect(machine, expected_sha)
+            name = check_name(name)
+            if name == config.name:
+                return config
+            self._unique(name, but=config.id)
+            old_stem = f"{FILE_PREFIX}{config.name}"
+            new_stem = f"{FILE_PREFIX}{name}"
+            if config.legacy:
+                folder = self.folder
+            else:
+                folder = self.folder / CONFIGS / name
+                if folder.exists():
+                    raise MachineRigError(f"{folder} already exists; choose another name")
+                os.replace(config.folder, folder)
+            for suffix in (".yaml", GAMMA_FILENAME_SUFFIX, REWARD_CALIBRATION_SUFFIX):
+                source = folder / f"{old_stem}{suffix}"
+                if source.is_file():
+                    os.replace(source, folder / f"{new_stem}{suffix}")
+            data = self.index()
+            entry = data["configs"][config.id]
+            entry["name"] = name
+            if not config.legacy:
+                entry["folder"] = f"{CONFIGS}/{name}"
+            entry["revision"] = int(entry.get("revision", 0)) + 1
+            self._save_index(data)
+            renamed = self._config(config.id, entry)
+            meta = _read_json(renamed.meta_file)
+            saves = list(meta.get("saves") or [])
+            saves.append(
+                {"by": by, "at": now(), "renamed": [config.name, name], "sha256": machine.sha256}
+            )
+            meta["saves"] = saves[-MAX_SAVES:]
+            meta["name"] = name
+            _write_json(renamed.meta_file, meta)
+            return renamed
+
+    def set_default(self, ref: str, *, count: bool = True) -> Config:
+        with self.lock:
+            config = self.find(ref)
+            data = self.index()
+            if data.get("default") != config.id:
+                data["default"] = config.id
+                if count:
+                    data["default_rev"] = int(data.get("default_rev", 0)) + 1
+                self._save_index(data)
+            return config
+
+    def delete(self, ref: str, expected_sha: str | None, *, by: str) -> dict[str, Any]:
+        """Move a config's folder (for the first config: its files) to trash/; refused for
+        the default config. Returns the index entry it had."""
+        with self.lock:
+            config = self.find(ref)
+            data = self.index()
+            if data.get("default") == config.id:
+                raise MachineRigError(
+                    f"{config.name!r} is this machine's default rig config: make another config "
+                    "the default first"
+                )
+            if config.file.is_file():
+                self._expect(self._read(config), expected_sha)
+            target = self.folder / TRASH / f"{config.name}.{_stamp()}"
+            target.mkdir(parents=True)
+            if config.legacy:
+                stem = f"{FILE_PREFIX}{config.name}"
+                for suffix in (".yaml", GAMMA_FILENAME_SUFFIX, REWARD_CALIBRATION_SUFFIX):
+                    source = self.folder / f"{stem}{suffix}"
+                    if source.is_file():
+                        os.replace(source, target / source.name)
+                for extra in (META_FILE, HISTORY):
+                    if (self.folder / extra).exists():
+                        os.replace(self.folder / extra, target / extra)
+            elif config.folder.exists():
+                os.replace(config.folder, target / CONFIGS)
+            entry = data["configs"].pop(config.id)
+            _write_json(
+                target / "deleted.json", {"id": config.id, **entry, "deleted": now(), "by": by}
+            )
+            self._save_index(data)
+            return {"id": config.id, **entry, "trash": str(target)}
+
+    def history(self, ref: str) -> dict[str, Any]:
+        config = self.find(ref)
+        meta = _read_json(config.meta_file)
+        folder = config.folder / HISTORY
+        versions = []
+        if folder.is_dir():
+            for p in sorted(folder.iterdir(), reverse=True):
+                if p.is_file() and p.suffix in {".yaml", ".yml"}:
+                    versions.append({"file": p.name, "at": _mtime(p), "size": p.stat().st_size})
+        return {
+            "id": config.id,
+            "saves": list(reversed(meta.get("saves") or [])),
+            "versions": versions,
+        }
+
+    def version(self, ref: str, file: str) -> str:
+        config = self.find(ref)
+        folder = (config.folder / HISTORY).resolve()
+        if not isinstance(file, str) or "/" in file or "\\" in file or file.startswith("."):
+            raise MachineRigError("Name one file of the config's history")
+        path = (folder / file).resolve()
+        if path.parent != folder or not path.is_file():
+            raise MachineRigError(f"The history of {config.name!r} has no {file}")
+        return path.read_text(encoding="utf-8-sig")
+
+    def update_sync(self, cid: str, **fields: Any) -> None:
+        """Merge ``fields`` into one config's sync state in the index (None removes a field)."""
+        with self.lock:
+            data = self.index()
+            if cid not in data["configs"]:
+                return
+            sync = dict(data["configs"][cid].get("sync") or {})
+            for key, value in fields.items():
+                if value is None:
+                    sync.pop(key, None)
+                else:
+                    sync[key] = value
+            data["configs"][cid]["sync"] = sync
+            self._save_index(data)
+
+    # -- a session's rig ----------------------------------------------------------------
 
     def companions(self, machine: Machine) -> list[Path]:
-        """The files kept beside the machine's rig and read with it: a
-        measured gamma and a reward calibration, where they exist."""
+        """The files kept beside a config's rig and read with it: a measured gamma and a
+        reward calibration, where they exist."""
         stem = machine.path.stem
+        folder = machine.path.parent
         found = [
-            self.folder / f"{stem}{GAMMA_FILENAME_SUFFIX}",
-            self.folder / f"{stem}{REWARD_CALIBRATION_SUFFIX}",
+            folder / f"{stem}{GAMMA_FILENAME_SUFFIX}",
+            folder / f"{stem}{REWARD_CALIBRATION_SUFFIX}",
         ]
         return [p for p in found if p.is_file()]
+
+
+def _mtime(path: Path) -> str | None:
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec="seconds")
+
+
+def template_text(
+    name: Any, source: Path, *, shared: dict[str, Path] | None, template: dict[str, Any]
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """The text a new config starts with from a template (a shared rig or an experiment's),
+    the event names left out of it, and what to record about the template."""
+    name = check_name(name)
+    merged = rig_mapping(Path(source), shared=shared)
+    values, removed = strip_events(merged.values)
+    if merged.base is None and not removed:
+        text = Path(source).read_text(encoding="utf-8-sig")
+    else:
+        made = [f"This machine's rig config '{name}': one complete file, made {now()[:10]} from"]
+        made.append(f"{template.get('label') or source} ({source})")
+        if merged.base is not None:
+            made.append(f"merged over alhazen's shared rig '{merged.extends}' ({merged.base}).")
+        if removed:
+            made.append(
+                "Event names were left out: which of a task's events go out on which line is "
+                "chosen per session on the Run page."
+            )
+        text = dump(values, "\n".join(made))
+    meta_template = {
+        **template,
+        "file": str(source),
+        "sha256": hashlib.sha256(Path(source).read_bytes()).hexdigest(),
+    }
+    if merged.base is not None:
+        meta_template["extends"] = merged.extends
+    return text, removed, meta_template
 
 
 def session_header(machine: Machine, origin: dict[str, Any]) -> str:
     changes = origin.get("changes") or []
     lines = [
-        f"The rig this session ran on: this machine's rig '{machine.name}' ({machine.path},",
+        f"The rig this session ran on: this machine's rig config '{machine.name}' ({machine.path},",
         f"sha256 {machine.sha256[:12]}),",
     ]
     if changes:
