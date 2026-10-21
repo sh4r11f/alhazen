@@ -117,7 +117,9 @@ class LocalPlatform:
 
     def __init__(self, store: FileStore, *, port: int = 0, name: str | None = None) -> None:
         self.token = secrets.token_urlsafe(32)
-        self.service = PlatformService(store, public_catalogue=False)
+        # One user and no accounts: no people to share a listing with (shareWithPeople is
+        # false), so a listing here is private or public.
+        self.service = PlatformService(store, public_catalogue=False, people=None)
         self._gate = LocalGate(0, self.token, name or default_name())
         # Machine tokens live in the store, so a rig stays connected across launches (the
         # address changes with the port unless --port fixes it).

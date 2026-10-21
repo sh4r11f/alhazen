@@ -194,7 +194,13 @@ class ServerGate:
         viewer = {"uid": principal.uid, "name": principal.name} if principal else None
         caps = capabilities(sign_in=True)
         if principal is None:  # a visitor (public catalogue) only reads
-            caps.update(fork=False, publish=False, uploadRevision=False, downloadRevision=False)
+            caps.update(
+                fork=False,
+                publish=False,
+                uploadRevision=False,
+                downloadRevision=False,
+                shareWithPeople=False,
+            )
         return {
             "kind": "server",
             "viewer": viewer,
@@ -252,7 +258,7 @@ class ServerGate:
 def build_app(config: ServerConfig) -> PlatformApp:
     store = FileStore(config.store)
     accounts = Accounts(config.store / ACCOUNTS_FILE, session_days=config.session_days)
-    service = PlatformService(store, public_catalogue=config.public_catalogue)
+    service = PlatformService(store, public_catalogue=config.public_catalogue, people=accounts)
     return PlatformApp(
         service,
         ServerGate(config, accounts),

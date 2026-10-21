@@ -11,6 +11,10 @@ takes the acting ``Principal`` (or None for an anonymous visitor).
   that user only; another user's fork id is reported missing, never forbidden.
 - Publishing writes only under the acting principal's own id, with the name the host
   vouches for, never one taken from the request.
+- A listing's ``access`` (access.py, design.md section 5a) narrows who sees it: a
+  principal who may not see a listing gets NotFound for it and for everything reached
+  through it (versions, documentation, bundles, forking), never Forbidden. Only its
+  publisher changes it, naming people the host's ``PeopleDirectory`` knows.
 
 Every read-modify-write runs under the store lock, so concurrent requests (and a refresh
 run from the command line) cannot interleave.
@@ -21,12 +25,19 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
+from alhazen.experiment_platform import access as access_rules
 from alhazen.experiment_platform import bundles, catalog
-from alhazen.experiment_platform.errors import Conflict, Forbidden, InvalidRequest, NotFound
+from alhazen.experiment_platform.errors import (
+    AuthError,
+    Conflict,
+    Forbidden,
+    InvalidRequest,
+    NotFound,
+)
 from alhazen.experiment_platform.safety import check_id, is_id
 from alhazen.experiment_platform.store import FileStore
 
@@ -34,12 +45,26 @@ SUBJECTS = ("human", "monkey")
 MAX_MESSAGE = 500
 MAX_TITLE = 200
 MAX_SUMMARY = 4000
+MAX_PEOPLE_RESULTS = 10
 
 
 @dataclass(frozen=True)
 class Principal:
     uid: str
     name: str
+
+
+class PeopleDirectory(Protocol):
+    """The accounts a host can share with (the server's ``Accounts``; the local host has
+    none). Disabled accounts are never returned by either method."""
+
+    def find_people(self, query: str, limit: int) -> list[dict[str, str]]:
+        """``[{uid, name, username}]`` matching ``query``, at most ``limit``."""
+        ...
+
+    def describe_people(self, uids: Iterable[str]) -> dict[str, dict[str, str]]:
+        """``{uid: {uid, name, username}}`` for the enabled accounts among ``uids``."""
+        ...
 
 
 def _now() -> int:
@@ -89,9 +114,16 @@ def _version_entry(listing: Mapping[str, Any], wanted: str) -> tuple[str, dict[s
 class PlatformService:
     """The platform over one FileStore."""
 
-    def __init__(self, store: FileStore, *, public_catalogue: bool = False) -> None:
+    def __init__(
+        self,
+        store: FileStore,
+        *,
+        public_catalogue: bool = False,
+        people: PeopleDirectory | None = None,
+    ) -> None:
         self.store = store
         self.public_catalogue = public_catalogue
+        self.people_directory = people
 
     # ------------------------------------------------------------------ access
     def _reader(self, principal: Principal | None) -> None:
@@ -104,8 +136,22 @@ class PlatformService:
         return principal
 
     # ------------------------------------------------------------------ catalogue
-    def _present(self, publisher: str, exp: str, listing: Mapping[str, Any]) -> dict[str, Any]:
+    def _present(
+        self,
+        publisher: str,
+        exp: str,
+        listing: Mapping[str, Any],
+        principal: Principal | None,
+        names: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """The listing as ``principal`` sees it: a bundle handle, the computed docs status,
+        and its access in the form section 5a gives that principal. ``names`` (the people's
+        display names) is looked up when not given and the principal is the publisher."""
+        uid = principal.uid if principal else None
+        if names is None and uid == publisher:
+            names = self._names(access_rules.of(listing).get("people", []))
         out = dict(listing)
+        out.update(access_rules.present(listing, publisher, uid, names))
         bundle = dict(out.get("bundle") or {})
         if bundle.get("id"):
             bundle["path"] = listing_handle(publisher, exp, bundle["id"])
@@ -120,15 +166,34 @@ class PlatformService:
         return out
 
     def catalogue(self, principal: Principal | None) -> dict[str, dict[str, dict[str, Any]]]:
+        """Every listing the principal may see, as they see it; a publisher none of whose
+        listings they may see is left out."""
         self._reader(principal)
-        return {
-            pub: {exp: self._present(pub, exp, listing) for exp, listing in by.items()}
+        uid = principal.uid if principal else None
+        seen = {
+            pub: {exp: x for exp, x in by.items() if access_rules.can_see(x, pub, uid)}
             for pub, by in self.store.listings().items()
         }
+        own = seen.get(uid, {}) if uid is not None else {}
+        names = self._names(
+            {p for listing in own.values() for p in access_rules.of(listing).get("people", [])}
+        )
+        return {
+            pub: {
+                exp: self._present(pub, exp, listing, principal, names)
+                for exp, listing in by.items()
+            }
+            for pub, by in seen.items()
+            if by
+        }
 
-    def _listing(self, publisher: str, exp: str) -> dict[str, Any]:
+    def _listing(self, principal: Principal | None, publisher: str, exp: str) -> dict[str, Any]:
+        """The listing, if the principal may see it. A listing they may not see is reported
+        missing (not forbidden), so its name and id do not leak."""
         listing = self.store.listing(check_id(publisher, "Publisher"), check_id(exp, "Experiment"))
-        if listing is None:
+        if listing is None or not access_rules.can_see(
+            listing, publisher, principal.uid if principal else None
+        ):
             raise NotFound("This experiment is not in the catalogue")
         return listing
 
@@ -138,7 +203,7 @@ class PlatformService:
         """The documentation record of the listing's current version, or of the version
         ``bundle_id`` names: a version key, or a bundle id (its latest version)."""
         self._reader(principal)
-        listing = self._listing(publisher, exp)
+        listing = self._listing(principal, publisher, exp)
         if bundle_id is None:
             key = listing.get("versionKey") or listing["bundle"]["id"]
             bid = listing["bundle"]["id"]
@@ -170,9 +235,13 @@ class PlatformService:
             _, pub, exp, bid = parts
             listing = self.store.listing(pub, exp)
             mine = principal is not None and principal.uid == pub
-            known = listing is not None and (
-                bid == (listing.get("bundle") or {}).get("id")
-                or _version_entry(listing, bid)[1] is not None
+            known = (
+                listing is not None
+                and access_rules.can_see(listing, pub, principal.uid if principal else None)
+                and (
+                    bid == (listing.get("bundle") or {}).get("id")
+                    or _version_entry(listing, bid)[1] is not None
+                )
             )
             if not (known or (mine and self.store.has_bundle(None, bid))):
                 raise NotFound("No such version")
@@ -241,7 +310,7 @@ class PlatformService:
         who = self._writer(principal)
         self._reader(principal)
         with self.store.lock():
-            listing = self._listing(publisher, exp)
+            listing = self._listing(who, publisher, exp)
             bid = listing["bundle"]["id"]
             self.store.copy_bundle(None, who.uid, bid)
             # The snapshot is named by the catalogue version (files plus documentation), not
@@ -394,6 +463,13 @@ class PlatformService:
         """Put a copy's current revision on the catalogue under the principal."""
         who = self._writer(principal)
         clean = self._publish_form(form)
+        # Who can see it: the form's choice when it makes one; otherwise an existing
+        # listing keeps its access and a new one is public.
+        chosen = (
+            self.check_access(form.get("access"), who.uid)
+            if form.get("access") is not None
+            else None
+        )
         with self.store.lock():
             fork = self._fork(who, fork_id)
             head = (fork.get("head") or {}).get("id")
@@ -403,6 +479,7 @@ class PlatformService:
             meta = self.store.bundle_meta(None, head)
             t = _now()
             old = self.store.listing(who.uid, fork_id) or {}
+            listing_access = chosen or (access_rules.of(old) if old else access_rules.PUBLIC_ACCESS)
             listing = {
                 "id": fork_id,
                 "title": clean["title"],
@@ -435,6 +512,7 @@ class PlatformService:
                 },
                 "publishedAt": old.get("publishedAt") or t,
                 "updatedAt": t,
+                "access": dict(listing_access),
                 "versions": {
                     **(old.get("versions") or {}),
                     head: {"version": clean["version"], "at": t},
@@ -465,7 +543,79 @@ class PlatformService:
                 updatedAt=t,
             )
             self.store.put_fork(who.uid, fork_id, fork)
-        return self._present(who.uid, fork_id, listing)
+        return self._present(who.uid, fork_id, listing, who)
+
+    # ------------------------------------------------------------------ access
+    def set_access(
+        self, principal: Principal | None, publisher: str, exp: str, access: Any
+    ) -> dict[str, Any]:
+        """Change who can see a listing (section 5a). Only its publisher may; another
+        principal who can see it gets Forbidden, one who cannot gets NotFound. The versions,
+        documentation and bundles are untouched, and so are copies already made."""
+        self._reader(principal)
+        with self.store.lock():
+            listing = self._listing(principal, publisher, exp)
+            if principal is None or principal.uid != publisher:
+                raise Forbidden("Only the publisher can change who sees this")
+            listing = dict(listing, access=self.check_access(access, publisher))
+            self.store.put_listing(publisher, exp, listing)
+        return self._present(publisher, exp, listing, principal)
+
+    def check_access(self, raw: Any, publisher: str) -> dict[str, Any]:
+        """``raw`` normalized (access.normalize), with every person checked against the
+        host's directory: an existing, enabled account. Raises InvalidRequest otherwise.
+        (Also used by the command line before a refresh.)"""
+        clean = access_rules.normalize(raw, publisher)
+        people = clean.get("people", [])
+        if people:
+            if self.people_directory is None:
+                raise InvalidRequest("This platform has no other accounts to share with")
+            known = self.people_directory.describe_people(people)
+            missing = [uid for uid in people if uid not in known]
+            if missing:
+                raise InvalidRequest(f"There is no account {missing[0]!r} to share with")
+        return clean
+
+    def _names(self, uids: Iterable[str]) -> dict[str, str]:
+        wanted = sorted(set(uids))
+        if not wanted or self.people_directory is None:
+            return {}
+        return {
+            uid: str(person.get("name") or uid)
+            for uid, person in self.people_directory.describe_people(wanted).items()
+        }
+
+    def people(self, principal: Principal | None, query: str) -> list[dict[str, str]]:
+        """People the principal can share with whose user name or name matches ``query``
+        (design.md section 5a): at most 10, never the principal, never a disabled account.
+        Signed-in principals only; a host without accounts finds no one."""
+        if principal is None:
+            raise AuthError("Sign in to find people")
+        if self.people_directory is None:
+            return []
+        query = str(query or "").strip()
+        if not query or len(query) > 80:
+            return []
+        found = self.people_directory.find_people(query, MAX_PEOPLE_RESULTS + 1)
+        return [p for p in found if p.get("uid") != principal.uid][:MAX_PEOPLE_RESULTS]
+
+    def describe_people(
+        self, principal: Principal | None, uids: Iterable[str]
+    ) -> list[dict[str, str]]:
+        """``[{uid, name, username}]`` for the known, enabled accounts among ``uids`` (in
+        the order asked), for showing a listing's people by name."""
+        if principal is None:
+            raise AuthError("Sign in to find people")
+        wanted: list[str] = []
+        for uid in uids:
+            if uid not in wanted:
+                wanted.append(uid)
+        if len(wanted) > access_rules.MAX_PEOPLE:
+            raise InvalidRequest(f"Ask for at most {access_rules.MAX_PEOPLE} people at a time")
+        if self.people_directory is None or not wanted:
+            return []
+        known = self.people_directory.describe_people([u for u in wanted if is_id(u)])
+        return [known[u] for u in wanted if u in known]
 
     def _publish_form(self, form: Mapping[str, Any]) -> dict[str, Any]:
         def text(name: str, limit: int, required: bool = True) -> str:

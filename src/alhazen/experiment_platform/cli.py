@@ -4,6 +4,8 @@
     alhazen platform import REPO [--ref REF] [--folder F ...] [--all-folders] [--store DIR]
     alhazen platform refresh (--config SOURCES.toml | REPO ...) --store DIR [--publisher UID]
     alhazen platform check --store DIR [--config SOURCES.toml]
+    alhazen platform access PUBLISHER EXP [--visibility private|people|public]
+                            [--people UID,...] (--store DIR | --config FILE)
     alhazen platform checkout FORK DEST [--store DIR]
     alhazen platform save FORK SRC -m MESSAGE [--store DIR]
     alhazen platform server-init --store DIR --config FILE --public-url URL
@@ -95,6 +97,22 @@ def add_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-ar
             default=None,
             help="a git clone of alhazen, to list defaults inherited from the pinned alhazen",
         )
+        _access_args(
+            p,
+            "who can see a listing this creates (default: public); "
+            "an existing listing keeps its own",
+        )
+
+    access = commands.add_parser(
+        "access", help="show or change who can see a listing (private, people, public)"
+    )
+    access.add_argument("publisher", help="the publisher's account id")
+    access.add_argument("exp", help="the experiment id")
+    store_arg(access)
+    access.add_argument(
+        "--config", type=Path, default=None, help="a server configuration (its store and accounts)"
+    )
+    _access_args(access, "the new visibility (without it, the current one is shown)")
 
     check = commands.add_parser(
         "check", help="fail when documentation is stale or a source moved on"
@@ -138,6 +156,40 @@ def add_parser(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-ar
     backup = commands.add_parser("backup", help="copy a store (and its accounts) to a new folder")
     store_arg(backup, required=True)
     backup.add_argument("dest", type=Path)
+
+
+def _access_args(p: argparse.ArgumentParser, help_text: str) -> None:
+    p.add_argument(
+        "--visibility", choices=["private", "people", "public"], default=None, help=help_text
+    )
+    p.add_argument(
+        "--people", default=None, help="account ids, comma-separated (with --visibility people)"
+    )
+
+
+def _access_value(args: argparse.Namespace) -> dict[str, Any] | None:
+    """The access the flags ask for, or None when they ask for none."""
+    from alhazen.experiment_platform.errors import InvalidRequest
+
+    if args.people is not None and args.visibility != "people":
+        raise InvalidRequest("--people goes with --visibility people")
+    if args.visibility is None:
+        return None
+    value: dict[str, Any] = {"visibility": args.visibility}
+    if args.visibility == "people":
+        if not args.people:
+            raise InvalidRequest("--visibility people needs --people uid,...")
+        value["people"] = [p.strip() for p in args.people.split(",") if p.strip()]
+    return value
+
+
+def _directory(store: Path) -> Any:
+    """The accounts of a server store (people to share with), or None for a local store."""
+    from alhazen.experiment_platform.accounts import Accounts
+    from alhazen.experiment_platform.server import ACCOUNTS_FILE
+
+    path = Path(store) / ACCOUNTS_FILE
+    return Accounts(path) if path.is_file() else None
 
 
 def _password(args: argparse.Namespace) -> str:
@@ -193,7 +245,7 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901 - one branch per subcom
         args.store = default_store()
     if command is None:
         print(
-            "usage: alhazen platform {local,import,refresh,check,checkout,save,"
+            "usage: alhazen platform {local,import,refresh,check,access,checkout,save,"
             "server-init,serve,users,backup}"
         )
         return 2
@@ -206,16 +258,24 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901 - one branch per subcom
     if command in ("import", "refresh"):
         from alhazen.experiment_platform import refresh
         from alhazen.experiment_platform.local import LOCAL_UID, default_name
+        from alhazen.experiment_platform.service import PlatformService
 
+        specs = _specs(args)
+        wanted = _access_value(args)
         store = FileStore(args.store, create=command == "import" or not args.store.exists())
         name = args.publisher_name or (
             default_name() if args.publisher == LOCAL_UID else args.publisher
         )
+        if wanted is not None:  # checked before anything is built: people must exist
+            wanted = PlatformService(store, people=_directory(store.root)).check_access(
+                wanted, args.publisher
+            )
         results = refresh.refresh(
             store,
-            _specs(args),
+            specs,
             {"uid": args.publisher, "name": name},
             alhazen_repo=args.alhazen_repo,
+            access=wanted,
         )
         for result in results:
             print(result.line())
@@ -234,6 +294,37 @@ def _run(args: argparse.Namespace) -> int:  # noqa: C901 - one branch per subcom
             print(f"{problem.where}: {problem.problem}")
         print("catalogue OK" if not problems else f"{len(problems)} problem(s)")
         return 1 if problems else 0
+    if command == "access":
+        from alhazen.experiment_platform import access as access_rules
+        from alhazen.experiment_platform.service import PlatformService, Principal
+
+        if args.config is not None:
+            from alhazen.experiment_platform.server import load_config
+
+            args.store = load_config(args.config).store
+        store = FileStore(args.store)
+        service = PlatformService(store, people=_directory(store.root))
+        # The operator acts as the publisher: the command changes nothing but this field.
+        publisher = Principal(args.publisher, args.publisher)
+        wanted = _access_value(args)
+        if wanted is None:
+            from alhazen.experiment_platform.errors import NotFound
+
+            listing = store.listing(args.publisher, args.exp)
+            if listing is None:
+                raise NotFound("This experiment is not in the catalogue")
+            shown = access_rules.of(listing)
+        else:
+            shown = service.set_access(publisher, args.publisher, args.exp, wanted)["access"]
+        people = ", ".join(
+            f"{uid} ({shown.get('names', {}).get(uid, '?')})" if shown.get("names") else uid
+            for uid in shown.get("people", [])
+        )
+        print(
+            f"{args.publisher}/{args.exp}: {shown['visibility']}"
+            + (f": {people}" if people else "")
+        )
+        return 0
     if command in ("checkout", "save"):
         from alhazen.experiment_platform import bundles
         from alhazen.experiment_platform.local import LOCAL_UID, default_name
