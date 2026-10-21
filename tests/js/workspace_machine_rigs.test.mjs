@@ -90,7 +90,7 @@ describe('this machine’s rig configs on the General page', () => {
     assert.match(bad.textContent, /Does not load/);
     assert.match(bad.textContent, /monitor\.width_px: must be positive/);
     assert.match(bad.textContent, /Only on this machine/);
-    assert.match(panel.textContent, /bench\. Synced with the platform \(Mana\) at/);
+    assert.match(panel.querySelector('.mrc-connection').textContent, /^benchSynced with the platform \(Mana\) at/);
   });
 
   it('makes a config the default, and tells the Run page', async () => {
@@ -199,6 +199,8 @@ describe('this machine’s rig configs on the General page', () => {
     assert.match(row.textContent, /This machine’s version/);
     assert.match(row.textContent, /The platform’s version/);
     assert.match(row.textContent, /width_px: 2560/);
+    /* The lines that differ are marked, in each version. */
+    assert.deepEqual(row.querySelectorAll('mark').map((m) => m.textContent), ['# the booth\n', '  width_px: 1920\n', '  width_px: 2560\n']);
     app.server.rigWrites = (path) => (path === '/api/machine-rigs/resolve' ? rigs([config()]) : undefined);
     buttonIn(row, 'Keep the platform’s').fire('click');
     await settle();

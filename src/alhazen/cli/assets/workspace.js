@@ -581,8 +581,9 @@ function machineHeader(p, choices = rigChoices(p), chosen = null) {
   menu.value = chosen || '';
   const broken = choices.filter((c) => c.problem);
   const help = $('rig-config-help');
+  const why = (problem) => RigEditorOr()?.problemText(problem) || problem;
   help.textContent = broken.length
-    ? broken.map((c) => `${c.name} cannot be chosen until it loads: ${c.problem}`).join(' ')
+    ? broken.map((c) => `${c.name} cannot be chosen until it loads: ${why(c.problem)}.`).join(' ')
       + ' Fix it on the General page.'
     : '';
   help.hidden = !broken.length;

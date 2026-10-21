@@ -542,6 +542,16 @@ const RigEditor = (() => {
     return usable.find((c) => c.default) || usable[0] || null;
   }
 
+  /** Why a config does not load, in a line: the validator's message without
+   *  its file path, error count, error codes and documentation links. */
+  function problemText(problem) {
+    if (!problem) return '';
+    const lines = String(problem).split('\n').map((l) => l.trim()).filter((l) => l
+      && !/^For further information/.test(l) && !/^\d+ validation errors? for /.test(l));
+    if (lines.length > 1 && /^invalid config in /.test(lines[0])) lines.shift();
+    return lines.join(' ').replace(/\s*\[type=[^\]]*\]/g, '').trim();
+  }
+
   /** A config's sync state in words (its `sync.state`, docs/design §3). */
   function syncText(config) {
     const sync = config?.sync || {};
@@ -753,7 +763,7 @@ const RigEditor = (() => {
     EVENT_LINES, PHOTODIODE_EVENTS, EDF, ACCURACY, SECTIONS,
     clone, same, get, set, remove, changes, settingChanges, reset, resetAll, carryChanges,
     eventRows, setLine, setDiode, suggestedLines, sectionOf, leaves, show,
-    renderFields, renderEvents, pickConfig, syncText, syncLamp, connectionText, nameProblem,
+    renderFields, renderEvents, pickConfig, problemText, syncText, syncLamp, connectionText, nameProblem,
     createForm,
   };
 })();

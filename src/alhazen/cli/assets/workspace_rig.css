@@ -509,7 +509,16 @@
 }
 
 .mrc-conflict .m-pre {
-  max-height: 300px;
+  max-height: 320px;
+}
+
+.mrc-only {
+  display: block;
+  margin: 0 -14px;
+  padding: 0 14px;
+  color: inherit;
+  background: color-mix(in srgb, var(--accent) 38%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 /* The editor: Settings | YAML, then the view. */

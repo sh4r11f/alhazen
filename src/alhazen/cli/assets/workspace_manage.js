@@ -917,12 +917,11 @@
     const line = el('div', 'mrc-connection');
     const state = rigs.sync?.state;
     const kind = state === 'synced' ? 'ok' : (state === 'offline' || state === 'error' ? 'warn' : 'idle');
-    const word = {synced: 'Synced', offline: 'Offline', error: 'Sync failed', unsupported: 'Not on the platform'}[state]
-      || 'Not connected';
-    line.append(lamp(kind, word));
+    const word = 'This machine';
+    // The lamp names the machine (its colour and the sentence say the state).
+    line.append(lamp(kind, rigs.machine?.label || word));
     const text = el('span', 'mrc-connection-text');
-    const label = rigs.machine?.label ? `${rigs.machine.label}. ` : '';
-    text.textContent = label + window.RigEditor.connectionText(rigs.sync, when);
+    text.textContent = window.RigEditor.connectionText(rigs.sync, when);
     line.append(text);
     return line;
   }
@@ -996,7 +995,16 @@
     states.append(lamp(R.syncLamp(config), R.syncText(config)));
     head.append(title, states);
     row.append(head);
-    if (config.problem) row.append(message('error', `It does not load, so the Run page lists it but cannot launch it: ${config.problem}`));
+    if (config.problem) {
+      const box = message('error', `It does not load, so the Run page lists it but cannot launch `
+        + `it: ${R.problemText(config.problem)}.`);
+      if (R.problemText(config.problem) !== config.problem.trim()) {
+        const fold = el('details', 'mrc-fold');
+        fold.append(el('summary', '', 'The full message'), el('pre', 'm-pre', config.problem));
+        box.append(fold);
+      }
+      row.append(box);
+    }
     row.append(configFacts(config, p));
     if (config.legacy && (rigs.configs || []).length > 1) {
       row.append(el('p', 'm-hint', 'A 3.5.0 dashboard on this state folder still runs this config, '
@@ -1065,17 +1073,32 @@
     box.append(el('p', 'mrc-conflict-lead', 'This config was changed here and on the platform since '
       + 'they last agreed. Nothing was overwritten: keep one of the two versions.'));
     const columns = el('div', 'mrc-conflict-columns');
-    const column = (heading, sub, text) => {
+    // Each version line by line, a line the other version does not have
+    // marked, so the difference is found without reading both files.
+    const lines = (text) => String(text || '').replace(/\n$/, '').split('\n');
+    const column = (heading, sub, text, other) => {
       const col = el('div', 'mrc-conflict-column');
       col.append(el('h4', 'mrc-conflict-title', heading));
       if (sub) col.append(el('p', 'm-hint', sub));
-      col.append(el('pre', 'm-pre', text || ''));
+      const theirs = new Set(lines(other));
+      const pre = el('pre', 'm-pre mrc-conflict-text');
+      let differing = 0;
+      for (const line of lines(text)) {
+        const only = !theirs.has(line);
+        if (only) differing++;
+        pre.append(el(only ? 'mark' : 'span', only ? 'mrc-only' : '', `${line}\n`));
+      }
+      col.append(pre);
+      col.append(el('p', 'm-hint', differing
+        ? `${differing} line${differing === 1 ? '' : 's'} not in the other version, marked.`
+        : 'Every line is also in the other version (the order differs).'));
       return col;
     };
     const by = c.by ? ` by the ${c.by}` : '';
     columns.append(
-      column('This machine’s version', 'What this machine runs now.', config.text),
-      column('The platform’s version', `Revision ${platformRevision}${by}${c.at ? `, ${when(c.at)}` : ''}.`, platformText),
+      column('This machine’s version', 'What this machine runs now.', config.text, platformText),
+      column('The platform’s version', `Revision ${platformRevision}${by}${c.at ? `, ${when(c.at)}` : ''}.`,
+        platformText, config.text),
     );
     const result = el('div');
     const actions = el('div', 'm-form-actions');
