@@ -35,9 +35,9 @@ function loadHost({ responses, href = 'http://127.0.0.1:8123/', secure = true })
   }
   const source = fs.readFileSync(path.join(SRC, 'host_http.jsx'), 'utf8');
   const code = esbuild.transformSync(source, { loader: 'jsx' }).code;
-  const api = new Function('window', 'fetch', 'document', 'navigator', 'React', 'DARK', 'LIGHT', 'PlatformApp', 'PLATFORM_ASSETS',
+  const api = new Function('window', 'fetch', 'document', 'navigator', 'React', 'DARK', 'LIGHT', 'PlatformApp', 'PLATFORM_ASSETS', 'YAML',
     code + '\nreturn { createTransport, createPoller, createHttpHost, readFragmentToken };')(
-    window, fetch, {}, {}, {}, {}, {}, null, {});
+    window, fetch, {}, {}, {}, {}, {}, null, {}, { parseDocument: () => null });
   return { api, calls, timers, listeners };
 }
 
@@ -220,4 +220,56 @@ test('a signed-in server user keeps every capability the server grants', () => {
   const { host } = makeHost({}, session);
   assert.equal(host.capabilities.fork, true);
   assert.equal(host.capabilities.publish, true);
+});
+
+test('rig configs: the owner routes of machine-rig-configs.md §4, each change refreshing the views', async () => {
+  let record = { id: 'mc_0123456789abcdef', defaultRev: 1, configs: { c1a2b3c4d5e: { id: 'c1a2b3c4d5e', name: 'booth', revision: 1, state: 'synced' } } };
+  const { host, calls } = makeHost({
+    'GET /api/rigs': () => ({ body: { machines: [{ id: record.id, configs: {} }] } }),
+    'GET /api/rigs/mc_0123456789abcdef': () => ({ body: { record } }),
+    'GET /api/rigs/mc_gone00000000': { status: 404, body: { error: { kind: 'NotFound', message: 'No such machine' } } },
+    'PUT /api/rigs/mc_0123456789abcdef/configs/c1a2b3c4d5e': (init) => { record = { ...record, configs: { c1a2b3c4d5e: { ...record.configs.c1a2b3c4d5e, revision: 2, state: 'pending' } } }; return { body: { record, config: record.configs.c1a2b3c4d5e } }; },
+    'DELETE /api/rigs/mc_0123456789abcdef/configs/c1a2b3c4d5e': { body: { record } },
+    'PUT /api/rigs/mc_0123456789abcdef/default': { body: { record } },
+    'POST /api/rigs/mc_0123456789abcdef/configs/c1a2b3c4d5e/resolve': { body: { record } },
+    'DELETE /api/rigs/mc_0123456789abcdef': { body: {} },
+  }, { kind: 'server', viewer: { uid: 'u1', name: 'Ann' }, capabilities: { signIn: true, machineTokens: true, rigConfigs: true } });
+  assert.equal(host.capabilities.rigConfigs, true);
+  const seen = [];
+  host.subscribeRigMachine('mc_0123456789abcdef', (r) => seen.push(r.configs.c1a2b3c4d5e.state));
+  const missing = [];
+  host.subscribeRigMachine('mc_gone00000000', (r) => missing.push(r));
+  const lists = [];
+  host.subscribeRigMachines((v) => lists.push(v.machines.length));
+  await flush();
+  assert.deepEqual(missing, [null]);
+  assert.deepEqual(lists, [1]);
+  assert.deepEqual(await host.listRigMachines(), [{ id: 'mc_0123456789abcdef', configs: {} }]);
+  assert.equal((await host.getRigMachine('mc_0123456789abcdef')).id, 'mc_0123456789abcdef');
+  const res = await host.putRigConfig('mc_0123456789abcdef', 'c1a2b3c4d5e', { name: 'booth', text: 'a: 1\n', base: 1, basedOn: 'abc' });
+  assert.equal(res.config.revision, 2);
+  assert.deepEqual(seen, ['synced', 'pending']); // refreshed before putRigConfig resolved
+  const put = calls.find((c) => c.method === 'PUT' && c.url.endsWith('/configs/c1a2b3c4d5e'));
+  assert.deepEqual(JSON.parse(put.body), { name: 'booth', text: 'a: 1\n', base: 1, basedOn: 'abc' });
+  assert.equal(put.headers['X-Alhazen-Platform'], '1');
+  await host.deleteRigConfig('mc_0123456789abcdef', 'c1a2b3c4d5e', 2);
+  assert.ok(calls.some((c) => c.method === 'DELETE' && c.url.endsWith('/configs/c1a2b3c4d5e?base=2')));
+  await host.setRigDefault('mc_0123456789abcdef', 'c1a2b3c4d5e', 1);
+  assert.deepEqual(JSON.parse(calls.filter((c) => c.method === 'PUT').at(-1).body), { config: 'c1a2b3c4d5e', base: 1 });
+  await host.resolveRigConfig('mc_0123456789abcdef', 'c1a2b3c4d5e', 'machine');
+  assert.deepEqual(JSON.parse(calls.filter((c) => c.method === 'POST').at(-1).body), { keep: 'machine' });
+  await host.forgetRigMachine('mc_0123456789abcdef');
+  assert.ok(calls.some((c) => c.method === 'DELETE' && new URL(c.url).pathname === '/api/rigs/mc_0123456789abcdef'));
+  assert.equal(typeof (await host.loadYaml()).parseDocument, 'function');
+});
+
+test('rig configs: a 409 from the server reaches the editor with its message', async () => {
+  const { host } = makeHost({ 'PUT /api/rigs/mc_0123456789abcdef/configs/c1': { status: 409, body: { error: { kind: 'Conflict', message: 'This rig config changed since you opened it; reopen it and make the change again' } } } });
+  await assert.rejects(host.putRigConfig('mc_0123456789abcdef', 'c1', { name: 'b', text: 'a: 1', base: 0 }), (e) => e.status === 409 && /changed since you opened it/.test(e.message));
+});
+
+test('rig configs are offered only when the server keeps them, and never to a visitor', () => {
+  assert.equal(makeHost({}, { kind: 'server', viewer: null, capabilities: { signIn: true, rigConfigs: true } }).host.capabilities.rigConfigs, false);
+  assert.equal(makeHost({}, { kind: 'local', viewer: { uid: 'local' }, capabilities: { rigConfigs: false } }).host.capabilities.rigConfigs, false);
+  assert.equal(makeHost({}, { kind: 'local', viewer: { uid: 'local' }, capabilities: { rigConfigs: true } }).host.capabilities.rigConfigs, true);
 });

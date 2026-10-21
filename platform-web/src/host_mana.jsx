@@ -8,6 +8,13 @@
 const TERMINAL_LISTING = '/home/JGs3HVBXEJdU5xyEXc9WwkGT05y2/shared/LtTbJMTjunRRHrceu2JpyYCZoo82/mana-terminal';
 const MANA_FONT_STYLESHEET = 'https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap';
 const get = async (path) => (await FS.get(FS.ref(FS.db, path))).val();
+// The rig config editor's YAML reader, loaded the first time an editor opens (never at app start).
+const MANA_YAML_MODULE = 'https://esm.sh/yaml@2.9.1';
+let manaYamlLoading = null;
+function loadManaYaml() {
+  if (!manaYamlLoading) manaYamlLoading = import(MANA_YAML_MODULE).catch((e) => { manaYamlLoading = null; throw e; });
+  return manaYamlLoading;
+}
 
 function kitLoader(kitPath) {
   return 'from firebase_helper import firebase\nimport types\nhubkit = types.ModuleType("hubkit")\nexec(firebase.read("' + kitPath + '"), hubkit.__dict__)';
@@ -32,7 +39,7 @@ function changePrompt({ fork, forkId, jobId, request, kitPath, minePath, fromScr
   ].join('\n');
 }
 
-function runPrompt({ fork, forkId, jobId, kitPath, minePath, machine }) {
+function runPrompt({ fork, forkId, jobId, kitPath, minePath, machine, rigConfig }) {
   return [
     '[Alhazen Experiment Platform · run on my machine]',
     'Experiment: ' + fork.title + ' (fork id ' + forkId + '), my copy at ' + minePath + '/forks/' + forkId + '.',
@@ -41,7 +48,7 @@ function runPrompt({ fork, forkId, jobId, kitPath, minePath, machine }) {
     '1. Load the kit in Python:\n```python\n' + kitLoader(kitPath) + '\n```',
     '2. Mana Terminal must be installed in this Mana (`/workspace/mana_terminal.py`). If it is not, call `hubkit.set_job("' + forkId + '", "' + jobId + '", {"status": "failed", "summary": "Mana Terminal is not installed. Install it from the marketplace, pair your machine, then run again."})` and stop.',
     '3. `from mana_terminal import terms` (add /workspace to sys.path). If no window is open, set the job to status "waiting" with summary "Open a terminal on your machine and type mana, then press Run again." and stop.',
-    '4. `res = hubkit.run_on_machine("' + forkId + '", machine=' + (machine ? JSON.stringify(machine) : 'None') + ', psychopy=True, log=print, job_id="' + jobId + '")`. The job id lets the dashboard report back to this job when it closes. Each step that changes my machine is approved by me in the terminal; a refusal (TermDenied) is final: set status "stopped" and do not retry. The kit checks the disk first: if it raises hubkit.CopyHasData, nothing was changed; set the job to status "waiting" with its message as the summary, ask me whether to update the files (the saved sessions stay) or run the folder as it is, and call run_on_machine again with replace=True or keep=True accordingly.',
+    '4. `res = hubkit.run_on_machine("' + forkId + '", machine=' + (machine ? JSON.stringify(machine) : 'None') + ', psychopy=True, log=print, job_id="' + jobId + '"' + (rigConfig ? ', rig_config=' + JSON.stringify(rigConfig) : '') + ')`.' + (rigConfig ? ' rig_config is the rig config I chose (one of that machine\'s configs, by name): the dashboard opens with it chosen on its Run page. If the kit says the experiment\'s alhazen is too old to open a config by name, say so in the summary; the dashboard then opens with the machine\'s default.' : '') + ' The job id lets the dashboard report back to this job when it closes. Each step that changes my machine is approved by me in the terminal; a refusal (TermDenied) is final: set status "stopped" and do not retry. The kit checks the disk first: if it raises hubkit.CopyHasData, nothing was changed; set the job to status "waiting" with its message as the summary, ask me whether to update the files (the saved sessions stay) or run the folder as it is, and call run_on_machine again with replace=True or keep=True accordingly.',
     '5. If a step fails, read the error and the dashboard log, fix what can be fixed on the machine through the terminal (I approve each change), and retry that step. Do not edit the experiment\'s source here.',
     '6. Finish with `hubkit.set_job("' + forkId + '", "' + jobId + '", {"status": "done", "summary": "<one plain sentence>", "url": res["url"], "dir": res["dir"], "machine": <window label>})`, or status "failed" with what went wrong. Mention in the summary when res["disk"]["action"] is "unchanged" (already there), when res["library"] is not ok, and when res["dashboard"]["older"] is true (the dashboard already open runs an older alhazen than this experiment; its sessions still use the experiment\'s own).',
     'Nothing here writes to GitHub or to the shared hub.',
@@ -76,16 +83,28 @@ function UserDiv() {
     upd[prefix + bid + '/meta'] = { ...meta, complete: true, copiedFrom: srcPath, createdAt: Date.now() };
   }
 
-  async function startJob(fork, kind, request, machine) {
+  async function startJob(fork, kind, request, machine, options) {
     const forkId = fork.id;
+    const rigConfig = (options && options.rigConfig) || '';
     const chatId = await mana.mintChatId();
     const jobId = String(Date.now());
     const text = kind === 'run'
-      ? runPrompt({ fork, forkId, jobId, kitPath: KIT, minePath: MINE, machine })
+      ? runPrompt({ fork, forkId, jobId, kitPath: KIT, minePath: MINE, machine, rigConfig })
       : changePrompt({ fork, forkId, jobId, request, kitPath: KIT, minePath: MINE, fromScratch: kind === 'create' });
-    await FS.update(FS.ref(FS.db, MINE + '/forks/' + forkId + '/jobs/' + jobId), { kind, request: request || '', chatId, status: 'running', startedAt: Date.now(), updatedAt: Date.now(), machine: machine || '' });
+    await FS.update(FS.ref(FS.db, MINE + '/forks/' + forkId + '/jobs/' + jobId), { kind, request: request || '', chatId, status: 'running', startedAt: Date.now(), updatedAt: Date.now(), machine: machine || '', ...(rigConfig ? { rigConfig } : {}) });
     await mana.ask(chatId, text, undefined, undefined, undefined, undefined, true);
     return jobId;
+  }
+
+  // One owner change to a machine record: read it fresh, apply the rule, write only what changed.
+  async function changeRig(mid, rule, cid) {
+    const path = MINE + '/machines/' + rigCheckMachineId(mid);
+    const before = rigFromFirebase(await get(path), mid);
+    const now = Date.now();
+    const after = rule(before, now);
+    const patch = rigFirebasePatch(before || rigNormalize(null, mid), after, now);
+    if (Object.keys(patch).length) await FS.update(FS.ref(FS.db, path), patch, false);
+    return { record: after, config: cid ? after.configs[cid] || null : null };
   }
 
   const host = {
@@ -93,7 +112,7 @@ function UserDiv() {
     key: HUB + '|' + MINE,
     viewer,
     capabilities: { fork: true, publish: true, changeWithMana: true, runOnMachines: true, newWithMana: true,
-      uploadRevision: false, downloadRevision: false, machines: true, signIn: false, themeToggle: false },
+      uploadRevision: false, downloadRevision: false, machines: true, signIn: false, themeToggle: false, rigConfigs: !!userId },
     art,
     fontStylesheet: MANA_FONT_STYLESHEET,
     extraCss: '',
@@ -143,6 +162,40 @@ function UserDiv() {
         } catch (e) { onError(e); }
       }, onError);
     },
+    // [2026-10-21] Machine rig configs (machine-rig-configs.md §4): each machine's record at
+    // MINE/machines/<mid> (configs under rigs/<cid>), written by the viewer's alhazen-library service
+    // when a dashboard syncs, and changed here with the same rules (rigsync.js). Only what a change
+    // touches is written (rigFirebasePatch), outside the undo journal like the service's writes.
+    subscribeRigMachines(cb, onError) {
+      if (!MINE) return;
+      return FS.onValue(FS.ref(FS.db, MINE + '/machines'), (s) => {
+        const all = s.val() || {};
+        const machines = [], problems = [];
+        for (const [mid, node] of Object.entries(all)) {
+          if (mid === 'metadata' || !node || typeof node !== 'object') continue;
+          // A record under a key that is not a machine id is listed as a problem, not skipped silently.
+          try { machines.push(rigSummary(rigFromFirebase(node, mid))); }
+          catch (e) { if (!(e instanceof RigSyncError)) throw e; problems.push(mid + ': ' + e.message); }
+        }
+        cb({ machines, problems });
+      }, onError);
+    },
+    subscribeRigMachine(mid, cb, onError) {
+      if (!MINE) return;
+      return FS.onValue(FS.ref(FS.db, MINE + '/machines/' + rigCheckMachineId(mid)), (s) => cb(rigFromFirebase(s.val(), mid)), onError);
+    },
+    async listRigMachines() {
+      const all = (await get(MINE + '/machines')) || {};
+      return Object.entries(all).filter(([mid, n]) => mid !== 'metadata' && n && typeof n === 'object').map(([mid, n]) => rigSummary(rigFromFirebase(n, mid)));
+    },
+    getRigMachine: async (mid) => rigFromFirebase(await get(MINE + '/machines/' + rigCheckMachineId(mid)), mid),
+    putRigConfig: (mid, cid, { name, text, base, basedOn }) => changeRig(mid, (rec, now) => rigOwnerPut(rec, mid, cid, { name, text, base, basedOn, now }), cid),
+    deleteRigConfig: (mid, cid, base) => changeRig(mid, (rec, now) => rigOwnerDelete(rec, mid, cid, { base, now })),
+    setRigDefault: (mid, cid, base) => changeRig(mid, (rec, now) => rigOwnerDefault(rec, mid, cid, { base, now })),
+    resolveRigConfig: (mid, cid, keep) => changeRig(mid, (rec, now) => rigOwnerResolve(rec, mid, cid, { keep, now }), cid),
+    async forgetRigMachine(mid) { await FS.remove(FS.ref(FS.db, MINE + '/machines/' + rigCheckMachineId(mid)), false); },
+    loadYaml: loadManaYaml,
+
     bundleMeta: (path) => get(path + '/meta'),
     bundleChunk: async (path, i) => JSON.parse(await get(path + '/chunks/' + i) || '[]'),
 

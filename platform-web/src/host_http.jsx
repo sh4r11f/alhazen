@@ -148,7 +148,9 @@ function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHoo
     viewer: session.viewer || null,
     // A visitor of a public catalogue reads only: every change needs an account (the server
     // refuses them too; these flags keep the page from offering them).
-    capabilities: { ...(session.capabilities || {}), ...(visitor ? { fork: false, publish: false, uploadRevision: false, downloadRevision: false, machineTokens: false } : {}), changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, themeToggle: true },
+    capabilities: { ...(session.capabilities || {}), ...(visitor ? { fork: false, publish: false, uploadRevision: false, downloadRevision: false, machineTokens: false } : {}), changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, themeToggle: true,
+      // Machine rig configs (machine-rig-configs.md §4, owner routes): the signed-in person's machines.
+      rigConfigs: !visitor && !!(session.capabilities || {}).rigConfigs },
     art: { url: transport.url('api/art/'), encodePath: (p) => String(p).split('/').map(enc).join('/'), error: null },
     fontStylesheet: null,
     inlineStyles: false,
@@ -172,6 +174,27 @@ function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHoo
     async createMachineToken(name) { const res = await request('POST', 'api/machines', { json: { name } }); await poller.refresh(); return res; },
     async revokeMachineToken(id) { await request('DELETE', 'api/machines/' + enc(id)); await poller.refresh(); },
     platformOrigin: platformBase().toString().replace(/\/$/, ''),
+
+    // Machine rig configs: the records the person's dashboards sync (GET /api/rigs, /api/rigs/<mid>)
+    // and the owner's changes, which the server applies with rigsync's rules. Each change re-runs
+    // the live subscriptions before it resolves, so the page shows the new revision at once.
+    listRigMachines: async () => (await request('GET', 'api/rigs')).machines || [],
+    getRigMachine: async (mid) => (await request('GET', 'api/rigs/' + enc(mid))).record || null,
+    subscribeRigMachines: (cb, onError) => poller.subscribe(async () => ({ machines: (await request('GET', 'api/rigs')).machines || [] }), cb, onError),
+    subscribeRigMachine: (mid, cb, onError) => poller.subscribe(async () => {
+      try { return (await request('GET', 'api/rigs/' + enc(mid))).record || null; }
+      catch (e) { if (e.status === 404) return null; throw e; }
+    }, cb, onError),
+    async putRigConfig(mid, cid, { name, text, base, basedOn }) {
+      const res = await request('PUT', 'api/rigs/' + enc(mid) + '/configs/' + enc(cid), { json: { name, text, base, basedOn: basedOn || null } });
+      await poller.refresh(); return res;
+    },
+    async deleteRigConfig(mid, cid, base) { const res = await request('DELETE', 'api/rigs/' + enc(mid) + '/configs/' + enc(cid) + '?base=' + enc(base)); await poller.refresh(); return res; },
+    async setRigDefault(mid, cid, base) { const res = await request('PUT', 'api/rigs/' + enc(mid) + '/default', { json: { config: cid, base } }); await poller.refresh(); return res; },
+    async resolveRigConfig(mid, cid, keep) { const res = await request('POST', 'api/rigs/' + enc(mid) + '/configs/' + enc(cid) + '/resolve', { json: { keep } }); await poller.refresh(); return res; },
+    async forgetRigMachine(mid) { await request('DELETE', 'api/rigs/' + enc(mid)); await poller.refresh(); },
+    // Bundled with the standalone page (entry_standalone.jsx); nothing is fetched from elsewhere.
+    loadYaml: async () => YAML,
     subscribeDocs: (listing, cb, onError) => poller.subscribe(() => request('GET', 'api/catalogue/' + enc(listing.uid) + '/' + enc(listing.exp) + '/docs'), cb, onError),
     subscribeForkDocs: (fork, cb, onError) => poller.subscribe(async () => {
       let res;
