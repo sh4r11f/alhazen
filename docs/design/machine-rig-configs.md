@@ -106,12 +106,17 @@ All answers JSON; errors as today (`{"error": "..."}` with 400/409).
  "saves": [last 5 saves], "reward_calibration": <summary|null>,
  "gamma": {"file": "...", "at": "<iso>"} | null,
  "legacy": bool,                       // the config a 3.5.0 dashboard sees
- "sync": {"state": "synced|local|pending|rejected|conflict|not-synced",
+ "sync": {"state": "synced|local|rejected|conflict|not-synced",
           "platform_revision": int|null,
-          "rejected": {"revision", "reason", "text"} | null,
-          "conflict": {"platform_text", "platform_sha256", "platform_revision", "at", "by"} | null}}
+          "rejected": {"revision", "reason", "text", "at"} | null,
+          "conflict": {"platform_text", "platform_sha256", "platform_revision",
+                       "platform_name", "at", "by"} | null}}
 ```
-`Choice` (Run page chooser): `{id, name, default, problem}`.
+A stale save (the file changed since `sha256` was read) answers **409**. The dashboard never
+shows "pending": an edit made on the platform is not known here until a sync takes it.
+```
+```
+``Choice` (Run page chooser): `{id, name, default, problem, sha256}`.
 
 `describe()` (`GET /api/projects` etc.): `machine_rig` stays the default config's brief
 (`{id, name, file, sha256, data_root}`), and a new top-level `machine_rigs:

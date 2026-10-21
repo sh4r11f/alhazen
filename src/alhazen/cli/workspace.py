@@ -9,6 +9,7 @@ its rig: the launcher must not redefine where real/rehearsal data goes.
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
 import hashlib
 import json
@@ -22,7 +23,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
@@ -39,6 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from alhazen.cli import machine_rig as mr
 from alhazen.cli.launch_failure import launch_failure
 from alhazen.cli.machine_rig_sync import rig_sync_view
+from alhazen.cli.people import Conflict as PeopleConflict
 from alhazen.cli.people import PeopleError, PeopleRegistry
 from alhazen.cli.workspace_schema import EVENTS_KEY, TASK_EVENTS_KEY, TASK_NAME_KEY
 from alhazen.config.calibration_images import NAME_PATTERN
@@ -2797,6 +2799,16 @@ class Workspace:
             out.append({**entry, "text": text})
         return out
 
+    @contextlib.contextmanager
+    def _rig_edit(self) -> Iterator[None]:
+        """Hold the workspace lock for a rig-config edit; a save against a changed file is a
+        conflict (409), not a bad request."""
+        with self.lock:
+            try:
+                yield
+            except mr.MachineRigStale as exc:
+                raise PeopleConflict(str(exc)) from None
+
     def _changed_rigs(self) -> None:
         """Tell the platform sync that a config changed here (in the background)."""
         if self.rig_sync is not None:
@@ -2845,7 +2857,7 @@ class Workspace:
             raise ValueError("Send the rig to save")
         expected = body.get("sha256")
         ref = body.get("id") or None
-        with self.lock:
+        with self._rig_edit():
             if "text" in body:
                 saved = self.machine.save_text(ref, body["text"], expected, by="general page")
             elif "values" in body:
@@ -2885,7 +2897,7 @@ class Workspace:
     def delete_machine(self, body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(body, dict) or not body.get("id"):
             raise ValueError("Say which config to delete")
-        with self.lock:
+        with self._rig_edit():
             removed = self.machine.delete(str(body["id"]), body.get("sha256"), by="general page")
         if self.rig_sync is not None:
             self.rig_sync.deleted_here(removed)

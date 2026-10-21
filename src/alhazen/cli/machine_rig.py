@@ -107,6 +107,11 @@ class MachineRigError(ValueError):
     """A refusal about this machine's rig, worded for the person at it."""
 
 
+class MachineRigStale(MachineRigError):
+    """A save against a version of a config that has changed since it was read (the
+    dashboard answers 409)."""
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -493,7 +498,13 @@ class MachineRigs:
         value = {
             "default": status["default"],
             "configs": [
-                {"id": c["id"], "name": c["name"], "default": c["default"], "problem": c["problem"]}
+                {
+                    "id": c["id"],
+                    "name": c["name"],
+                    "default": c["default"],
+                    "problem": c["problem"],
+                    "sha256": c.get("sha256"),
+                }
                 for c in status["configs"]
             ],
         }
@@ -589,7 +600,7 @@ class MachineRigs:
 
     def _expect(self, machine: Machine, expected_sha: str | None) -> None:
         if expected_sha is not None and expected_sha != machine.sha256:
-            raise MachineRigError(
+            raise MachineRigStale(
                 f"The rig config {machine.name!r} changed since it was opened (another page or "
                 "the platform saved it); reopen it and make the change again"
             )

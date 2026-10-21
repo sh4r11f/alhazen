@@ -620,7 +620,7 @@ class TestTheDashboardRoutes:
                 "/api/machine-rigs/save",
                 {"id": spare["id"], "sha256": spare["sha256"], "text": spare["text"]},
             )
-            assert status == 400 and "changed since" in stale["error"]
+            assert status == 409 and "changed since" in stale["error"]
             status, renamed = call("/api/machine-rigs/rename", {"id": spare["id"], "name": "desk"})
             assert "desk" in [c["name"] for c in renamed["configs"]]
             status, defaulted = call("/api/machine-rigs/default", {"id": spare["id"]})
