@@ -226,3 +226,11 @@ test('the config editor’s fields can leave real_data editable and name their b
   const width = host.querySelectorAll('.parameter-row').find((row) => row.dataset.key === 'monitor.width_px');
   assert.match(width.querySelector('.rig-reset').title, /^Back to the saved value: 1920/);
 });
+
+test('a config’s problem is said in a line, without paths, codes or links', () => {
+  const problem = "invalid config in /state/machine-rig/configs/bench/rig-bench.yaml:\n1 validation error for RigConfig\nmonitor\n  Value error, width_px must be > 0 [type=value_error, input_value={'width_px': -5}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error";
+  assert.equal(R.problemText(problem), 'monitor: width_px must be > 0');
+  assert.equal(R.problemText('names events (FIX_ON); event lines are chosen per session'),
+    'names events (FIX_ON); event lines are chosen per session');
+  assert.equal(R.problemText(null), '');
+});

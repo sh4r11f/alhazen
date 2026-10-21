@@ -549,7 +549,18 @@ const RigEditor = (() => {
     const lines = String(problem).split('\n').map((l) => l.trim()).filter((l) => l
       && !/^For further information/.test(l) && !/^\d+ validation errors? for /.test(l));
     if (lines.length > 1 && /^invalid config in /.test(lines[0])) lines.shift();
-    return lines.join(' ').replace(/\s*\[type=[^\]]*\]/g, '').trim();
+    // Pydantic gives a field's place on one line and what is wrong on the next.
+    const parts = [];
+    for (let i = 0; i < lines.length; i++) {
+      const message = (text) => text.replace(/\s*\[type=[^\]]*\]/g, '').replace(/^\w+ error, /, '');
+      if (/^[\w.[\]-]+$/.test(lines[i]) && i + 1 < lines.length) {
+        parts.push(`${lines[i]}: ${message(lines[i + 1])}`);
+        i++;
+      } else {
+        parts.push(message(lines[i]));
+      }
+    }
+    return parts.join('; ').trim();
   }
 
   /** A config's sync state in words (its `sync.state`, docs/design §3). */
