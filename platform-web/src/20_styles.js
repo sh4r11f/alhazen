@@ -407,7 +407,8 @@ const CSS = `
 
 /* [2026-10-21] Machine rig configs: the list on Machines and the config editor. */
 .eh-rigs{margin:36px 0 8px}
-.eh-rigs-title{font-size:20px;font-weight:800;margin:0 0 6px}
+.eh-rigs-title{font-size:18px;font-weight:800;margin:0 0 6px}
+.eh .eh-rig-problem{color:var(--bad-ink)}
 .eh-rigs-lede{margin:0 0 18px;max-width:72ch;font-size:14px}
 .eh-rig-machine{margin-bottom:22px}
 .eh-rig-mhead{display:flex;align-items:flex-end;justify-content:space-between;gap:10px 16px;margin:0 0 10px;flex-wrap:wrap}
@@ -430,13 +431,21 @@ const CSS = `
 .eh-rig-versions pre,.eh-rig-running pre{margin:0;max-height:340px;overflow:auto;padding:12px;background:var(--surface-2);border-radius:8px;white-space:pre;line-height:1.5;color:var(--ink)}
 .eh-rig-running{margin-top:12px}.eh-rig-running summary{cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px}
 .eh-rig-actions{margin-top:14px}
+.eh-rig-new .field{max-width:540px}
+.eh-rig-reason{margin:8px 0!important;padding:8px 10px;border-radius:8px;background:var(--bad-bg);color:var(--bad-ink)!important;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px!important;overflow-wrap:anywhere}
+.eh-rig-difftable{margin-top:12px;overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+.eh-rig-difftable table{width:100%;border-collapse:collapse;font-size:13.5px}
+.eh-rig-difftable th{text-align:left;font-weight:700;font-size:12.5px;color:var(--muted);padding:8px 12px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.eh-rig-difftable td{padding:8px 12px;border-top:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+.eh-rig-difftable tr:first-child td{border-top:0}
+.eh-rig-difftable td.mono{font-size:12.5px;white-space:nowrap}
 .eh-rig-name{max-width:420px;margin-top:22px}
 .eh-rig-views{margin:22px 0 6px}
 .eh-rig-section{border-top:1px solid var(--line);padding:16px 0 8px}
 .eh-rig-section:first-child{border-top:0}
 .eh-rig-section h3{font-size:15px;font-weight:750;margin:0 0 6px}
-.eh-rig-field{display:grid;grid-template-columns:minmax(140px,240px) minmax(0,1fr);gap:4px 20px;align-items:center;padding:6px 0}
-.eh-rig-field>label{font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.eh-rig-field{display:grid;grid-template-columns:minmax(140px,240px) minmax(0,1fr);gap:4px 20px;align-items:start;padding:6px 0}
+.eh-rig-field>label{font-size:14px;font-weight:600;overflow-wrap:anywhere;padding-top:9px}
 .eh-rig-control{display:flex;flex-direction:column;gap:4px;min-width:0}
 .eh-rig-control input[type=text],.eh-rig-control select{height:38px;width:100%;max-width:420px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);padding:0 10px;font:inherit;font-size:14px}
 .eh-rig-control input.mono{font-size:13px}
@@ -445,7 +454,7 @@ const CSS = `
 .eh-rig-check{min-height:38px}
 .eh .eh-rig-bad{color:var(--bad-ink)}
 .eh-rig-yamlfield{margin-top:10px}
-.eh-rig-yaml{min-height:440px;font-size:13px!important;line-height:1.55;white-space:pre;tab-size:2;overflow:auto}
+.eh .field textarea.eh-rig-yaml{min-height:520px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.55;white-space:pre;tab-size:2;overflow:auto;resize:vertical}
 .eh-rig-changes{margin-top:18px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
 .eh-rig-changes h3{font-size:14px;font-weight:750;margin:0 0 6px}
 .eh-rig-changes ul{margin:0;padding-left:18px;font-size:14px}
@@ -459,7 +468,7 @@ const CSS = `
 .eh-rig-brief{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .eh-rig-brief .kv{margin-top:0}
 .eh-rig-brief p{margin-top:10px}
-@container (max-width:560px){.eh-rig-field{grid-template-columns:1fr;gap:4px;padding:8px 0}.eh-rig-versions{grid-template-columns:1fr}.eh-rig-h1{font-size:24px}.eh-rig-spacer{display:none}.eh-rig-control input[type=text],.eh-rig-control select{max-width:none}.eh-rig-mhead{align-items:flex-start}.eh-rig-yaml{min-height:360px}}
+@container (max-width:560px){.eh-rig-row{flex-wrap:wrap;gap:6px 14px}.eh-rig-row .row-main{flex:1 1 100%}.eh-rig-field{grid-template-columns:1fr;gap:4px;padding:8px 0}.eh-rig-field>label{padding-top:0}.eh-rig-versions{grid-template-columns:1fr}.eh-rig-h1{font-size:24px}.eh-rig-spacer{display:none}.eh-rig-control input[type=text],.eh-rig-control select{max-width:none}.eh-rig-mhead{align-items:flex-start}.eh .field textarea.eh-rig-yaml{min-height:380px}}
 
 @media (prefers-reduced-motion: reduce){.eh *{transition:none!important;animation:none!important}}
 `;

@@ -296,10 +296,10 @@ function RigConfigsSection({ host, go, onFlash }) {
           <div className="list">
             {configs.length ? configs.map((c) => {
               const st = rigConfigState(c, rigMachineName(m)); const problem = rigProblemOf(c);
-              const sub = [st.detail, problem ? 'The machine reports: ' + problem : ''].filter(Boolean).join(' · ');
               return <button key={c.id} className="row rowbtn eh-rig-row" onClick={() => go({ v: 'machines', id: m.id, tab: c.id })}>
                 <div className="row-main"><div className="row-title">{c.name}{c.id === m.default ? <span className="eh-rig-default">Default</span> : null}</div>
-                  {sub ? <div className="row-sub">{sub}</div> : null}</div>
+                  {st.detail ? <div className="row-sub">{st.detail}</div> : null}
+                  {problem ? <div className="row-sub eh-rig-problem">The machine reports: {problem}</div> : null}</div>
                 <RigStatus c={c} label={rigMachineName(m)} />
               </button>;
             }) : <div className="row"><div className="row-main"><div className="row-sub">No configs on this machine.</div></div></div>}
@@ -400,11 +400,11 @@ function RigNewConfig({ host, record, go, onFlash, homeLabel = 'Machines' }) {
     } catch (error) { setErr((error && error.message) || String(error)); }
     finally { setBusy(false); }
   }
-  return <form className="eh-rig-editor" onSubmit={create}>
+  return <form className="eh-rig-editor eh-rig-new" onSubmit={create}>
     <nav className="eh-crumb" aria-label="Location"><button type="button" onClick={() => go({ v: 'machines' })}>{homeLabel}</button><span>/</span><span>{label}</span></nav>
     <h1 className="eh-rig-h1">Add a rig config to {label}</h1>
     <div className="field"><label htmlFor="eh-rig-new-name">Name</label>
-      <input id="eh-rig-new-name" autoFocus value={name} maxLength={64} spellCheck={false} placeholder="eyelink" onChange={(e) => setName(e.target.value)} aria-invalid={nameTaken ? 'true' : undefined} />
+      <input id="eh-rig-new-name" autoFocus value={name} maxLength={64} spellCheck={false} placeholder="monkey-daq" onChange={(e) => setName(e.target.value)} aria-invalid={nameTaken ? 'true' : undefined} />
       <small>{nameTaken ? label + ' already has a config with this name.' : 'Letters, digits, dots, dashes and underscores. The rig file on the machine is named after it.'}</small></div>
     <div className="field"><label htmlFor="eh-rig-new-from">Start from</label>
       {configs.length || templates.length ? <select id="eh-rig-new-from" value={from} onChange={(e) => setFrom(e.target.value)}>
@@ -492,16 +492,19 @@ function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }
       <h1 className="eh-rig-h1">{config.name}{isDefault ? <span className="eh-rig-default">Default</span> : null}</h1>
       <span className={'status st-' + st.tone}>{st.words}</span>
     </div>
-    <p className="eh-muted eh-rig-statusline">{[st.detail, config.updatedAt ? 'Last changed ' + rigAgo(config.updatedAt) + (config.updatedBy === 'platform' ? ' here' : config.updatedBy === 'machine' ? ' on ' + label : '') : ''].filter(Boolean).join(' · ')}</p>
+    <p className="eh-muted eh-rig-statusline">{[config.state === 'rejected' || config.conflict ? '' : st.detail, config.updatedAt ? 'Last changed ' + (config.updatedBy === 'platform' ? 'here ' : config.updatedBy === 'machine' ? 'on ' + label + ' ' : '') + rigAgo(config.updatedAt) : ''].filter(Boolean).join(' · ')}</p>
     {problem ? <p className="eh-rig-error" role="alert">{label} reports a problem with the version it runs: {problem}</p> : null}
 
     {config.conflict ? <div className="panel eh-rig-panel eh-rig-conflict">
       <h3>Changed on both sides</h3>
       <p>{label} changed this config while a change made here was waiting. Nothing was overwritten: keep one of the two versions.</p>
-      <div className="eh-rig-versions">
-        <div><h4>On {label}</h4><pre className="mono">{config.conflict.text}</pre></div>
-        <div><h4>Here</h4><pre className="mono">{config.text}</pre></div>
-      </div>
+      <RigDiffTable Y={Y} leftText={config.conflict.text} rightText={config.text} leftLabel={'On ' + label} rightLabel="Here" />
+      <details className="eh-rig-running"><summary>Both versions in full</summary>
+        <div className="eh-rig-versions">
+          <div><h4>On {label}</h4><pre className="mono">{config.conflict.text}</pre></div>
+          <div><h4>Here</h4><pre className="mono">{config.text}</pre></div>
+        </div>
+      </details>
       <div className="eh-actions eh-rig-actions">
         <button className="btn btn-line" disabled={!!busy} onClick={() => run('Keeping', () => host.resolveRigConfig(mid, cid, 'machine'), 'Kept the version on ' + label + '.')}>Keep the machine’s</button>
         <button className="btn btn-line" disabled={!!busy} onClick={() => run('Keeping', () => host.resolveRigConfig(mid, cid, 'platform'), 'Kept the version here. Waiting for ' + label + ' to take it.')}>Keep the platform’s</button>
@@ -510,8 +513,10 @@ function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }
 
     {config.state === 'rejected' && !config.conflict ? <div className="panel eh-rig-panel">
       <h3>{label} refused the last change</h3>
-      <p>{(config.rejection && config.rejection.reason) || 'No reason was given.'} It keeps running the version below until a change it accepts arrives.</p>
-      {running ? <details className="eh-rig-running"><summary>The version {label} runs</summary><pre className="mono">{running.text}</pre></details> : null}
+      <p className="eh-rig-reason">{(config.rejection && config.rejection.reason) || 'No reason was given.'}</p>
+      <p>It keeps running its earlier version until a change it accepts arrives. The refused change differs from it in:</p>
+      {running ? <RigDiffTable Y={Y} leftText={running.text} rightText={config.text} leftLabel={'What ' + label + ' runs'} rightLabel="The refused change" /> : null}
+      {running ? <details className="eh-rig-running"><summary>The version {label} runs, in full</summary><pre className="mono">{running.text}</pre></details> : null}
       {running ? <div className="eh-actions eh-rig-actions"><button className="btn btn-line btn-small" onClick={() => setDraft({ ...draft, text: running.text })}>Edit from the running version</button></div> : null}
     </div> : null}
 
@@ -548,8 +553,8 @@ function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }
       <span className="eh-rig-spacer" />
       {!isDefault ? <button className="btn btn-line" disabled={!!busy || config.state === 'pending' && !running} onClick={() => run('Default', () => host.setRigDefault(mid, cid, record.defaultRev), config.name + ' is the default on ' + label + ' from its next sync.')}>Make default</button> : null}
       {confirmDelete
-        ? <span className="eh-actions eh-rig-confirm"><span>Delete {config.name}? {label} moves it to its trash.</span><button className="btn btn-line btn-small" onClick={() => setConfirmDelete(false)}>Keep</button>
-          <button className="btn btn-primary btn-small" disabled={!!busy} onClick={() => run('Deleting', async () => { await host.deleteRigConfig(mid, cid, config.revision); back(); }, config.name + ' will be deleted on ' + label + ' at its next sync.')}>Delete</button></span>
+        ? <span className="eh-actions eh-rig-confirm"><span>Delete {config.name}? {running ? label + ' moves it to its trash at its next sync.' : 'It is not on ' + label + ' yet, so it goes at once.'}</span><button className="btn btn-line btn-small" onClick={() => setConfirmDelete(false)}>Keep</button>
+          <button className="btn btn-primary btn-small" disabled={!!busy} onClick={() => run('Deleting', async () => { await host.deleteRigConfig(mid, cid, config.revision); back(); }, running ? config.name + ' will be deleted on ' + label + ' at its next sync.' : config.name + ' was deleted.')}>Delete</button></span>
         : <button className="btn btn-quiet" disabled={isDefault || !!busy} title={isDefault ? 'Make another config the default first' : undefined} onClick={() => setConfirmDelete(true)}>Delete</button>}
     </div>
     {isDefault ? <p className="eh-muted eh-rig-note">The default config cannot be deleted; make another one the default first.</p> : null}
@@ -563,6 +568,19 @@ function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }
       <p className="eh-muted">Measured with Measure rig on the machine and kept there with this config.</p>
     </div>
   </div>;
+}
+
+// The settings two versions of a config differ in, side by side (a conflict, a refused change).
+function RigDiffTable({ Y, leftText, rightText, leftLabel, rightLabel }) {
+  if (!Y) return null;
+  const left = rigParse(Y, leftText), right = rigParse(Y, rightText);
+  if (left.error || right.error) return <p className="eh-muted">{left.error ? leftLabel : rightLabel} does not parse as YAML; compare the full versions below.</p>;
+  const rows = rigChanges(left.values, right.values);
+  if (!rows.length) return <p className="eh-muted">The two versions have the same settings; they differ only in comments or layout.</p>;
+  return <div className="eh-rig-difftable"><table>
+    <thead><tr><th scope="col">Setting</th><th scope="col">{leftLabel}</th><th scope="col">{rightLabel}</th></tr></thead>
+    <tbody>{rows.map((r) => <tr key={r.path}><td className="mono">{r.path}</td><td>{rigShowValue(r.from)}</td><td>{rigShowValue(r.to)}</td></tr>)}</tbody>
+  </table></div>;
 }
 
 // The Mana Run dialog's rig config choice.
