@@ -454,7 +454,9 @@ describe('launching a run', () => {
         /* The Task parameters entry it was launched from, for the history. */
         parameter_set: 'task',
         parameters: { trials: 4 },
-        /* This machine's rig as the Rig section holds it: unchanged here. */
+        /* The chosen rig config (the default) as the Rig section holds it:
+         * unchanged here. */
+        rig_config: 'c-mac',
         rig_values: rig(true).values,
       });
       /* The token travels in a header, as JSON, and the page moved on to the
@@ -1053,11 +1055,13 @@ describe('a request the launcher refuses', () => {
     });
 });
 
-describe('this machine’s rig in the Rig section', () => {
-  /* Every session runs on this machine's rig (alhazen/cli/machine_rig.py):
-   * there is no menu. The section names the machine, summarises the rig as
-   * this session will run it, assigns the task's events to lines and lets
-   * the settings be changed for this session only, each change marked. */
+describe('this machine’s rig configs in the Rig section', () => {
+  /* Every session runs on one of this machine's rig configs
+   * (docs/design/machine-rig-configs.md), chosen from a menu of this
+   * machine's configs only, the default first chosen. The section
+   * summarises the config as this session will run it, assigns the task's
+   * events to lines and lets the settings be changed for this session only,
+   * each change marked. */
   const LAB = {
     monitor: { width_px: 1920, height_px: 1080, refresh_rate_hz: 120, width_cm: 52, distance_cm: 57 },
     display: { backend: 'psychopy', photodiode: { corner: 'br', size_px: 60 } },
@@ -1082,9 +1086,17 @@ describe('this machine’s rig in the Rig section', () => {
       ...overrides,
     };
   }
-  async function labPage(overrides = {}) {
-    const project = { ...PROJECT, machine_rig: { name: 'lab', file: 'C:/state/machine-rig/rig-lab.yaml', sha256: 'sha-lab', data_root: 'data' } };
-    const app = loadWorkspace({});
+  /* Three configs: lab (the default), bench, and broken, which does not load. */
+  const CHOICES = [
+    { id: 'c-lab', name: 'lab', default: true, problem: null },
+    { id: 'c-bench', name: 'bench', default: false, problem: null },
+    { id: 'c-broken', name: 'broken', default: false, problem: 'monitor.width_px: must be positive' },
+  ];
+  async function labPage(overrides = {}, options = {}) {
+    const project = { ...PROJECT,
+      machine_rig: { id: 'c-lab', name: 'lab', file: 'C:/state/machine-rig/rig-lab.yaml', sha256: 'sha-lab', data_root: 'data' },
+      machine_rigs: { default: 'c-lab', configs: CHOICES } };
+    const app = loadWorkspace(options);
     app.server.state = { projects: [project], runs: [], active: null };
     app.server.details = { launched: runDetail({ id: 'launched', log: '' }) };
     app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
@@ -1098,14 +1110,56 @@ describe('this machine’s rig in the Rig section', () => {
     .map((r) => [r.children[0].textContent, r.children[1].querySelector('input').value,
       r.children[2].querySelector('input').checked]);
 
-  it('names the machine, with no menu, and summarises the rig as the session will run it', async () => {
+  it('lists this machine’s configs, the default chosen, and summarises it as the session will run it', async () => {
     const app = await labPage();
-    assert.equal(app.byId('rig-machine').textContent, 'This machine · lab');
+    assert.equal(app.byId('rig-machine').textContent, '3 configs on this machine');
     assert.equal(app.byId('rig-machine-edit').hidden, false);
     assert.equal(app.byId('rig').localName, 'input');
+    const options = app.byId('rig-config').children;
+    assert.deepEqual(options.map((o) => [o.value, o.textContent, o.disabled]), [
+      ['c-lab', 'lab (default)', false],
+      ['c-bench', 'bench', false],
+      ['c-broken', 'broken — does not load', true],
+    ]);
+    assert.equal(app.byId('rig-config').value, 'c-lab');
+    assert.match(app.byId('rig-config-help').textContent, /broken cannot be chosen until it loads: monitor\.width_px/);
     assert.equal(facts(app).Rig, 'lab · as saved');
     assert.equal(facts(app).Screen, '1920 × 1080 px · 120 Hz');
-    assert.ok(app.server.sessionRigQueries.some((q) => q.project === 'p' && q.mode === 'simulate'));
+    assert.ok(app.server.sessionRigQueries.some((q) => q.project === 'p' && q.mode === 'simulate'
+      && q.config === 'c-lab'));
+  });
+
+  it('opens on the config the address names, by name or id', async () => {
+    const app = await labPage({}, { search: '?view=run&rig=bench' });
+    assert.equal(app.byId('rig-config').value, 'c-bench');
+    assert.equal(app.server.sessionRigQueries.at(-1).config, 'c-bench');
+    /* One that does not load is never chosen: the default stands in. */
+    const broken = await labPage({}, { search: '?view=run&rig=c-broken' });
+    assert.equal(broken.byId('rig-config').value, 'c-lab');
+  });
+
+  it('reads another config when chosen, saying the session’s changes were left behind', async () => {
+    const app = await labPage();
+    const input = app.byId('rig-fields').querySelectorAll('.parameter-row')
+      .find((r) => r.dataset.key === 'monitor.distance_cm').querySelector('input');
+    input.value = '61';
+    input.fire('input');
+    input.fire('change');
+    app.server.sessionRig = labRig({ config: { id: 'c-bench', name: 'bench' },
+      machine: { name: 'bench', file: 'C:/state/machine-rig/configs/bench/rig-bench.yaml', sha256: 'sha-bench',
+        values: JSON.parse(JSON.stringify(LAB)), problem: null } });
+    app.byId('rig-config').value = 'c-bench';
+    app.byId('rig-config').fire('change');
+    await settle();
+    assert.equal(app.server.sessionRigQueries.at(-1).config, 'c-bench');
+    assert.equal(app.run('sessionRig.config.id'), 'c-bench');
+    assert.equal(app.run('sessionRig.current.monitor.distance_cm'), 57);
+    assert.match(app.byId('rig-note').textContent, /The 1 setting changed for this session on lab was left behind: the settings start over from bench\./);
+    assert.match(app.location.search, /rig=bench/);
+    assert.equal(app.byId('rig-save').textContent, 'Save to bench');
+    chooseMode(app, 'simulate');
+    await launch(app);
+    assert.equal(launched(app).rig_config, 'c-bench');
   });
 
   it('lists the task’s own events first, with the lines carried from its last session', async () => {
@@ -1165,29 +1219,50 @@ describe('this machine’s rig in the Rig section', () => {
     assert.deepEqual(plain(app.run('sessionRig.current.devices.sync.event_lines')), { FIX_ON: 'Dev1/port0/line0' });
   });
 
-  it('asks before saving the changes as this machine’s, and leaves the event lines alone', async () => {
+  it('asks before saving the changes to the config, and leaves the event lines alone', async () => {
     const app = await labPage();
     const input = app.byId('rig-fields').querySelectorAll('.parameter-row')
       .find((r) => r.dataset.key === 'monitor.distance_cm').querySelector('input');
     input.value = '58';
     input.fire('input');
     input.fire('change');
-    app.server.saveMachine = (body) => {
+    app.server.rigWrites = (path, body) => {
+      if (path !== '/api/machine-rigs/save') return undefined;
       const saved = JSON.parse(JSON.stringify(body.values));
       delete saved.devices.sync.event_lines;
-      return { name: 'lab', file: 'C:/state/machine-rig/rig-lab.yaml', sha256: 'sha-2', values: saved, problem: null };
+      return { configs: [{ id: 'c-lab', name: 'lab', default: true, file: 'C:/state/machine-rig/rig-lab.yaml',
+        sha256: 'sha-2', values: saved, problem: null, reward_calibration: null }] };
     };
+    assert.equal(app.byId('rig-save').textContent, 'Save to lab');
     app.byId('rig-save').fire('click');
     const confirm = app.byId('rig-save-confirm');
     assert.equal(confirm.hidden, false);
+    assert.match(confirm.textContent, /Save 1 change to lab\?/);
     assert.match(confirm.textContent, /monitor\.distance_cm: 57 → 58/);
     confirm.querySelector('.primary').fire('click');
     await settle();
-    const post = app.server.posted.find((p) => p.path === '/api/machine-rig/save');
+    const post = app.server.posted.find((p) => p.path === '/api/machine-rigs/save');
+    assert.equal(post.body.id, 'c-lab');
     assert.equal(post.body.sha256, 'sha-lab');
     assert.equal(app.run('sessionRig.machine.sha256'), 'sha-2');
     assert.equal(app.byId('rig-edit-count').textContent, 'as saved');
     assert.deepEqual(plain(app.run('sessionRig.current.devices.sync.event_lines')), { FIX_ON: 'Dev1/port0/line0' });
+  });
+
+  it('says plainly when the config changed since it was read, and saves nothing', async () => {
+    const app = await labPage();
+    const input = app.byId('rig-fields').querySelectorAll('.parameter-row')
+      .find((r) => r.dataset.key === 'monitor.distance_cm').querySelector('input');
+    input.value = '58';
+    input.fire('input');
+    input.fire('change');
+    app.server.rigWrites = () => ({ status: 409, json: { error: 'rig-lab.yaml changed since it was read' } });
+    app.byId('rig-save').fire('click');
+    app.byId('rig-save-confirm').querySelector('.primary').fire('click');
+    await settle();
+    assert.match(app.byId('rig-save-confirm').textContent, /lab was changed since this page read it/);
+    assert.equal(app.run('sessionRig.machine.sha256'), 'sha-lab');
+    assert.equal(app.byId('rig-save-confirm').hidden, false);
   });
 
   it('keeps a change across another mode, and makes Measure rig read only', async () => {
@@ -1202,15 +1277,30 @@ describe('this machine’s rig in the Rig section', () => {
     assert.equal(app.run('sessionRig.current.monitor.distance_cm'), 59);
     assert.equal(app.byId('rig-events').hidden, true);
     assert.equal(app.byId('rig-fields').querySelector('input').disabled, true);
-    assert.match(app.byId('rig-edit-help').textContent, /Measure rig measures this machine’s rig as it is saved/);
+    assert.match(app.byId('rig-edit-help').textContent, /Measure rig measures lab as it is saved/);
+    assert.equal(app.server.sessionRigQueries.at(-1).config, 'c-lab');
+    assert.equal(app.server.sessionRigQueries.at(-1).mode, 'measure');
   });
 
-  it('shows the set-up card, and no launch, until this machine has a rig', async () => {
+  it('cannot launch when none of the configs loads, and says where to fix one', async () => {
+    const app = loadWorkspace({});
+    app.server.state = { projects: [{ ...PROJECT, machine_rig: null, machine_rigs: { default: 'c-broken',
+      configs: [{ id: 'c-broken', name: 'broken', default: true, problem: 'bad monitor' }] } }], runs: [], active: null };
+    app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+    await app.run('refresh()');
+    await settle();
+    assert.equal(app.byId('rig-config').children[0].disabled, true);
+    assert.equal(app.byId('launch').disabled, true);
+    assert.match(app.byId('launch-note').textContent, /None of this machine’s rig configs loads/);
+    assert.equal(app.server.sessionRigQueries, undefined);
+  });
+
+  it('shows the add-a-config card, and no launch, until this machine has a config', async () => {
     const app = loadWorkspace({});
     app.server.state = { projects: [{ ...PROJECT, machine_rig: null }], runs: [], active: null };
     app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
-    app.server.machine = {
-      configured: false, error: null, suggested: 'p:configs/rig-mac.yaml',
+    app.server.templates = {
+      suggested: 'p:configs/rig-mac.yaml',
       templates: [
         { id: 'alhazen/lab', label: 'alhazen/lab', kind: 'shared', name: 'lab', summary: '1920 × 1080 px · 120 Hz · eyelink', real_data: true, events: [], error: null },
         { id: 'p:configs/rig-mac.yaml', label: 'demo/mac', kind: 'experiment', name: 'mac', summary: '3024 × 1964 px · 120 Hz · no eye tracker', real_data: false, events: [], error: null },
@@ -1218,13 +1308,30 @@ describe('this machine’s rig in the Rig section', () => {
     };
     await app.run('refresh()');
     await settle();
-    assert.equal(app.byId('rig-machine').textContent, 'This machine has no rig yet');
+    assert.equal(app.byId('rig-machine').textContent, 'This machine has no rig config yet');
+    assert.equal(app.byId('rig-config-field').hidden, true);
     assert.equal(app.byId('rig-setup').hidden, false);
+    assert.match(app.byId('rig-setup').textContent, /Add this machine’s first rig config/);
     assert.equal(app.byId('launch').disabled, true);
-    assert.match(app.byId('launch-note').textContent, /Set up this machine’s rig first/);
+    assert.match(app.byId('launch-note').textContent, /Add a rig config for this machine first/);
     const from = app.byId('rig-setup').querySelector('select');
-    assert.equal(from.value, 'p:configs/rig-mac.yaml');
+    assert.equal(from.value, 'template:p:configs/rig-mac.yaml');
     assert.match(app.byId('rig-setup').textContent, /development rig \(run mode refused\)/);
+    /* Adding it reads the page again and runs on the new config. */
+    app.server.rigWrites = (path, body) => {
+      if (path !== '/api/machine-rigs/create') return undefined;
+      app.server.state = { projects: [{ ...PROJECT, machine_rig: { id: 'c-new', name: body.name, sha256: 'sha-mac', data_root: 'data' },
+        machine_rigs: { default: 'c-new', configs: [{ id: 'c-new', name: body.name, default: true, problem: null }] } }], runs: [], active: null };
+      return { created: 'c-new', configs: [{ id: 'c-new', name: body.name }] };
+    };
+    app.server.sessionRig = labRig({ config: { id: 'c-new', name: 'mac' } });
+    app.byId('rig-setup').querySelector('form').fire('submit', { preventDefault() {} });
+    await settle();
+    await settle();
+    assert.deepEqual(plain(app.server.posted.find((p) => p.path === '/api/machine-rigs/create').body),
+      { name: 'mac', template: 'p:configs/rig-mac.yaml' });
+    assert.equal(app.byId('rig-setup').hidden, true);
+    assert.equal(app.byId('rig-config').value, 'c-new');
   });
 });
 
@@ -2572,18 +2679,18 @@ describe('a development rig in the launch form', () => {
 
   it('says under the rig that real data is refused there, and only for such a rig', async () => {
     const app = await pageWith({ project: LAPTOP, rigs: { laptop: DEVELOPMENT } });
-    assert.equal(app.byId('rig-machine').textContent, 'This machine · laptop');
+    assert.equal(app.byId('rig-config').value, 'c-laptop');
     assert.equal(facts(app)['Real data'], 'refused · a development rig (real_data: false)');
     const lab = await pageWith({ project: LAPTOP, rigs: { lab: COLLECTING } });
     assert.equal('Real data' in facts(lab), false);
   });
 
-  it('shows real_data as this machine’s, never as a setting a session can change', async () => {
+  it('shows real_data as the config’s, never as a setting a session can change', async () => {
     const app = await pageWith({ project: LAPTOP, rigs: { laptop: DEVELOPMENT } });
     const row = app.byId('rig-fields').querySelectorAll('.parameter-row')
       .find((r) => r.dataset.key === 'real_data');
     assert.equal(row.querySelector('input'), null);
-    assert.match(row.textContent, /false \(this machine’s\)/);
+    assert.match(row.textContent, /false \(this config’s\)/);
   });
 
   it('warns in Run mode before the launch, names the rig and the way on, and still launches',
@@ -2592,10 +2699,11 @@ describe('a development rig in the launch form', () => {
       chooseMode(app, 'run');
       assert.equal(
         note(app).textContent,
-        'Run experiment records real data, and this machine’s rig (laptop) is a development '
+        'Run experiment records real data, and the rig config laptop is a development '
           + 'rig (real_data: false): this launch will be refused before anything is written. '
-          + 'Use Test session or Simulate to try the session on this machine, or set '
-          + 'real_data: true in this machine’s rig if subjects are recorded here.',
+          + 'Use Test session or Simulate to try the session on this machine, or choose a '
+          + 'config that collects (or set real_data: true in this one on the General page) if '
+          + 'subjects are recorded here.',
       );
       assert.equal(note(app).classList.contains('launch-warning'), true);
       assert.equal(app.byId('launch').disabled, false);

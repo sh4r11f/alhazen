@@ -1,6 +1,6 @@
-/* Alhazen experiment workspace — this machine's rig (workspace_rig.js).
+/* Alhazen experiment workspace — this machine's rig configs (workspace_rig.js).
  *
- * The Run page's Rig section: the heading with the machine's name, the
+ * The Run page's Rig section: the heading, the config menu, the
  * summary (workspace.css .rig-summary), the Event lines table, and the
  * settings fold, whose rows reuse the task parameters' (.parameter-row,
  * .parameter-section) so the two editors read as one; a row the session
@@ -30,6 +30,34 @@
   margin-left: auto;
   font-size: 13.5px;
   padding: 4px 10px;
+}
+
+/* ---- The config menu ---- */
+
+.rig-config-field {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0 4px;
+  max-width: 34rem;
+}
+
+.rig-config-field[hidden] {
+  display: none;
+}
+
+.rig-config-field label {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.rig-config-field select {
+  width: 100%;
+}
+
+.rig-config-field .help {
+  margin: 2px 0 0;
+  font-size: 13.5px;
 }
 
 /* ---- Event lines ---- */
@@ -337,6 +365,260 @@
   font-size: 14px;
   margin: 6px 0;
   overflow-wrap: anywhere;
+}
+
+/* ---- The General page: this machine's rig configs (workspace_manage.js) ---- */
+
+.mrc-connection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.mrc-connection-machine {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.mrc-connection-machine .m-lamp {
+  align-self: center;
+}
+
+.mrc-connection-text {
+  flex: 1 1 22rem;
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.mrc-create:not(:empty) {
+  margin-top: 4px;
+}
+
+.mrc-create .rig-setup-form {
+  max-width: 36rem;
+}
+
+.mrc-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* One config: a strip on the rack, its name first, the facts beneath, its
+ * actions last; the work area (editor, rename, delete, history) opens under
+ * them. The default is marked in words, not by colour alone. */
+.mrc-config {
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+  scroll-margin-top: 16px;
+}
+
+.mrc-config:first-child {
+  border-top: 0;
+}
+
+.mrc-config-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin-bottom: 10px;
+}
+
+.mrc-config-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.mrc-config-name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -.2px;
+  overflow-wrap: anywhere;
+}
+
+.mrc-default-mark {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 9px;
+}
+
+.mrc-config-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.mrc-facts {
+  margin-bottom: 10px;
+}
+
+.mrc-config-work:not(:empty) {
+  margin-top: 4px;
+}
+
+.mrc-fold {
+  flex-basis: 100%;
+}
+
+.mrc-fold summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+/* Both versions of a conflicted config, side by side; stacked when narrow. */
+.mrc-conflict {
+  margin: 10px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--bad-line);
+  border-radius: 8px;
+  background: var(--bad-bg);
+}
+
+.mrc-conflict-lead {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--bad-ink);
+  font-weight: 650;
+}
+
+.mrc-conflict-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mrc-conflict-title,
+.mrc-subtitle {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.mrc-subtitle {
+  margin-top: 14px;
+}
+
+.mrc-conflict .m-pre {
+  max-height: 320px;
+}
+
+.mrc-only {
+  display: block;
+  margin: 0 -14px;
+  padding: 0 14px;
+  color: inherit;
+  background: color-mix(in srgb, var(--accent) 38%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* The editor: Settings | YAML, then the view. */
+.mrc-editor-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+
+.mrc-tabs {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mrc-tabs .mrc-tab {
+  border: 0;
+  border-radius: 0;
+  padding: 6px 14px;
+  font-size: 13.5px;
+}
+
+.mrc-tabs .mrc-tab + .mrc-tab {
+  border-left: 1px solid var(--line);
+}
+
+.mrc-tabs .mrc-tab[aria-pressed="true"] {
+  background: var(--selected-bg, var(--surface-2));
+  color: var(--selected-ink, var(--ink));
+  font-weight: 700;
+}
+
+.mrc-view[hidden] {
+  display: none;
+}
+
+.mrc-editor-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.mrc-search {
+  flex: 1 1 14em;
+  min-width: 0;
+}
+
+.mrc-fields {
+  max-height: 460px;
+  overflow: auto;
+  padding-right: 7px;
+  scrollbar-width: thin;
+}
+
+.mrc-editor textarea.m-code {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mrc-comments {
+  margin-top: 10px;
+}
+
+.mrc-versions {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.mrc-versions li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.mrc-versions li button {
+  margin-left: auto;
+}
+
+@media (max-width: 760px) {
+  .mrc-conflict-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 560px) {
