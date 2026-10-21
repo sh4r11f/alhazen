@@ -391,24 +391,32 @@
               </div>
             </section>
 
-            <!-- Rig: this machine's rig, which every session here runs on
-                 (alhazen/cli/machine_rig.py), directly above the task
-                 parameters. There is no menu: the rig is the machine the
-                 dashboard runs on. The summary is the rig as this session
-                 will run it; Event lines assigns the task's events to sync
-                 lines; the settings below change it for this session only
-                 (loadRig() and renderRig() in workspace.js, workspace_rig.js).
-                 Until the machine has a rig, the set-up card stands in. -->
+            <!-- Rig: one of this machine's rig configs, which every session
+                 here runs on (docs/design/machine-rig-configs.md), directly
+                 above the task parameters. The menu lists this machine's
+                 configs only (the default first chosen; one that does not
+                 load is listed but cannot be chosen). The summary is the
+                 config as this session will run it; Event lines assigns the
+                 task's events to sync lines; the settings below change it
+                 for this session only (loadRig() and renderRig() in
+                 workspace.js, workspace_rig.js). Until the machine has a
+                 config, the add-a-config card stands in. -->
             <section id="rig-section" class="form-section stage">
               <div class="rig-heading">
                 <h3 class="section-title">Rig</h3>
                 <span id="rig-machine" class="rig-machine"></span>
                 <button type="button" id="rig-machine-edit" class="quiet rig-machine-edit" hidden>
-                  Edit this machine’s rig
+                  Edit this config
                 </button>
               </div>
-              <!-- What a launch sends as `rig`: empty, this machine's rig. -->
+              <!-- What a launch sends as `rig`: empty, this machine's config
+                   (sent as `rig_config`). -->
               <input type="hidden" id="rig" value="">
+              <div id="rig-config-field" class="rig-config-field" hidden>
+                <label for="rig-config">Rig config</label>
+                <select id="rig-config"></select>
+                <p id="rig-config-help" class="help" hidden></p>
+              </div>
               <div id="rig-setup" hidden></div>
               <div id="rig-summary" class="rig-summary"></div>
               <p id="rig-note" class="help" hidden></p>
@@ -422,9 +430,9 @@
                   <input id="rig-search" type="search" aria-label="Filter rig settings"
                          placeholder="Search rig settings…">
                   <button type="button" id="rig-reset-all" class="quiet">Reset all</button>
-                  <button type="button" id="rig-save" class="quiet">Save to this machine’s rig</button>
+                  <button type="button" id="rig-save" class="quiet">Save to this config</button>
                 </div>
-                <!-- "Save to this machine's rig" asks first, here. -->
+                <!-- "Save to <config>" asks first, here. -->
                 <div id="rig-save-confirm" class="inline-confirm rig-save-confirm" hidden></div>
                 <p id="rig-edit-help" class="help"></p>
                 <div id="rig-fields"></div>

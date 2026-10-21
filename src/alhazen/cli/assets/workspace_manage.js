@@ -812,126 +812,526 @@
     return box;
   }
 
-  /* -- this machine's rig --------------------------------------------------------- */
+  /* -- this machine's rig configs ------------------------------------------------- */
 
-  /** The rig every session on this machine runs on (alhazen/cli/machine_rig.py):
-   *  its facts and its file, with an editor; the set-up card before it exists.
-   *  An experiment's own rig files are not listed: on this machine they are
-   *  a starting point at set-up and the event lines a session may start from. */
+  /* A config to bring into view (and open) once the panel has drawn: the
+   * Run page's "Edit" names the config it runs on (focusRig). */
+  let pendingRig = null;
+
+  /** Whether an answer failed because the file changed since it was opened. */
+  function stale(e) {
+    return e?.status === 409 || /changed (elsewhere|on disk|since)/.test(e?.message || '');
+  }
+
+  /** This machine's rig configs (docs/design/machine-rig-configs.md): every
+   *  config with its default mark, whether it loads, its sync state and last
+   *  save, and the ways to add, edit, rename, make default, delete and see
+   *  the history of one; the platform connection and Sync now. Shared and
+   *  experiment rigs appear only as a starting point in Add a config. */
   function machinePanel(p) {
     const aside = el('div', 'm-panel-actions');
-    const box = panel('THIS MACHINE', 'This machine’s rig', aside);
+    const box = panel('THIS MACHINE', 'This machine’s rig configs', aside);
     box.id = 'm-machine';
-    box.append(el('p', 'm-hint', 'Every session this workspace launches, of every experiment, '
-      + 'runs on this rig. A session can change it for itself on the Run page; change it here '
-      + 'to change it for every session.'));
-    const body = el('div');
-    const editor = el('div');
+    box.append(el('p', 'm-hint', 'Every session this workspace launches, of every experiment, runs '
+      + 'on one of these configs, chosen on the Run page (the default first). A session can change '
+      + 'its config for itself there; change a config here to change it for every later session.'));
+    const body = el('div', 'mrc');
     box.append(body);
-    const draw = async (notice = '') => {
-      body.replaceChildren(el('p', 'm-loading', 'Reading this machine’s rig…'));
-      let status;
+    let rigs = null;
+    const draw = (answer, notice = null) => {
+      rigs = answer;
+      aside.replaceChildren();
+      const sync = button('Sync now', 'quiet', async () => {
+        sync.disabled = true;
+        sync.textContent = 'Syncing…';
+        try {
+          draw(await h.api('/api/machine-rigs/sync', {}));
+          h.refresh();
+        } catch (e) {
+          drawNotice(message('error', e.message));
+          sync.disabled = false;
+          sync.textContent = 'Sync now';
+        }
+      });
+      sync.hidden = !answer.sync?.connected;
+      const add = button('Add a config', 'primary', () => openCreate());
+      aside.append(sync, add);
+      body.replaceChildren();
+      const notices = el('div', 'mrc-notices');
+      body.append(connectionLine(answer), notices);
+      const drawNotice = (node) => notices.replaceChildren(node);
+      if (notice) notices.append(notice);
+      if (answer.error) body.append(message('error', answer.error));
+      const migrated = migrationNote(answer);
+      if (migrated) body.append(migrated);
+      const create = el('div', 'mrc-create');
+      body.append(create);
+      const openCreate = () => {
+        if (!window.RigEditor) {
+          create.replaceChildren(message('note', 'The rig editor did not load; reload the page.'));
+          return;
+        }
+        window.RigEditor.createForm(create, {
+          node: h.node, api: h.api, configs: answer.configs || [], first: !(answer.configs || []).length,
+          onCancel: () => create.replaceChildren(),
+          onDone: async (next) => {
+            const made = (next.configs || []).find((c) => c.id === next.created);
+            draw(next, message('ok', made ? `Added ${made.name}. It is on the Run page’s list now.`
+              : 'Added the config.'));
+            h.refresh();
+          },
+        });
+      };
+      const list = el('div', 'mrc-list');
+      for (const config of answer.configs || []) list.append(configRow(config, answer, p, draw));
+      if (!(answer.configs || []).length) {
+        body.append(message('note', 'This machine has no rig config yet. Add one to launch sessions.'));
+        openCreate();
+      } else {
+        body.append(list);
+      }
+      if (pendingRig) {
+        const wanted = pendingRig;
+        pendingRig = null;
+        const row = list.querySelector?.(`[data-config="${wanted}"]`)
+          || (list.children || []).find?.((r) => r.dataset?.config === wanted);
+        if (row) {
+          row.scrollIntoView?.({block: 'start'});
+          row.querySelector?.('.mrc-edit')?.click?.();
+        }
+      }
+    };
+    (async () => {
+      body.replaceChildren(el('p', 'm-loading', 'Reading this machine’s rig configs…'));
       try {
-        status = await h.api('/api/machine-rig');
+        draw(await h.api('/api/machine-rigs'));
       } catch (e) {
         body.replaceChildren(message('error', e.message));
-        return;
       }
-      aside.replaceChildren();
-      if (!status.configured) {
-        if (window.RigEditor) {
-          window.RigEditor.setupCard(body, status, {
-            node: h.node, api: h.api,
-            onDone: async () => {
-              await h.refresh();
-              await draw('This machine’s rig is set up.');
-            },
-          });
-        } else {
-          body.replaceChildren(message('note', status.error
-            || 'This machine has no rig yet: run `alhazen rig init` in a terminal.'));
-        }
-        return;
-      }
-      aside.append(button('Edit', 'primary', () => machineEditor(editor, status, draw)));
-      body.replaceChildren();
-      if (notice) body.append(message('ok', notice));
-      if (status.problem) body.append(message('error', `It does not load: ${status.problem}`));
-      body.append(machineFacts(status, p), editor);
-    };
-    draw();
+    })();
     return box;
   }
 
-  /** This machine's rig in a few lines: what the Run page will start from. */
-  function machineFacts(status, p) {
-    const v = status.values || {};
+  /** The machine and its platform connection, in one line. */
+  function connectionLine(rigs) {
+    const line = el('div', 'mrc-connection');
+    const state = rigs.sync?.state;
+    const kind = state === 'synced' ? 'ok' : (state === 'offline' || state === 'error' ? 'warn' : 'idle');
+    const word = {synced: 'Synced', offline: 'Offline', error: 'Sync failed', unsupported: 'Not on the platform'}[state]
+      || 'Not connected';
+    line.append(lamp(kind, word));
+    const text = el('span', 'mrc-connection-text');
+    const label = rigs.machine?.label ? `${rigs.machine.label}. ` : '';
+    text.textContent = label + window.RigEditor.connectionText(rigs.sync, when);
+    line.append(text);
+    return line;
+  }
+
+  /** "Your rig from 3.5.0 is now the config <name>", until dismissed. */
+  function migrationNote(rigs) {
+    const migrated = rigs.migrated;
+    if (!migrated) return null;
+    const key = `alhazen-mrc-migrated:${rigs.machine?.id || ''}`;
+    try {
+      if (localStorage.getItem(key)) return null;
+    } catch (e) {
+      console.warn(`Could not read ${key}: ${e.message}`);
+    }
+    const config = (rigs.configs || []).find((c) => c.id === migrated.config);
+    const box = message('note', `Your rig from ${migrated.from || '3.5.0'} is now the config `
+      + `${config?.name || migrated.config}${config?.default ? ', the default' : ''}. Nothing in its `
+      + 'file was moved or rewritten.');
+    box.append(button('Dismiss', 'quiet m-small', () => {
+      try {
+        localStorage.setItem(key, '1');
+      } catch (e) {
+        console.warn(`Could not remember ${key}: ${e.message}`);
+      }
+      box.remove();
+    }));
+    return box;
+  }
+
+  /** A config's settings in a few lines: what a session on it starts from. */
+  function configFacts(config, p) {
+    const v = config.values || {};
     const m = v.monitor || {};
     const devices = v.devices || {};
-    const facts = el('dl', 'm-facts');
+    const facts = el('dl', 'm-facts mrc-facts');
     const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value ?? '—'));
-    add('Machine', status.name);
     add('Screen', `${m.width_px ?? '?'} × ${m.height_px ?? '?'} px · ${m.refresh_rate_hz ?? '?'} Hz · `
       + `${m.width_cm ?? '?'} cm wide, ${m.distance_cm ?? '?'} cm away`);
-    add('Display', v.display?.backend || 'psychopy');
-    add('Eye tracker', devices.eyetracker?.backend || 'none');
-    add('Reward', devices.reward ? `${devices.reward.backend}${devices.reward.device ? ` · ${devices.reward.device}` : ''}` : 'none');
-    add('Sync', devices.sync ? devices.sync.backend : 'none');
-    add('Live monitor', v.live_monitor?.enabled ? 'on' : 'off');
+    const parts = [`display ${v.display?.backend || 'psychopy'}`,
+      `eye tracker ${devices.eyetracker?.backend || 'none'}`,
+      `reward ${devices.reward ? devices.reward.backend : 'none'}`,
+      `sync ${devices.sync ? devices.sync.backend : 'none'}`];
+    add('Devices', parts.join(' · '));
     add('Real data', v.real_data === false ? 'refused: a development rig (real_data: false)' : 'collected');
     const root = v.data_root;
     add('Data folder', root ? `${root}${/^([A-Za-z]:|\/|~)/.test(root) ? '' : ` (inside each experiment’s folder: ${p.path}/${root})`}` : 'none');
-    const made = status.template?.label;
-    add('Set up from', made ? `${made}${status.created ? ` on ${when(status.created)}` : ''}` : (status.created ? when(status.created) : null));
-    const last = (status.saves || []).at(-1);
-    if (last && last.by !== 'setup') {
+    const last = (config.saves || []).at(-1);
+    if (last) {
       add('Last saved', `${when(last.at)} from the ${last.by}${last.changes?.length ? ` (${last.changes.join(', ')})` : ''}`);
+    } else if (config.created) {
+      add('Added', `${when(config.created)}${config.origin?.label ? ` from ${config.origin.label}` : ''}`);
     }
-    const file = el('dd', 'm-mono m-cell-path', status.file);
-    facts.append(el('dt', '', 'File'), file);
+    facts.append(el('dt', '', 'File'), el('dd', 'm-mono m-cell-path', config.file || '—'));
     return facts;
   }
 
-  /** This machine's rig as YAML: check, then save (the file as read must
-   *  not have changed meanwhile; the previous one is kept beside it). */
-  function machineEditor(where, status, after) {
-    const box = el('div', 'm-preview');
-    box.append(el('h3', 'm-preview-title', `rig-${status.name}.yaml`));
-    const form = el('form', 'm-form m-form-wide');
-    const text = textarea(status.text, 18);
-    text.className = 'm-code';
-    text.spellcheck = false;
-    form.append(field('YAML', text, 'One complete rig: no extends, and no event names (a '
-      + 'session assigns its task’s events to lines on the Run page).'));
+  /** One config: name, default mark, whether it loads, its sync state, its
+   *  facts, any refused platform edit or conflict, and its actions, with
+   *  room under them for the editor, Rename, Delete or History. */
+  function configRow(config, rigs, p, redraw) {
+    const R = window.RigEditor;
+    const row = el('article', 'mrc-config' + (config.default ? ' mrc-default' : ''));
+    row.dataset.config = config.id;
+    row.id = `m-rig-${config.id}`;
+    const head = el('div', 'mrc-config-head');
+    const title = el('div', 'mrc-config-title');
+    title.append(el('h3', 'mrc-config-name', config.name));
+    if (config.default) title.append(el('span', 'mrc-default-mark', 'Default'));
+    const states = el('div', 'mrc-config-states');
+    states.append(config.problem ? lamp('bad', 'Does not load') : lamp('ok', 'Ready to run'));
+    states.append(lamp(R.syncLamp(config), R.syncText(config)));
+    head.append(title, states);
+    row.append(head);
+    if (config.problem) row.append(message('error', `It does not load, so the Run page lists it but cannot launch it: ${config.problem}`));
+    row.append(configFacts(config, p));
+    if (config.legacy && (rigs.configs || []).length > 1) {
+      row.append(el('p', 'm-hint', 'A 3.5.0 dashboard on this state folder still runs this config, '
+        + 'the one it knows as this machine’s rig.'));
+    }
+    const done = async (answer, text) => {
+      redraw(answer, text ? message('ok', text) : null);
+      h.refresh();
+    };
+    const sync = config.sync || {};
+    if (sync.state === 'pending') {
+      row.append(message('note', 'The platform has a newer version of this config; this machine '
+        + 'takes it at the next sync, if it loads.'));
+    }
+    if (sync.state === 'rejected' && sync.rejected) row.append(rejectedBlock(config));
+    if (sync.state === 'conflict' && sync.conflict) row.append(conflictBlock(config, done));
+    const work = el('div', 'mrc-config-work');
+    const actions = el('div', 'm-row-actions mrc-config-actions');
+    const open = (fn) => () => fn(work);
+    const edit = button('Edit', 'quiet mrc-edit', open((where) => configEditor(where, config, done, redraw)));
+    actions.append(edit,
+      button('Rename', 'quiet', open((where) => renameForm(where, config, rigs, done))),
+      button('History', 'quiet', open((where) => historyView(where, config))));
+    if (!config.default) {
+      actions.append(button('Make default', 'quiet', async () => {
+        const answer = await attempt(work, () => h.api('/api/machine-rigs/default', {id: config.id}));
+        if (answer) done(answer, `${config.name} is the default now: the Run page opens on it.`);
+      }));
+    }
+    const remove = button('Delete', 'danger', open((where) => deleteConfirm(where, config, done)));
+    if (config.default) {
+      remove.disabled = true;
+      remove.title = 'The default config cannot be deleted: make another one the default first.';
+    }
+    actions.append(remove);
+    row.append(actions, work);
+    return row;
+  }
+
+  /** A platform edit this machine refused, with its reason and its text. */
+  function rejectedBlock(config) {
+    const r = config.sync.rejected;
+    const box = message('error', `An edit made on the platform${r.revision ? ` (revision ${r.revision})` : ''} `
+      + `was refused here: ${r.reason || 'no reason given'}. This machine still runs its own version; `
+      + 'edit the config again on either side to settle it.');
+    if (r.text) {
+      const fold = el('details', 'mrc-fold');
+      fold.append(el('summary', '', 'The refused version'), el('pre', 'm-pre', r.text));
+      box.append(fold);
+    }
+    return box;
+  }
+
+  /** Both versions of a config changed on both sides, side by side, with
+   *  the way to keep one (POST /api/machine-rigs/resolve). */
+  function conflictBlock(config, done) {
+    const c = config.sync.conflict;
+    const box = el('div', 'mrc-conflict');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', `Sync conflict for ${config.name}`);
+    box.append(el('p', 'mrc-conflict-lead', 'This config was changed here and on the platform since '
+      + 'they last agreed. Nothing was overwritten: keep one of the two versions.'));
+    const columns = el('div', 'mrc-conflict-columns');
+    const column = (heading, sub, text) => {
+      const col = el('div', 'mrc-conflict-column');
+      col.append(el('h4', 'mrc-conflict-title', heading));
+      if (sub) col.append(el('p', 'm-hint', sub));
+      col.append(el('pre', 'm-pre', text || ''));
+      return col;
+    };
+    const by = c.by ? ` by the ${c.by}` : '';
+    columns.append(
+      column('This machine’s version', 'What this machine runs now.', config.text),
+      column('The platform’s version', `Revision ${c.platform_revision ?? '?'}${by}${c.at ? `, ${when(c.at)}` : ''}.`, c.platform_text),
+    );
     const result = el('div');
     const actions = el('div', 'm-form-actions');
-    actions.append(button('Close', 'quiet', () => { clean('machine'); where.replaceChildren(); }));
-    actions.append(button('Check', 'quiet', async () => {
-      const answer = await attempt(result, () => h.api('/api/machine-rig/check', {text: text.value}));
-      if (answer) {
-        result.replaceChildren(message('ok', answer.changes.length
-          ? `Valid. Changes: ${answer.changes.map((c) => c.path).join(', ')}.`
-          : 'Valid, and the same as the saved rig.'));
+    const keep = (which, text) => button(text, which === 'machine' ? 'primary' : 'quiet', async () => {
+      const answer = await attempt(result, () => h.api('/api/machine-rigs/resolve', {id: config.id, keep: which}));
+      if (answer) done(answer, which === 'machine' ? `Kept this machine’s ${config.name}.` : `Kept the platform’s ${config.name}.`);
+    });
+    actions.append(keep('machine', 'Keep this machine’s'), keep('platform', 'Keep the platform’s'));
+    box.append(columns, result, actions);
+    return box;
+  }
+
+  /** Edit a config: the settings by section (the saved config the baseline,
+   *  each change marked), or the file as YAML with Check. Saving the form
+   *  sends values (the file is written anew, its comments dropped: said
+   *  before saving); saving YAML sends the text. Both name the hash read, and
+   *  a file changed since is said plainly, with Reload. */
+  function configEditor(where, config, done, redraw) {
+    const R = window.RigEditor;
+    const name = `rig-${config.id}`;
+    const box = el('div', 'm-preview mrc-editor');
+    const head = el('div', 'mrc-editor-head');
+    head.append(el('h3', 'm-preview-title', `Edit ${config.name}`));
+    const tabs = el('div', 'mrc-tabs');
+    tabs.setAttribute('role', 'group');
+    tabs.setAttribute('aria-label', 'Edit as');
+    const formTab = button('Settings', 'quiet mrc-tab');
+    const yamlTab = button('YAML', 'quiet mrc-tab');
+    tabs.append(formTab, yamlTab);
+    head.append(tabs);
+    const result = el('div');
+    // The settings form.
+    const formView = el('div', 'mrc-view');
+    const draft = {machine: {values: config.values || {}}, current: R.clone(config.values || {})};
+    const search = input('', {type: 'search', placeholder: 'Search settings…', 'aria-label': `Filter ${config.name}’s settings`});
+    search.className = 'mrc-search';
+    const fields = el('div', 'mrc-fields');
+    const count = el('span', 'm-count');
+    const comments = /(^|\s)#/m.test(config.text || '');
+    // RigConfig's schema gives the settings their menus; typed until it is read.
+    let schema = null;
+    const drawFields = (options = {}) => {
+      const changed = R.changes(draft.machine.values, draft.current).length;
+      count.textContent = changed ? `${changed} changed` : 'as saved';
+      saveForm.disabled = !changed;
+      if (changed) unsaved.add(name);
+      if (options.quiet) return;
+      R.renderFields(fields, draft, {
+        node: h.node, schema, query: search.value,
+        baseline: 'the saved value', fixed: [], onChange: drawFields,
+      });
+    };
+    const formBar = el('div', 'mrc-editor-bar');
+    formBar.append(search, count);
+    const saveForm = button('Save settings', 'primary');
+    const formActions = el('div', 'm-form-actions');
+    formActions.append(button('Close', 'quiet', () => close()), saveForm);
+    formView.append(formBar, fields);
+    if (comments) {
+      formView.append(el('p', 'm-hint mrc-comments', 'Saving from this form writes the file anew, so '
+        + 'the comments in it are dropped. Edit it as YAML to keep them.'));
+    }
+    formView.append(formActions);
+    search.addEventListener('input', () => drawFields());
+    // The YAML.
+    const yamlView = el('div', 'mrc-view');
+    const text = textarea(config.text, 18);
+    text.className = 'm-code';
+    text.spellcheck = false;
+    text.setAttribute('aria-label', `${config.name} as YAML`);
+    text.addEventListener('input', () => unsaved.add(name));
+    const yamlActions = el('div', 'm-form-actions');
+    const saveYaml = button('Save YAML', 'primary');
+    yamlActions.append(button('Close', 'quiet', () => close()),
+      button('Check', 'quiet', async () => {
+        const answer = await attempt(result, () => h.api('/api/machine-rigs/check', {id: config.id, text: text.value}));
+        if (answer) {
+          result.replaceChildren(message('ok', answer.changes?.length
+            ? `Valid. Changes: ${answer.changes.map((c) => c.path ?? c).join(', ')}.`
+            : 'Valid, and the same as the saved config.'));
+        }
+      }),
+      saveYaml);
+    yamlView.append(el('p', 'm-hint', `${config.file || `rig-${config.name}.yaml`}: one complete rig, `
+      + 'with no extends and no event names (a session assigns its task’s events to lines on the Run '
+      + 'page).'), text, yamlActions);
+    const close = () => {
+      clean(name);
+      where.replaceChildren();
+    };
+    const save = async (body, what) => {
+      result.replaceChildren();
+      try {
+        const answer = await h.api('/api/machine-rigs/save', {id: config.id, sha256: config.sha256, ...body});
+        clean(name);
+        where.replaceChildren();
+        const saved = answer.saved?.length ? ` (${answer.saved.join(', ')})` : '';
+        done(answer, `Saved ${config.name}${what === 'values' ? saved : ''}. Sessions launched on it from now on start from it.`);
+      } catch (e) {
+        if (stale(e)) {
+          result.replaceChildren(message('error', `${config.name} changed since you opened it (here, in `
+            + 'another tab or by a sync), so this was not saved. Reload to see the new version; '
+            + 'copy anything you want to keep first.', button('Reload', 'quiet', async () => {
+            clean(name);
+            try {
+              redraw(await h.api('/api/machine-rigs'));
+            } catch (err) {
+              result.replaceChildren(message('error', err.message));
+            }
+          })));
+        } else {
+          result.replaceChildren(message('error', e.message));
+        }
       }
-    }));
-    const save = button('Save', 'primary');
+    };
+    saveForm.addEventListener('click', () => save({values: draft.current}, 'values'));
+    saveYaml.addEventListener('click', () => save({text: text.value}, 'text'));
+    let showing = null;
+    const show = (which) => {
+      if (showing === which) return;
+      const left = showing;
+      showing = which;
+      formView.hidden = which !== 'form';
+      yamlView.hidden = which !== 'yaml';
+      formTab.setAttribute('aria-pressed', String(which === 'form'));
+      yamlTab.setAttribute('aria-pressed', String(which === 'yaml'));
+      result.replaceChildren();
+      const pending = left === 'form' ? R.changes(draft.machine.values, draft.current).length
+        : (left === 'yaml' ? text.value !== config.text : false);
+      if (pending) {
+        result.append(message('note', `Your edits in ${left === 'form' ? 'Settings' : 'YAML'} stay there; `
+          + 'Save saves only the view it is in.'));
+      }
+    };
+    formTab.addEventListener('click', () => show('form'));
+    yamlTab.addEventListener('click', () => show('yaml'));
+    box.append(head, formView, yamlView, result);
+    where.replaceChildren(box);
+    drawFields();
+    show('form');
+    if (typeof h.rigSchema === 'function') {
+      h.rigSchema().then((answer) => {
+        if (!answer || !box.isConnected) return;
+        schema = answer;
+        drawFields();
+      }, (e) => console.warn(`RigConfig's schema could not be read: ${e.message}`));
+    }
+  }
+
+  /** Rename a config (its file and companions with it). */
+  function renameForm(where, config, rigs, done) {
+    const R = window.RigEditor;
+    const form = el('form', 'm-form');
+    const name = input(config.name, {maxlength: '64', autocomplete: 'off', required: ''});
+    form.append(field('New name', name, `rig-${config.name}.yaml, its gamma and reward files `
+      + 'are renamed with it, and PsychoPy’s monitor of the same name follows. Sessions already run '
+      + 'keep the old name in their records.'));
+    const result = el('div');
+    const actions = el('div', 'm-form-actions');
+    const save = button('Rename', 'primary');
     save.type = 'submit';
-    actions.append(save);
+    actions.append(button('Cancel', 'quiet', () => { clean(`rename-${config.id}`); where.replaceChildren(); }), save);
     form.append(result, actions);
-    watch(form, 'machine');
+    watch(form, `rename-${config.id}`);
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const answer = await attempt(result,
-        () => h.api('/api/machine-rig/save', {text: text.value, sha256: status.sha256}),
-        () => after());
+      const chosen = name.value.trim();
+      const taken = (rigs.configs || []).filter((c) => c.id !== config.id).map((c) => c.name);
+      const problem = chosen === config.name ? 'That is its name already.' : R.nameProblem(chosen, taken);
+      if (problem) {
+        result.replaceChildren(message('error', problem));
+        return;
+      }
+      const answer = await attempt(result, () => h.api('/api/machine-rigs/rename',
+        {id: config.id, name: chosen, sha256: config.sha256}));
       if (answer) {
-        clean('machine');
-        where.replaceChildren();
-        await h.refresh();
-        await after('Saved this machine’s rig. Sessions launched from now on start from it.');
+        clean(`rename-${config.id}`);
+        done(answer, `Renamed ${config.name} to ${chosen}.`);
       }
     });
-    box.append(form);
+    where.replaceChildren(form);
+    name.focus?.();
+  }
+
+  /** Delete a config, asked in place: its folder moves to trash/. */
+  function deleteConfirm(where, config, done) {
+    const box = el('div', 'inline-confirm');
+    const synced = config.sync?.platform_revision != null;
+    box.append(el('p', '', `Delete ${config.name}? Its folder moves to trash/ in this dashboard’s state `
+      + 'folder, so nothing is destroyed, and sessions already run keep their own copies of it.'
+      + (synced ? ' The platform drops it at the next sync.' : '')));
+    const result = el('div');
+    const actions = el('div', 'inline-confirm-actions');
+    actions.append(button('Keep it', 'quiet', () => where.replaceChildren()),
+      button(`Delete ${config.name}`, 'danger', async () => {
+        const answer = await attempt(result, () => h.api('/api/machine-rigs/delete',
+          {id: config.id, sha256: config.sha256}));
+        if (answer) done(answer, `Deleted ${config.name}; its folder is in trash/.`);
+      }));
+    box.append(result, actions);
+    where.replaceChildren(box);
+  }
+
+  /** A config's saves and earlier versions; any version's text on View. */
+  async function historyView(where, config) {
+    where.replaceChildren(el('p', 'm-loading', 'Reading the history…'));
+    let history;
+    try {
+      history = await h.api(`/api/machine-rigs/history?id=${encodeURIComponent(config.id)}`);
+    } catch (e) {
+      where.replaceChildren(message('error', e.message));
+      return;
+    }
+    const box = el('div', 'm-preview mrc-history');
+    const head = el('div', 'mrc-editor-head');
+    head.append(el('h3', 'm-preview-title', `${config.name}: history`),
+      button('Close', 'quiet', () => where.replaceChildren()));
+    box.append(head);
+    const saves = [...(history.saves || [])].reverse();
+    if (saves.length) {
+      const wrap = el('div', 'm-table-wrap');
+      const table = el('table', 'm-table');
+      const tr = el('tr');
+      for (const th of ['Saved', 'From', 'What changed']) tr.append(el('th', '', th));
+      table.append(tr);
+      for (const s of saves) {
+        const r = el('tr');
+        r.append(el('td', '', when(s.at)), el('td', '', s.by || '—'),
+          el('td', '', s.changes?.length ? s.changes.join(', ') : '—'));
+        table.append(r);
+      }
+      wrap.append(table);
+      box.append(wrap);
+    } else {
+      box.append(el('p', 'm-unknown', 'No saves recorded yet.'));
+    }
+    const viewer = el('div');
+    const versions = [...(history.versions || [])].reverse();
+    if (versions.length) {
+      box.append(el('h4', 'mrc-subtitle', 'Earlier versions'));
+      const list = el('ul', 'mrc-versions');
+      for (const v of versions) {
+        const li = el('li');
+        li.append(el('span', '', when(v.at)), el('span', 'm-size', ` ${v.size} B`),
+          button('View', 'quiet m-small', async () => {
+            try {
+              const answer = await h.api(`/api/machine-rigs/version?id=${encodeURIComponent(config.id)}`
+                + `&file=${encodeURIComponent(v.file)}`);
+              viewer.replaceChildren(el('h4', 'mrc-subtitle', `As it was on ${when(v.at)}`),
+                el('pre', 'm-pre', answer.text));
+            } catch (e) {
+              viewer.replaceChildren(message('error', e.message));
+            }
+          }));
+        list.append(li);
+      }
+      box.append(list);
+    } else {
+      box.append(el('p', 'm-unknown', 'No earlier version is kept yet.'));
+    }
+    box.append(viewer);
     where.replaceChildren(box);
   }
 
@@ -1154,7 +1554,7 @@
           + ` · ses ${s.session}`),
         el('td', known ? '' : 'm-unknown', experimenterText(s.experimenter)),
         el('td', '', s.task || '—'),
-        el('td', 'm-mono', s.rig || '—'),
+        el('td', 'm-mono', s.rig_name || s.rig || '—'),
         el('td', '', s.mode ? h.label(s.mode) : `? (${s.root_kind})`),
         el('td', 'm-mono', s.trials === null ? '—'
           : `${s.trials_counted === 'lines' ? '≈' : ''}${s.trials}`),
@@ -1192,7 +1592,7 @@
       tr.append(el('td', 'm-mono', when(l.started)), el('td', '', what),
         el('td', 'm-mono', subject),
         el('td', l.experimenter ? '' : 'm-unknown', experimenterText(l.experimenter)),
-        el('td', 'm-mono', l.rig || '—'), status, acts);
+        el('td', 'm-mono', l.rig_name || l.rig || '—'), status, acts);
       t.append(tr);
     }
     return t;
@@ -1238,7 +1638,9 @@
     add('Date', s.date);
     add('Task', s.task);
     add('Mode', s.mode ? h.label(s.mode) : `not recorded (${s.root_kind} folder)`);
-    add('Rig', s.rig_origin ? `${s.rig} (this machine’s rig)` : s.rig);
+    const sessionConfig = s.rig_config ?? s.rig_origin?.rig_config ?? s.rig_origin?.config ?? null;
+    add('Rig', sessionConfig ? `${s.rig_name || s.rig} (this machine’s rig config)`
+      : (s.rig_origin ? `${s.rig} (this machine’s rig)` : s.rig));
     if (s.rig_origin) {
       add('Rig changes', rigChangesText(s.rig_origin.changes));
       add('Event lines', eventLinesText(s.rig_origin.events));
@@ -1310,7 +1712,8 @@
     const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value ?? '—'));
     add('Status', l.status + (l.active ? ' (in progress)' : ''));
     add('Task', l.parameter_set ? `${l.parameter_set}${l.task ? ` (${l.task})` : ''}` : l.task);
-    add('Rig', l.rig_source === 'machine' ? `${l.rig} (this machine’s rig)` : l.rig);
+    if (l.rig_config) add('Rig', `${l.rig_name || l.rig} (this machine’s rig config)`);
+    else add('Rig', l.rig_source === 'machine' ? `${l.rig} (this machine’s rig)` : l.rig);
     if (l.rig_source === 'machine') {
       add('Rig changes', rigChangesText(l.rig_changes));
       if (l.rig_events_source?.label) add('Event lines from', l.rig_events_source.label);
@@ -1396,5 +1799,8 @@
   window.WorkspaceManage = {
     renderHome, showGeneral, showHistory, hide, leave,
     dirty: () => unsaved.size > 0,
+    /* Bring this machine's rig config `id` into view, its editor open, the
+     * next time the General page draws (the Run page's Edit). */
+    focusRig: (id) => { pendingRig = id; },
   };
 }());
