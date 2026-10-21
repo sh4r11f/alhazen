@@ -468,6 +468,38 @@ class MachineRigs:
             "gamma": ({"file": str(gamma), "at": _mtime(gamma)} if gamma.is_file() else None),
         }
 
+    def _signature(self) -> tuple[Any, ...]:
+        """What the configs' state depends on: the index and every config file, by
+        modification time and size."""
+        stamps: list[Any] = []
+        for path in [self.folder / INDEX, *(c.file for c in self.configs())]:
+            try:
+                st = path.stat()
+                stamps.append((str(path), st.st_mtime_ns, st.st_size))
+            except OSError:
+                stamps.append((str(path), None, None))
+        return tuple(stamps)
+
+    def choices(self) -> dict[str, Any]:
+        """The configs as the Run page's chooser lists them (id, name, default, problem),
+        read again only when a file changed: every page poll describes every project."""
+        signature = self._signature()
+        cached = getattr(self, "_choices", None)
+        if cached is not None and cached[0] == signature:
+            return copy.deepcopy(cached[1])
+        status = self.status()
+        if status.get("error"):
+            raise MachineRigError(status["error"])
+        value = {
+            "default": status["default"],
+            "configs": [
+                {"id": c["id"], "name": c["name"], "default": c["default"], "problem": c["problem"]}
+                for c in status["configs"]
+            ],
+        }
+        self._choices = (signature, value)
+        return copy.deepcopy(value)
+
     def status(self) -> dict[str, Any]:
         """Every config, for the pages (docs/design/machine-rig-configs.md §3 ``Rigs``,
         without the sync line, which the workspace adds)."""
