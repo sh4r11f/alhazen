@@ -25,7 +25,7 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.6.0 - 2026-10-21
 
 - **Several rig configs per machine, synced with the platform.** A dashboard's machine now
   keeps one or more named rig configs (an EyeLink set-up, a keyboard-only one, a monkey's
