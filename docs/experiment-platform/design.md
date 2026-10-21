@@ -253,6 +253,25 @@ workspace_library` for the page and the jobs).
   kit does when it joins an open dashboard); `GET /api/library` then says `refreshing: true`, and
   any failure is kept as `error`. The page asks every few seconds while nothing is connected, so
   a connection made meanwhile shows without a reload. A changed connection drops the old list.
+- **Rig configs (3.6).** The same connection syncs the machine's rig configs
+  (docs/rigs.md §10; protocol in docs/design/machine-rig-configs.md). Per person and machine
+  (a dashboard state folder, random id `mc_…`) the platform keeps one machine record: each
+  config's text, a revision that moves on every content write from either side, its state
+  (`synced`, `pending` for an edit made on the platform that the machine has not taken,
+  `rejected` with the machine's reason), what the machine reported it runs, a conflict copy, the
+  default, the machine's rig schema and the templates it can start a config from. The rules are
+  one pure module, `alhazen.experiment_platform.rigsync`: every write is compare-and-set on the
+  revision, the machine validates every platform edit as a launch would before taking it, and a
+  conflict keeps both versions until the person keeps one. The standalone hosts store records in
+  `<store>/rigs.sqlite3` (`rigstore.py`); Mana keeps them at
+  `<viewer>/file-system/alhazen-experiment-platform-mine/machines/<id>` (configs under
+  `rigs/<id>`), written by the web app for the person's edits and by the viewer's
+  `alhazen-library` service (which vendors `rigsync.py`) for the machine's syncs. The machine
+  syncs when it reads the library, every five minutes while the dashboard runs, after each
+  change made on it and on demand; a platform without these routes (404) leaves its configs
+  local. The Machines page (My machines in Mana) shows each machine's configs with the same
+  sections as the dashboard's editor and a YAML view; Mana's Run dialog names the config, and
+  the dashboard opens with it chosen (`?rig=`, `alhazen dashboard --rig-config`).
 - **Closing.** When the dashboard stops (Shut down on the page, Ctrl+C), after its active run
   has ended, it sends `dashboard-closed` to its library: machine, alhazen version, start and
   close times, why it closed, the run jobs named in its connections, and every session launched
@@ -318,12 +337,12 @@ Authentication: local host, header `X-Alhazen-Token: <token>` (from the URL frag
 `X-Alhazen-CSRF: <csrf>` (from `/api/session`) on every POST and DELETE, and
 `X-Alhazen-Platform: 1` on every POST and DELETE including `/api/login` (a header a
 cross-site form cannot send). A rig, on either host: `Authorization: Bearer <machine token>`,
-for the three requests marked *machine* below and no others (403); an unknown, revoked or
+for the requests marked *machine* below and no others (403); an unknown, revoked or
 disabled-account token is 401.
 
 | Request | Response |
 |---|---|
-| `GET /api/session` | `{kind: "local"\|"server", viewer: {uid, name}\|null, csrf: str\|null, capabilities: {fork, publish, uploadRevision, downloadRevision, changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, machineTokens: bool, signIn: bool}}` |
+| `GET /api/session` | `{kind: "local"\|"server", viewer: {uid, name}\|null, csrf: str\|null, capabilities: {fork, publish, uploadRevision, downloadRevision, changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, machineTokens: bool, rigConfigs: bool, signIn: bool}}` |
 | `POST /api/login` `{username, password}` | the session object; sets the cookie |
 | `POST /api/logout` | `{}`; clears the cookie |
 | `GET /api/assets` | `{hero: <svg>, penrose: <svg>}` |
@@ -344,6 +363,15 @@ disabled-account token is 401.
 | `POST /api/machines` `{name}` | `{machine: {id, name, created, lastUsed: null}, token}`; the token is returned this once |
 | `DELETE /api/machines/<id>` | `{}`; the token is refused from now on |
 | `POST /api/machines/events` (*machine* only) `{event: "dashboard-closed", machine, alhazen, startedAt, closedAt, reason, jobs: [jobId], sessions: [{experiment, copy, revision, task, mode, startedAt, endedAt, status, session, outcomes: {<outcome>: n}}]}` | `{ok: true, event}`: what was kept (strings bounded, unknown fields dropped, `machine` is the token's name and `reportedName` the one sent; 200 reports kept per person) |
+| `GET /api/rigs/machine/<mid>` (*machine*; also the local token) | `{record: MachineRecord\|null}` (docs/design/machine-rig-configs.md §4) |
+| `POST /api/rigs/machine/<mid>/sync` (*machine*; also the local token) `{label, alhazen, rigSchema?, rigSchemaSha, templates?, default, defaultRevSeen, writes, acks, conflicts, deletes, running}` | `{record, results: {<configId>: {ok, revision, conflict?}}}`; a write applies only against the current revision |
+| `GET /api/rigs` | `{machines: [record without schema, templates or texts]}` |
+| `GET /api/rigs/<mid>` | `{record}` |
+| `PUT /api/rigs/<mid>/configs/<cid>` `{name, text, base, basedOn}` | `{record, config}`: a new revision, `pending` until the machine takes it; 409 when `base` is not the current revision |
+| `DELETE /api/rigs/<mid>/configs/<cid>?base=<revision>` | `{record}`: a deletion pending until the machine removes it (the default is refused) |
+| `PUT /api/rigs/<mid>/default` `{config, base}` | `{record}`; 409 when stale |
+| `POST /api/rigs/<mid>/configs/<cid>/resolve` `{keep: "machine"\|"platform"}` | `{record}` |
+| `DELETE /api/rigs/<mid>` | `{}`: the machine is forgotten until its next sync |
 
 Bundle handles are opaque to the web app: `L~<publisher>~<exp>~<bundleId>` for a published
 version, `F~<forkId>~<bundleId>` for a revision of the viewer's own copy. A handle names a
