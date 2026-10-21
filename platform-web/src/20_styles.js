@@ -405,5 +405,61 @@ const CSS = `
 .eh-remove-warn{margin:14px 0 0;padding:10px 12px;border-radius:10px;background:var(--warn-bg);color:var(--warn-ink);font-size:14px}
 @container (max-width:560px){.eh-mine-row .row-art{display:none}.eh-row-open{padding-left:14px}}
 
+/* [2026-10-21] Machine rig configs: the list on Machines and the config editor. */
+.eh-rigs{margin:36px 0 8px}
+.eh-rigs-title{font-size:20px;font-weight:800;margin:0 0 6px}
+.eh-rigs-lede{margin:0 0 18px;max-width:72ch;font-size:14px}
+.eh-rig-machine{margin-bottom:22px}
+.eh-rig-mhead{display:flex;align-items:flex-end;justify-content:space-between;gap:10px 16px;margin:0 0 10px;flex-wrap:wrap}
+.eh-rig-mtitle{min-width:0}
+.eh-rig-mtitle h3{font-size:16px;font-weight:750;margin:0;overflow-wrap:anywhere}
+.eh-rig-mtitle p{margin:2px 0 0;color:var(--muted);font-size:13.5px}
+.eh-rig-default{display:inline-flex;align-items:center;height:20px;padding:0 7px;margin-left:8px;border-radius:5px;border:1px solid var(--line-strong);font-size:12px;font-weight:650;color:var(--muted);vertical-align:3px;letter-spacing:0}
+.eh-rig-h1 .eh-rig-default{vertical-align:6px}
+.eh-rig-row{align-items:center}
+.eh-rig-confirm{align-items:center}
+.eh-rig-confirm>span{font-size:14px;color:var(--ink)}
+.eh-rig-error{margin:12px 0 0;padding:10px 12px;border-radius:10px;background:var(--bad-bg);color:var(--bad-ink);font-size:14px;overflow-wrap:anywhere}
+.eh-rig-editor{max-width:920px}
+.eh-rig-titlerow{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap}
+.eh-rig-h1{font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1.2;margin:0;overflow-wrap:anywhere}
+.eh-rig-statusline{margin:6px 0 0;font-size:14px}
+.eh-rig-panel{margin-top:18px}
+.eh-rig-versions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-top:14px}
+.eh-rig-versions h4{font-size:13px;font-weight:700;margin:0 0 6px}
+.eh-rig-versions pre,.eh-rig-running pre{margin:0;max-height:340px;overflow:auto;padding:12px;background:var(--surface-2);border-radius:8px;white-space:pre;line-height:1.5;color:var(--ink)}
+.eh-rig-running{margin-top:12px}.eh-rig-running summary{cursor:pointer;font-weight:600;font-size:14px;margin-bottom:8px}
+.eh-rig-actions{margin-top:14px}
+.eh-rig-name{max-width:420px;margin-top:22px}
+.eh-rig-views{margin:22px 0 6px}
+.eh-rig-section{border-top:1px solid var(--line);padding:16px 0 8px}
+.eh-rig-section:first-child{border-top:0}
+.eh-rig-section h3{font-size:15px;font-weight:750;margin:0 0 6px}
+.eh-rig-field{display:grid;grid-template-columns:minmax(140px,240px) minmax(0,1fr);gap:4px 20px;align-items:center;padding:6px 0}
+.eh-rig-field>label{font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.eh-rig-control{display:flex;flex-direction:column;gap:4px;min-width:0}
+.eh-rig-control input[type=text],.eh-rig-control select{height:38px;width:100%;max-width:420px;border:1px solid var(--field-border);border-radius:8px;background:var(--field);color:var(--ink);padding:0 10px;font:inherit;font-size:14px}
+.eh-rig-control input.mono{font-size:13px}
+.eh-rig-control input[aria-invalid=true]{border-color:var(--bad-ink)}
+.eh-rig-control small{color:var(--muted);font-size:13px;line-height:1.5;max-width:60ch}
+.eh-rig-check{min-height:38px}
+.eh .eh-rig-bad{color:var(--bad-ink)}
+.eh-rig-yamlfield{margin-top:10px}
+.eh-rig-yaml{min-height:440px;font-size:13px!important;line-height:1.55;white-space:pre;tab-size:2;overflow:auto}
+.eh-rig-changes{margin-top:18px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.eh-rig-changes h3{font-size:14px;font-weight:750;margin:0 0 6px}
+.eh-rig-changes ul{margin:0;padding-left:18px;font-size:14px}
+.eh-rig-changes li{margin:3px 0;overflow-wrap:anywhere}
+.eh-rig-savebar{margin-top:22px;padding-top:16px;border-top:1px solid var(--line);align-items:center}
+.eh-rig-spacer{flex:1}
+.eh-rig-note{font-size:13px;margin:8px 0 0}
+.eh-rig-facts{margin-top:30px;padding-top:18px;border-top:1px solid var(--line)}
+.eh-rig-facts h3{font-size:15px;font-weight:750;margin:0}
+.eh-rig-facts>p{font-size:13px;margin:8px 0 0}
+.eh-rig-brief{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.eh-rig-brief .kv{margin-top:0}
+.eh-rig-brief p{margin-top:10px}
+@container (max-width:560px){.eh-rig-field{grid-template-columns:1fr;gap:4px;padding:8px 0}.eh-rig-versions{grid-template-columns:1fr}.eh-rig-h1{font-size:24px}.eh-rig-spacer{display:none}.eh-rig-control input[type=text],.eh-rig-control select{max-width:none}.eh-rig-mhead{align-items:flex-start}.eh-rig-yaml{min-height:360px}}
+
 @media (prefers-reduced-motion: reduce){.eh *{transition:none!important;animation:none!important}}
 `;
