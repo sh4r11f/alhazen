@@ -148,7 +148,9 @@ test('Add a config offers this machine’s configs, the experiments’ rigs and 
   assert.equal(select.value, 'template:p:configs/rig-lab.yaml');
   assert.match(host.textContent, /collects real data · written out over alhazen\/lab/);
   assert.match(host.textContent, /its event lines \(FIX_ON\) are left out and chosen per session/);
-  assert.doesNotMatch(host.textContent, /demo\/bad/);
+  /* A rig that cannot be read is not offered, and its reason is said. */
+  assert.equal(select.querySelectorAll('option').some((o) => o.textContent === 'demo/bad'), false);
+  assert.match(host.textContent, /Not offered: demo\/bad, which cannot be read \(invalid\)\./);
   const name = host.querySelector('input');
   assert.equal(name.value, 'lab');
   /* A copy of a config on this machine is sent as copy_of, its name suggested apart. */

@@ -726,7 +726,12 @@ const RigEditor = (() => {
         cancel.addEventListener('click', onCancel);
         buttons.append(cancel);
       }
-      form.append(row('Start from', from), facts, row('Config name', name), result, buttons);
+      form.append(row('Start from', from), facts);
+      // Rigs that cannot be read are not offered; say which, and why.
+      for (const t of (answer.templates || []).filter((x) => x.error)) {
+        form.append(node('p', 'help rig-setup-facts', `Not offered: ${t.label}, which cannot be read (${t.error}).`));
+      }
+      form.append(row('Config name', name), result, buttons);
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         const chosen = name.value.trim();
