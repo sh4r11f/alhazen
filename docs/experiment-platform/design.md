@@ -218,6 +218,10 @@ record as `hub/docs/<pub>/<exp>`), `bundles/<bundleId>` (`{meta, chunks}`), and
 `metadata: {type: link, hidden: true, permissions: {read: {<uid>: true}}}` mirroring
 `access.people`; the field and the grants are written in one update.
 
+- *Your own non-public listings* are indexed at `mine/listed/<exp> = {visibility, at}` (derived,
+  written with every write of `listings/<exp>`, rebuildable from it). The app subscribes to each
+  listing's `listing` record separately; subscribing to `listings/` itself would download every
+  bundle.
 - *Finding what is shared with you:* (1) the hub owner's share index
   `<hubOwner>/file-system/alhazen-experiment-platform-shares` (hidden link with
   `per_user_read`, so each person reads only `<their uid>/`), entries
@@ -226,8 +230,10 @@ record as `hub/docs/<pub>/<exp>`), `bundles/<bundleId>` (`{meta, chunks}`), and
   (`?ehv=exp&ehid=<pub>~<exp>`) to a listing they can read. A pointer whose listing cannot be
   read is ignored.
 - *Changing visibility* moves the records between the hub and the publisher's workspace: copy
-  bundles chunk by chunk, then docs, then the listing last; read back; then delete the old
-  location. Copies in libraries are untouched.
+  bundles chunk by chunk (one write per chunk), then docs, then the listing last; read back; then
+  delete the old location. A hub bundle that another of the publisher's hub listings names is not
+  deleted. Copies in libraries are untouched. Publishing a copy with a different visibility moves
+  the existing listing first, so its earlier versions go with it.
 - *People* are found by email (Mana `/share/lookup-user`) and shown by email to the publisher
   (`/share/lookup-users`); people added can be sent Mana's share email (`/share/notify`).
 - *hubkit* (`run_listing`, forks made by chats) reads a listing from the hub, else from the
@@ -243,9 +249,19 @@ collapsed *On the marketplace* list of your public listings. Browse shows everyt
 can see with a "Visible to" filter (All, Everyone, Shared with you, Only you); Home's sections
 show public listings only, plus a *Shared with you* section when there is one.
 
-Host interface additions: `host.setAccess(listing, {visibility, people, notify})`,
-`host.findPeople(query) -> [{uid, label}]`, `host.describePeople(uids) -> {uid: label}`,
-capability `shareWithPeople`. A listing's `canManage` is `listing.uid === host.viewer.uid`.
+The "Visible to" filter also has *Shared by you* (the viewer's own `people` listings); without it
+those listings would be reachable only under All. Like the collection chips, an option is shown
+only when it has listings (or is selected), and the whole group only when the viewer can see a
+non-public listing.
+
+Host interface additions: `host.setAccess(listing, {visibility, people, notify})` resolving to
+`{access, notified: {sent, failed}}`, `host.findPeople(query) -> [{uid, label}]`,
+`host.describePeople(uids) -> {uid: label}`, `host.shareLink(listing)` (the URL that opens the
+listing page), capabilities `shareWithPeople` and `notifyPeople` (Mana only: it sends Mana's share
+email; the server host sends none). The Mana host also has `resolveListing(pub, exp) -> bool` for
+a share link to a listing it has not listed yet. `publish(fork, form)` takes `form.access` and
+`form.notify`. A listing's `canManage` is `listing.canManage === true` (server) or
+`listing.uid === host.viewer.uid`.
 
 ## 6. HTTP surface
 

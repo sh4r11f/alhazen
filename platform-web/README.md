@@ -51,6 +51,8 @@ Shared fragments may use only the names both targets provide: `React`, `ReactMar
 | `fontStylesheet`, `inlineStyles`, `extraCss` | Google Fonts link, inline `<style>` | none, `platform.css` |
 | `signOut()`, `refresh()` | — | server sign-out; re-run every subscription |
 | `subscribeForkDocs` callback | `{docs}` or `{stale: true}`; the Mana host backfills old copies | same values from `GET /api/forks/<id>/docs` |
+| `setAccess`, `findPeople`, `describePeople`, `shareLink` (design.md 5a) | moves a listing between the hub and the publisher's workspace; people by email (`/share/lookup-user(s)`), optional share email | `PUT /api/catalogue/<pub>/<exp>/access`, `GET /api/people` |
+| `resolveListing(pub, exp)` | reads a non-public listing named by a share link and saves a pointer | (not needed: the catalogue is filtered per person) |
 
 Machine rig configs (`capabilities.rigConfigs`) use `listRigMachines()`, `getRigMachine(mid)`,
 `subscribeRigMachines(cb)`, `subscribeRigMachine(mid, cb)`, `putRigConfig(mid, cid, {name, text, base, basedOn})`,

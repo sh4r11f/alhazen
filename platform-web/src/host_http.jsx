@@ -134,6 +134,8 @@ function useStandaloneTheme() {
 }
 
 const enc = encodeURIComponent;
+// How a person is shown in the Access dialog: their name, with the username when it differs.
+const peopleLabel = (p) => (p.name && p.username && p.name !== p.username ? p.name + ' (' + p.username + ')' : p.name || p.username || p.uid);
 let httpHostSerial = 0;
 
 function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHook }) {
@@ -150,7 +152,10 @@ function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHoo
     // refuses them too; these flags keep the page from offering them).
     capabilities: { ...(session.capabilities || {}), ...(visitor ? { fork: false, publish: false, uploadRevision: false, downloadRevision: false, machineTokens: false } : {}), changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, themeToggle: true,
       // Machine rig configs (machine-rig-configs.md §4, owner routes): the signed-in person's machines.
-      rigConfigs: !visitor && !!(session.capabilities || {}).rigConfigs },
+      rigConfigs: !visitor && !!(session.capabilities || {}).rigConfigs,
+      // Who can see a listing (design.md section 5a): the server has people to share with; the local
+      // host has one user, so only Only you and Everyone apply there.
+      shareWithPeople: !visitor && !!(session.capabilities || {}).shareWithPeople, notifyPeople: false },
     art: { url: transport.url('api/art/'), encodePath: (p) => String(p).split('/').map(enc).join('/'), error: null },
     fontStylesheet: null,
     inlineStyles: false,
@@ -222,10 +227,34 @@ function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHoo
       return { forkId: res.id, record: res.fork };
     },
     async publish(fork, form) {
-      const { title, summary, category, subjects, hardware, version, license } = form;
-      await request('POST', 'api/forks/' + enc(fork.id) + '/publish', { json: { title, summary, category, subjects, hardware, version, license } });
+      const { title, summary, category, subjects, hardware, version, license, access } = form;
+      const json = { title, summary, category, subjects, hardware, version, license };
+      if (access) json.access = { visibility: access.visibility, people: access.visibility === 'people' ? access.people : [] };
+      await request('POST', 'api/forks/' + enc(fork.id) + '/publish', { json });
       await poller.refresh();
+      return { access: access || null, notified: { sent: 0, failed: [] } };
     },
+    // Who can see a listing: only its publisher changes it; the server applies the rules (section 5a).
+    async setAccess(listing, { visibility, people }) {
+      const res = await request('PUT', 'api/catalogue/' + enc(listing.uid) + '/' + enc(listing.exp) + '/access',
+        { json: { visibility, people: visibility === 'people' ? people || [] : [] } });
+      await poller.refresh();
+      return { access: (res.listing && res.listing.access) || { visibility, people: people || [] }, notified: { sent: 0, failed: [] } };
+    },
+    async findPeople(query) {
+      const q = String(query || '').trim();
+      if (q.length < 2) throw new Error('Type at least two letters of their name or username.');
+      const res = await request('GET', 'api/people?q=' + enc(q));
+      return (res.people || []).map((p) => ({ uid: p.uid, label: peopleLabel(p) }));
+    },
+    async describePeople(uids) {
+      const ids = [...new Set((uids || []).filter(Boolean))];
+      if (!ids.length) return {};
+      const res = await request('GET', 'api/people?uids=' + ids.map(enc).join(','));
+      const out = {}; for (const p of res.people || []) out[p.uid] = peopleLabel(p);
+      return out;
+    },
+    shareLink: (listing) => platformBase().toString() + '?ehv=exp&ehid=' + enc(listing.uid + '~' + listing.exp),
     async unpublish(fork) { await request('POST', 'api/forks/' + enc(fork.id) + '/unpublish', { json: {} }); await poller.refresh(); },
     async removeFork(fork) { await request('DELETE', 'api/forks/' + enc(fork.id)); await poller.refresh(); },
     async uploadRevision(fork, file, message) {
