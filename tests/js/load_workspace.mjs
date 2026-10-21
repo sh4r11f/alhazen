@@ -167,7 +167,7 @@ export function sessionRigFrom(rig) {
     values: rig.values,
     events: null,
     task_events: null,
-    events_source: { kind: 'none', label: 'no earlier session of this task on this machine' },
+    events_source: { kind: 'none', label: 'no earlier session of this task with this rig config' },
     dropped: [],
     reward_calibration: rig.reward_calibration ?? null,
     live_streams: rig.live_streams,

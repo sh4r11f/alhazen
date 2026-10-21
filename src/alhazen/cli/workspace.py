@@ -2996,12 +2996,12 @@ class Workspace:
         root = Path(project["path"])
         own = [p for name, p in experiment_rig_files(root) if name == machine.name]
         none_label = (
-            "no earlier session of this task on this machine, and no rig of this machine's "
+            "no earlier session of this task with this rig config, and no rig of the config's "
             "name in the experiment, so no event goes out on a line"
         )
         if len(own) == 1:
             none_label = (
-                f"no earlier session of this task on this machine, and this experiment's "
+                f"no earlier session of this task with this rig config, and this experiment's "
                 f"{own[0].relative_to(root).as_posix()} assigns no event lines, so no event "
                 "goes out on a line"
             )
@@ -3024,7 +3024,7 @@ class Workspace:
                         "kind": "experiment-rig",
                         "file": relative,
                         "label": f"from this experiment's {relative} (no earlier session of "
-                        "this task on this machine)",
+                        "this task with this rig config)",
                     }
         return {}, {"kind": "none", "label": none_label}
 
