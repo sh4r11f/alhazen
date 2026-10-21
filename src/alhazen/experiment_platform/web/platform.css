@@ -488,6 +488,7 @@
 .eh-mine-row .tag-access{margin-right:6px}
 .eh-access{border:0;margin:18px 0 0;padding:0;min-width:0}
 .eh-access legend{font-size:13px;font-weight:700;padding:0;margin-bottom:8px}
+.eh-access legend.eh-sr{position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .eh-access-choice{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer}
 .eh-access-choice+.eh-access-choice{margin-top:6px}
 .eh-access-choice:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
@@ -506,6 +507,8 @@
 .eh-access-people .check{margin-top:10px}
 .eh-access-error{margin:10px 0 0;color:var(--bad-ink);font-size:14px}
 .eh-dialog .eh-actions .eh-access-copy{margin-right:auto}
+/* The publish dialog with a people list can be taller than the window; sticky would hide its buttons. */
+.eh-dialog{max-height:calc(100dvh - 120px);overflow-y:auto;overscroll-behavior:contain}
 
 @media (prefers-reduced-motion: reduce){.eh *{transition:none!important;animation:none!important}}
 /* Alhazen Experiment Platform documentation views (hub_docs.js).

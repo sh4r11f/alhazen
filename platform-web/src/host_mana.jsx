@@ -41,6 +41,7 @@ function manaListingPlace(kind, hub, pub, exp) {
   const base = manaMineOf(pub) + '/listings/' + exp;
   return { kind, listing: base + '/listing', docs: base + '/docs', bundle: (id) => base + '/bundles/' + id, base };
 }
+const manaPermissionDenied = (e) => /permission[_ ]denied/i.test(String((e && (e.code || e.message)) || e));
 const manaPlaceKind = (access) => (accessOf({ access }).visibility === 'public' ? 'hub' : 'mine');
 // The Firebase read grants that mirror access.people (null: nobody besides the publisher).
 function manaReadGrants(access) {
@@ -360,7 +361,9 @@ function UserDiv() {
     async resolveListing(pub, exp) {
       if (!MINE || !manaParseShareKey(manaShareKey(pub, exp))) return false;
       let rec = null;
-      try { rec = await get(manaListingPlace('mine', HUB, pub, exp).listing); } catch (e) { return false; }
+      // Not shared with this viewer: Firebase refuses the read. Anything else is a real failure.
+      try { rec = await get(manaListingPlace('mine', HUB, pub, exp).listing); }
+      catch (e) { if (manaPermissionDenied(e)) return false; throw e; }
       if (!rec || !rec.title) return false;
       if (pub !== userId) {
         const upd = {}; await ensureMine(upd, ['shared']);

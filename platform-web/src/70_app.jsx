@@ -138,7 +138,7 @@ function PlatformApp({ host }) {
     const missing = (uids || []).filter((u) => !peopleNames[u]);
     if (!missing.length || !host.describePeople) return;
     try { const got = await host.describePeople(missing); setPeopleNames((p) => ({ ...p, ...got })); }
-    catch (e) { console.warn('Alhazen Experiment Platform: could not look up the people a listing is shared with; their account ids are shown instead.', e); }
+    catch (e) { setFlash({ kind: 'bad', text: 'Could not look up the people this is shared with, so their account ids are shown: ' + (e.message || e) }); }
   }
   // The dialog's working copy of a listing's access: people carry the label the dialog shows.
   function accessDraft(L) {
@@ -180,7 +180,7 @@ function PlatformApp({ host }) {
     if (i <= 0) return;
     setResolved((p) => ({ ...p, [k]: 'pending' }));
     host.resolveListing(k.slice(0, i), k.slice(i + 1)).then((ok) => setResolved((p) => ({ ...p, [k]: ok ? 'found' : 'missing' })),
-      (e) => { console.warn('Alhazen Experiment Platform: could not open the shared listing ' + k, e); setResolved((p) => ({ ...p, [k]: 'missing' })); });
+      (e) => { setResolved((p) => ({ ...p, [k]: 'missing' })); setFlash({ kind: 'bad', text: 'Could not open this shared experiment: ' + (e.message || e) }); });
   }, [route.v, route.id, published === null, listings.length]);
   // The publisher's own listing: show who it is shared with by name.
   const routeListing = route.v === 'exp' ? listings.find((x) => x.key === route.id) : null;
@@ -188,9 +188,9 @@ function PlatformApp({ host }) {
   React.useEffect(() => { if (routePeople) labelPeople(routePeople.split(',')); }, [routePeople]);
 
   // The "Who can see it" fields of the Access and publish dialogs.
-  function accessFields(a, publisherUid) {
+  function accessFields(a, publisherUid, legend = true) {
     const choices = ACCESS_CHOICES.filter(([k]) => k !== 'people' || caps.shareWithPeople || a.visibility === 'people');
-    const explain = { private: 'Only you. It is listed in My experiments, where you can run it.', people: 'You and the people you add. Nobody else can find it.', public: 'Everyone who can open this platform can see it and add it to their library.' };
+    const explain = { private: 'Nobody else can see it. It is listed in My experiments, where you can run it.', people: 'You and the people you add. Nobody else can find it.', public: 'Everyone who can open this platform can see it and add it to their library.' };
     const byEmail = !!caps.notifyPeople;
     const find = async () => {
       const q = a.query.trim(); if (!q || a.finding) return;
@@ -203,7 +203,7 @@ function PlatformApp({ host }) {
     const add = (p) => setAccessDraft((cur) => ({ people: cur.people.some((x) => x.uid === p.uid) ? cur.people : [...cur.people, p], query: byEmail ? '' : cur.query, results: byEmail ? null : cur.results, findError: '' }));
     const newcomers = a.people.filter((p) => !(a.initial || []).includes(p.uid));
     return <fieldset className="eh-access">
-      <legend>Who can see it</legend>
+      <legend className={legend ? '' : 'eh-sr'}>Who can see it</legend>
       {choices.map(([k, label]) => <label key={k} className="eh-access-choice"><input type="radio" name="eh-access" checked={a.visibility === k} onChange={() => setAccessDraft({ visibility: k })} /><span><b>{label}</b><small>{explain[k]}</small></span></label>)}
       {a.visibility === 'people' ? <div className="eh-access-people">
         <div className="field"><label htmlFor="eh-access-q">{byEmail ? 'Add a person by email' : 'Add a person'}</label>
@@ -824,7 +824,7 @@ function PlatformApp({ host }) {
       body = <>
       <h2>Who can see {d.L.title}</h2>
       <p>{a.visibility === before ? 'Copies people already made stay theirs whatever you choose.' : a.visibility === 'public' ? 'It will appear in Browse for everyone. Copies people already made stay theirs.' : 'People who can no longer see it keep the copies they already made.'}</p>
-      {accessFields(a, d.L.uid)}
+      {accessFields(a, d.L.uid, false)}
       {d.error ? <p className="eh-access-error" role="alert">{d.error}</p> : null}
       <div className="eh-actions">
         {a.visibility === 'people' && host.shareLink && before === 'people' ? <button className="btn btn-quiet eh-access-copy" onClick={async () => { const r = await host.copyText(host.shareLink(d.L)); setFlash({ kind: r === 'failed' ? 'bad' : 'ok', text: r === 'failed' ? 'Could not copy.' : 'Copied the link to ' + d.L.title + '.' }); }}>Copy link</button> : null}

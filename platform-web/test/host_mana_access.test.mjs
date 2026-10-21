@@ -30,6 +30,7 @@ function makeDb(initial) {
   const root = JSON.parse(JSON.stringify(initial));
   const listeners = new Set();
   const writes = [];
+  let failRead = null; // (path) => Error | null: a read that fails for another reason than permissions
   const split = (p) => p.split('/').filter(Boolean);
   const at = (p) => { let c = root; for (const k of split(p)) { if (c == null || typeof c !== 'object') return null; c = c[k]; } return c === undefined ? null : c; };
   const prune = (o) => { if (!o || typeof o !== 'object') return o; for (const k of Object.keys(o)) { o[k] = prune(o[k]); if (o[k] === null || (typeof o[k] === 'object' && !Object.keys(o[k]).length)) delete o[k]; } return o; };
@@ -55,7 +56,7 @@ function makeDb(initial) {
   function fsFor(uid) {
     return {
       db: {}, ref: (_db, p) => ({ path: p }),
-      get: async (r) => { if (!canRead(r.path, uid)) throw denied(); return { val: () => JSON.parse(JSON.stringify(at(r.path))) }; },
+      get: async (r) => { const broken = failRead && failRead(r.path); if (broken) throw broken; if (!canRead(r.path, uid)) throw denied(); return { val: () => JSON.parse(JSON.stringify(at(r.path))) }; },
       onValue: (r, cb, err) => { const l = { path: r.path, cb, err, uid }; if (!canRead(r.path, uid)) { if (err) err(denied()); return () => {}; } listeners.add(l); cb({ val: () => at(r.path) }); return () => listeners.delete(l); },
       update: async (r, obj) => {
         const keys = Object.keys(obj);
@@ -75,7 +76,7 @@ function makeDb(initial) {
       auth: { currentUser: { uid, displayName: uid, email: EMAILS[uid], getIdToken: async () => 'token-' + uid } },
     };
   }
-  return { root, at, fsFor, writes, listeners };
+  return { root, at, fsFor, writes, listeners, setFailRead: (fn) => { failRead = fn; } };
 }
 
 function hostFor(db, uid, mails) {
@@ -196,6 +197,10 @@ test('a person it is shared with finds it through the index, reads its docs and 
   const wc = watch(carol); await flush();
   assert.equal(wc.state.listings.sharif.kde, undefined);
   assert.equal(await carol.resolveListing('sharif', 'kde'), false);
+  // Only a refused read means "not shared with you"; any other failure reaches the page.
+  db.setFailRead((q) => (q.endsWith('/listings/kde/listing') ? new Error('network down') : null));
+  await assert.rejects(hostFor(db, 'carol', []).host.resolveListing('sharif', 'kde'), /network down/);
+  db.setFailRead(null);
   // Narrowing it to Only you takes it from Bob's list at once.
   await owner.setAccess({ ...L, _base: MINE('sharif') + '/listings/kde' }, { visibility: 'private', people: [] });
   await flush();
