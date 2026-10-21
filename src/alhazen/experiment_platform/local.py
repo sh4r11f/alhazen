@@ -29,6 +29,8 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 from alhazen.experiment_platform.errors import AuthError, Forbidden
 from alhazen.experiment_platform.machines import FILE as MACHINES_FILE
 from alhazen.experiment_platform.machines import Machines
+from alhazen.experiment_platform.rigstore import FILE as RIGS_FILE
+from alhazen.experiment_platform.rigstore import RigStore
 from alhazen.experiment_platform.service import PlatformService, Principal
 from alhazen.experiment_platform.store import FileStore
 from alhazen.experiment_platform.webapp import PlatformApp, Request, capabilities
@@ -119,7 +121,12 @@ class LocalPlatform:
         self._gate = LocalGate(0, self.token, name or default_name())
         # Machine tokens live in the store, so a rig stays connected across launches (the
         # address changes with the port unless --port fixes it).
-        app = PlatformApp(self.service, self._gate, machines=Machines(store.root / MACHINES_FILE))
+        app = PlatformApp(
+            self.service,
+            self._gate,
+            machines=Machines(store.root / MACHINES_FILE),
+            rigs=RigStore(store.root / RIGS_FILE),
+        )
         self._server = make_server(
             "127.0.0.1", port, app, server_class=_ThreadingServer, handler_class=_QuietHandler
         )
