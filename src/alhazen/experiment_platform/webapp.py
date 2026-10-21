@@ -186,6 +186,8 @@ _ROUTES: list[tuple[str, re.Pattern[str], str]] = [
         ("GET", r"/api/assets", "assets"),
         ("GET", r"/api/catalogue", "catalogue"),
         ("GET", r"/api/catalogue/(?P<pub>[^/]+)/(?P<exp>[^/]+)/docs", "docs"),
+        ("PUT", r"/api/catalogue/(?P<pub>[^/]+)/(?P<exp>[^/]+)/access", "access"),
+        ("GET", r"/api/people", "people"),
         ("GET", r"/api/bundles/(?P<handle>[^/]+)/meta", "bundle_meta"),
         ("GET", r"/api/bundles/(?P<handle>[^/]+)/chunks/(?P<index>[0-9]{1,6})", "bundle_chunk"),
         ("GET", r"/api/bundles/(?P<handle>[^/]+)/archive", "bundle_archive"),
@@ -481,6 +483,17 @@ class PlatformApp:
             return self._json(
                 200, svc.docs(principal, args["pub"], args["exp"], request.query.get("version"))
             )
+        if name == "access":
+            body = request.json()
+            given = {"visibility": body.get("visibility"), "people": body.get("people")}
+            return self._json(
+                200, {"listing": svc.set_access(principal, args["pub"], args["exp"], given)}
+            )
+        if name == "people":
+            if "uids" in request.query:
+                uids = [u for u in request.query["uids"].split(",") if u]
+                return self._json(200, {"people": svc.describe_people(principal, uids)})
+            return self._json(200, {"people": svc.people(principal, request.query.get("q", ""))})
         if name == "bundle_meta":
             return self._json(200, svc.bundle_meta(principal, args["handle"]))
         if name == "bundle_chunk":
@@ -547,6 +560,8 @@ class PlatformApp:
 
 
 def capabilities(*, sign_in: bool) -> dict[str, bool]:
+    """The session's capabilities. ``shareWithPeople`` (section 5a): a host with accounts
+    (``sign_in``) can share a listing with specific people; the local host has one user."""
     return {
         "fork": True,
         "publish": True,
@@ -559,4 +574,5 @@ def capabilities(*, sign_in: bool) -> dict[str, bool]:
         "machineTokens": False,
         "rigConfigs": False,
         "signIn": sign_in,
+        "shareWithPeople": sign_in,
     }

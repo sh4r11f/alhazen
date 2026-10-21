@@ -343,8 +343,9 @@ function EHTaskReader({ tasks, guide, presentation, selectedId, art, onSelect, o
 }
 
 
-function EHExperimentPage({ L, d, route, art, actions, renderTabs, renderFiles, renderReplication, go, onFile, nav, crumb, sheetHead, extraTabs, renderExtra, overviewExtra, scopeNote, versionsView }) {
+function EHExperimentPage({ L, d, route, art, actions, renderTabs, renderFiles, renderReplication, go, onFile, nav, crumb, sheetHead, extraTabs, renderExtra, overviewExtra, scopeNote, versionsView, accessBadge, accessRow }) {
   // [2026-10-16] Also renders a private copy (My experiments): nav/crumb/sheetHead/extraTabs/renderExtra/overviewExtra/scopeNote/versionsView.
+  // [2026-10-21] accessBadge (header) and accessRow (first row of the sheet) say who can see a listing (design.md section 5a).
   const extraKeys=(extraTabs || []).map(([k])=>k);
   const { tasks, presentation:candidate, parameterGuide:guideCandidate }=ehMethodsData(d);
   const presentation=ehSourceMatches(candidate,L)?candidate:null;
@@ -369,13 +370,13 @@ function EHExperimentPage({ L, d, route, art, actions, renderTabs, renderFiles, 
         <div className="eh-guide-banner"><EHExperimentLogo item={L} wide/></div>
         <div className="eh-exphead"><h1>{L.title}</h1><p className="eh-byline">by <b>{L.publisher?.name || 'Unknown'}</b>{L.original?.citation ? <> · After {origShort(L)}</> : null}</p>
           <p className="eh-reference-lede">{L.methodSummary || presentation?.summary || L.summary}</p>
-          <div className="eh-reference-tags">{L.status ? <span className={'tag-status st-'+L.status}>{(STATUS[L.status] || [L.status])[0]}</span> : null}{asList(L.tags).filter(t=>CATEGORIES.some(([id])=>id===t)).slice(0,4).map(t=><span key={t}>{CATEGORIES.find(([id])=>id===t)[1]}</span>)}</div>
+          <div className="eh-reference-tags">{accessBadge ? <span className="tag-access">{accessBadge}</span> : null}{L.status ? <span className={'tag-status st-'+L.status}>{(STATUS[L.status] || [L.status])[0]}</span> : null}{asList(L.tags).filter(t=>CATEGORIES.some(([id])=>id===t)).slice(0,4).map(t=><span key={t}>{CATEGORIES.find(([id])=>id===t)[1]}</span>)}</div>
         </div>
       </header>
       <aside className="eh-store-sheet" aria-label="Experiment actions and requirements">
         {sheetHead || <div className="eh-store-sheet-head"><span>Version <strong>{L.version?'v'+L.version:'Unversioned'}</strong></span><small>{ago(L.updatedAt)}</small></div>}
         <div className="eh-exp-actions">{actions}</div>
-        <dl className="eh-store-spec"><div><dt>Needs</dt><dd>{hwKeys(L).map(k=><span className="need" key={k}><Glyph k={k}/>{(HW.find(x=>x[0]===k) || [k,k])[1]}</span>)}</dd></div><div><dt>Subjects</dt><dd>{asList(L.subjects).map(s=>s==='human'?'Human':'Monkey').join(', ')}</dd></div><div><dt>Alhazen</dt><dd>{L.alhazen || 'Not specified'}</dd></div><div><dt>Licence</dt><dd>{L.license || 'Not specified'}</dd></div></dl>
+        <dl className="eh-store-spec">{accessRow || null}<div><dt>Needs</dt><dd>{hwKeys(L).map(k=><span className="need" key={k}><Glyph k={k}/>{(HW.find(x=>x[0]===k) || [k,k])[1]}</span>)}</dd></div><div><dt>Subjects</dt><dd>{asList(L.subjects).map(s=>s==='human'?'Human':'Monkey').join(', ')}</dd></div><div><dt>Alhazen</dt><dd>{L.alhazen || 'Not specified'}</dd></div><div><dt>Licence</dt><dd>{L.license || 'Not specified'}</dd></div></dl>
         <div className="eh-sheet-links"><button className="eh-inline-link" onClick={()=>navigate('files')}>Browse source files</button><button className="eh-inline-link" onClick={()=>navigate('details')}>Replication and source notes</button></div>
       </aside>
       {renderTabs([['overview','Overview'],['methods','Methods'],['tasks','Tasks & parameters'],['versions','Versions'],...(extraTabs || [])],tabKey,key=>navigate(key,{},true))}

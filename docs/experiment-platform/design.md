@@ -143,6 +143,126 @@ copied at fork time; a fork's documentation never changes by itself.
 - Uploads (a new revision as a zip): bounded size (`max_upload_mb`, default 64), every
   entry checked as a bundle path, no symlinks, no files outside the root, no `.git/`.
 
+## 5a. Who can see an experiment (access, 3.7)
+
+Requested 2026-10-21: people keep experiments they made in their own account, see them under My
+experiments and run them on their rigs without putting them on the marketplace; and they can
+publish an experiment to specific people instead of everyone.
+
+**Listing field.** `access: {visibility, people}`:
+
+| `visibility` | UI label | Who can see the listing |
+|---|---|---|
+| `private` | Only you | the publisher |
+| `people` | Specific people | the publisher and every uid in `people` |
+| `public` | Everyone | anyone allowed to read the catalogue (section 5) |
+
+A listing with no `access` (written before 3.7) is `public`. Every write from 3.7 on stores
+`access` explicitly. `people` is a list of account ids (never emails or names); it is kept only
+when `visibility` is `people`. A stored `access` this version does not understand (an unknown
+`visibility`, not an object) is read as `private`: an unknown rule never widens who sees a
+listing. The rule lives in `experiment_platform/access.py`.
+
+**What it covers.** Visibility applies to the listing and everything reached through it: its
+versions, documentation records, bundles and archives (`L~` handles), and forking. A principal
+who cannot see a listing gets **404** (`This experiment is not in the catalogue`), never 403,
+so names and ids do not leak. Copies people made while they could see a listing stay theirs
+when access is narrowed (as with unpublishing); narrowing never reaches into other libraries.
+
+**Presentation** (per principal). The publisher sees `access` in full,
+`{visibility, people (always a list, empty unless visibility is people), names: {uid: name}}`
+(`names` holds the enabled accounts only), and `canManage: true`. Anyone else sees
+`access: {visibility}` only, `canManage: false`, plus `sharedWithYou: true` when they are in
+`people`. `GET /api/catalogue` leaves out a publisher none of whose listings the principal
+may see.
+
+**Changing it.** Only the publisher: `PlatformService.set_access(principal, publisher, exp,
+access)`. Another principal who can see the listing gets 403 (`Only the publisher can change
+who sees this`); one who cannot gets 404. `people` is de-duplicated, the publisher is removed
+from it, at most 200 entries, each must be an existing, enabled account (`InvalidRequest`
+naming the id otherwise); `people` with no one left is refused (`Add at least one person, or
+choose Only you`).
+
+- **Publishing a copy** takes an optional `access` in the form; without it, an existing
+  listing keeps its access and a new one is `public`.
+- **Refresh** never changes the access of an existing listing; a new listing takes
+  `alhazen platform refresh ... --visibility private|people|public` (default `public`;
+  `people` needs `--people uid,...`).
+- **Operators:** `alhazen platform access <publisher> <exp> --visibility ... [--people ...]`.
+- **Operators:** `--store DIR` or `--config FILE` (a server's); without `--visibility` the
+  command prints the current access. People are checked against the store's accounts, so a
+  local store (no accounts) cannot share with people.
+- **Finding people** (signed in only, else 401): `people(principal, query)` matches an exact
+  username, or a username, a name or a word of a name that starts with the query when it has
+  at least 2 characters (case-insensitive for ASCII; `%` and `_` are literal); exact usernames
+  first, then by username; at most 10 results; never the asking principal; disabled accounts
+  are never returned; result `[{uid, name, username}]`. `describe_people(principal, uids)`
+  returns the same for the known, enabled ids among at most 200, in the order asked. The
+  service gets these from a `PeopleDirectory` the host hands it (the server's `Accounts`).
+  The local host has one user and no people search (`shareWithPeople: false`; `GET
+  /api/people` answers `{people: []}` and a `people` visibility is refused).
+
+**HTTP** (Appendix A): `GET /api/catalogue` is filtered for the principal;
+`PUT /api/catalogue/<pub>/<exp>/access {visibility, people}` returns `{listing}` (CSRF like
+every write); `GET /api/people?q=<text>` returns `{people: [{uid, name, username}]}`;
+`GET /api/people?uids=<a,b>` returns the same for known ids (publisher's view of a listing's
+people); session capability `shareWithPeople` (server true, local false). Forking, docs and
+bundle reads of a listing the principal cannot see are 404.
+
+**Mana host.** Public listings stay in the hub (`hub/published/<pub>/<exp>`, `hub/bundles`,
+`hub/docs`). The hub is readable by everyone it is shared with and Mana grants inherit
+downward, so a non-public listing cannot live there: it lives in the publisher's own
+workspace, `<pub>/file-system/alhazen-experiment-platform-mine/listings/<exp>/` with
+`listing` (the record; its `bundle.path` and `versions` point inside this node), `docs` (same
+record as `hub/docs/<pub>/<exp>`), `bundles/<bundleId>` (`{meta, chunks}`), and
+`metadata: {type: link, hidden: true, permissions: {read: {<uid>: true}}}` mirroring
+`access.people`; the field and the grants are written in one update.
+
+- *Your own non-public listings* are indexed at `mine/listed/<exp> = {visibility, at}` (derived,
+  written with every write of `listings/<exp>`, rebuildable from it). The app subscribes to each
+  listing's `listing` record separately; subscribing to `listings/` itself would download every
+  bundle.
+- *Finding what is shared with you:* (1) the hub owner's share index
+  `<hubOwner>/file-system/alhazen-experiment-platform-shares` (hidden link with
+  `per_user_read`, so each person reads only `<their uid>/`), entries
+  `<recipient>/<pub>~<exp> = {publisher, exp, at}`, written when the publisher is the hub owner;
+  (2) each person's own pointers `mine/shared/<pub>~<exp>`, saved when they open a share link
+  (`?ehv=exp&ehid=<pub>~<exp>`) to a listing they can read. A pointer whose listing cannot be
+  read is ignored.
+- *Changing visibility* moves the records between the hub and the publisher's workspace: copy
+  bundles chunk by chunk (one write per chunk), then docs, then the listing last; read back; then
+  delete the old location. A hub bundle that another of the publisher's hub listings names is not
+  deleted. Copies in libraries are untouched. Publishing a copy with a different visibility moves
+  the existing listing first, so its earlier versions go with it.
+- *People* are found by email (Mana `/share/lookup-user`) and shown by email to the publisher
+  (`/share/lookup-users`); people added can be sent Mana's share email (`/share/notify`).
+- *hubkit* (`run_listing`, forks made by chats) reads a listing from the hub, else from the
+  publisher's `mine/listings/<exp>`.
+
+**Web app.** Cards and listing headers carry a badge for non-public listings (`Only you`,
+`Shared`, or `Shared with you`). The publisher's listing sheet says who can see it with a
+Change button (Access dialog: Only you / Specific people / Everyone, a people picker through
+`host.findPeople`, a list with Remove, on Mana an "Email them a link" box). The publish dialog
+of a copy asks who can see it first (default Everyone). My experiments shows, above the copies,
+*Not on the marketplace* (your private and shared listings) and *Shared with you*, and a
+collapsed *On the marketplace* list of your public listings. Browse shows everything the viewer
+can see with a "Visible to" filter (All, Everyone, Shared with you, Only you); Home's sections
+show public listings only, plus a *Shared with you* section when there is one.
+
+The "Visible to" filter also has *Shared by you* (the viewer's own `people` listings); without it
+those listings would be reachable only under All. Like the collection chips, an option is shown
+only when it has listings (or is selected), and the whole group only when the viewer can see a
+non-public listing.
+
+Host interface additions: `host.setAccess(listing, {visibility, people, notify})` resolving to
+`{access, notified: {sent, failed}}`, `host.findPeople(query) -> [{uid, label}]`,
+`host.describePeople(uids) -> {uid: label}`, `host.shareLink(listing)` (the URL that opens the
+listing page), capabilities `shareWithPeople` and `notifyPeople` (Mana only: it sends Mana's share
+email; the server host sends none). The Mana host also has `resolveListing(pub, exp) -> bool` for
+a share link to a listing it has not listed yet. `publish(fork, form)` takes `form.access` and
+`form.notify`. A listing's `canManage` is `listing.canManage === true` (server) or
+`listing.uid === host.viewer.uid`.
+
 ## 6. HTTP surface
 
 One WSGI application (`experiment_platform.http`) serves both standalone hosts:
@@ -154,6 +274,8 @@ One WSGI application (`experiment_platform.http`) serves both standalone hosts:
 | `POST /api/login`, `POST /api/logout` | server mode only |
 | `GET /api/catalogue` | all listings `{publisher: {exp: listing}}` |
 | `GET /api/catalogue/<pub>/<exp>/docs[?version=<versionKey or bundleId>]` | documentation record + docsStatus (a bundle id means its latest version) |
+| `PUT /api/catalogue/<pub>/<exp>/access` | who can see a listing (publisher only, section 5a) |
+| `GET /api/people?q=<text>` or `?uids=<a,b>` | people to share with (signed in, server only) |
 | `GET /api/bundles/<handle>/meta`, `/chunks/<n>` | bundle files (handle: `L.<pub>.<exp>.<bundleId>` or `F.<forkId>.<bundleId>`) |
 | `GET /api/bundles/<handle>/archive` | the bundle as a zip |
 | `GET /api/forks`, `POST /api/forks` | the principal's forks; fork a listing |
@@ -342,20 +464,23 @@ disabled-account token is 401.
 
 | Request | Response |
 |---|---|
-| `GET /api/session` | `{kind: "local"\|"server", viewer: {uid, name}\|null, csrf: str\|null, capabilities: {fork, publish, uploadRevision, downloadRevision, changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, machineTokens: bool, rigConfigs: bool, signIn: bool}}` |
+| `GET /api/session` | `{kind: "local"\|"server", viewer: {uid, name}\|null, csrf: str\|null, capabilities: {fork, publish, uploadRevision, downloadRevision, changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, machineTokens: bool, rigConfigs: bool, signIn: bool, shareWithPeople: bool}}` (`shareWithPeople`: true for a signed-in server viewer, false locally and for a visitor) |
 | `POST /api/login` `{username, password}` | the session object; sets the cookie |
 | `POST /api/logout` | `{}`; clears the cookie |
 | `GET /api/assets` | `{hero: <svg>, penrose: <svg>}` |
-| `GET /api/catalogue` | `{published: {<publisherUid>: {<exp>: listing}}}`; every `listing.bundle.path` is a bundle handle, and `listing.docsStatus` is computed |
-| `GET /api/catalogue/<uid>/<exp>/docs[?version=<bundleId>]` | the documentation record (`guide`, `methods`, `parameterGuide`, `readme`, `references`, `tasks`, `assumed`, `deviations`, all strings as stored) plus `docsStatus`, `bundleId` |
+| `GET /api/catalogue` | `{published: {<publisherUid>: {<exp>: listing}}}`, only the listings the viewer may see (section 5a); every `listing.bundle.path` is a bundle handle, `listing.docsStatus` is computed, and `listing.access`, `canManage`, `sharedWithYou?` are presented for the viewer |
+| `GET /api/catalogue/<uid>/<exp>/docs[?version=<bundleId>]` | the documentation record (`guide`, `methods`, `parameterGuide`, `readme`, `references`, `tasks`, `assumed`, `deviations`, all strings as stored) plus `docsStatus`, `bundleId`; 404 for a listing the viewer may not see |
+| `PUT /api/catalogue/<uid>/<exp>/access` `{visibility: "private"\|"people"\|"public", people?: [uid]}` | `{listing}` as the publisher sees it; 403 for another viewer who can see the listing, 404 for one who cannot, 400 for an unknown or disabled person, an empty `people`, or more than 200 |
+| `GET /api/people?q=<text>` (signed in) | `{people: [{uid, name, username}]}`, at most 10 (section 5a); 401 when not signed in |
+| `GET /api/people?uids=<uid,uid>` (signed in) | `{people: [{uid, name, username}]}` for the known, enabled ids (at most 200), in the order asked |
 | `GET /api/bundles/<handle>/meta` | bundle meta (`files` and `excluded` are JSON strings, as in Mana) |
 | `GET /api/bundles/<handle>/chunks/<n>` | the chunk: a JSON array of entries (the text is returned as is) |
 | `GET /api/bundles/<handle>/archive` (also *machine*, `F~` handles only) | `application/zip`, everything under `<exp or fork id>/` |
 | `GET /api/forks` (also *machine*) | `{forks: {<forkId>: fork}}`; `fork.head.path` is a bundle handle |
-| `POST /api/forks` `{publisher, exp}` | `{id, fork}` |
+| `POST /api/forks` `{publisher, exp}` | `{id, fork}`; 404 for a listing the viewer may not see |
 | `GET /api/forks/<id>/docs` | `{docs: record\|null, readme: str\|null, stale: bool}` |
 | `POST /api/forks/<id>/revisions?message=<text>` body: zip bytes | `{revision: {bundle, message, by, at}, fork}` |
-| `POST /api/forks/<id>/publish` `{title, summary, category, subjects, hardware, version, license}` | `{listing}` |
+| `POST /api/forks/<id>/publish` `{title, summary, category, subjects, hardware, version, license, access?}` | `{listing}`; without `access`, an existing listing keeps its own and a new one is public |
 | `POST /api/forks/<id>/unpublish` | `{}` |
 | `DELETE /api/forks/<id>` | `{removed: {bundles: [bundleId], docs: [docsKey]}}` |
 | `GET /api/art/<path>` | the image (content-hashed name, cacheable) |
@@ -375,4 +500,6 @@ disabled-account token is 401.
 
 Bundle handles are opaque to the web app: `L~<publisher>~<exp>~<bundleId>` for a published
 version, `F~<forkId>~<bundleId>` for a revision of the viewer's own copy. A handle names a
-version, so its content never changes.
+version, so its content never changes. An `L~` handle of a listing the viewer may not see is
+404 (meta, chunks and archive); a viewer's `F~` handles keep working after the listing they
+copied is narrowed. `PUT` requests carry the same CSRF header as POST and DELETE.

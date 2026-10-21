@@ -273,3 +273,65 @@ test('rig configs are offered only when the server keeps them, and never to a vi
   assert.equal(makeHost({}, { kind: 'local', viewer: { uid: 'local' }, capabilities: { rigConfigs: false } }).host.capabilities.rigConfigs, false);
   assert.equal(makeHost({}, { kind: 'local', viewer: { uid: 'local' }, capabilities: { rigConfigs: true } }).host.capabilities.rigConfigs, true);
 });
+
+// ---------------------------------------------------------------- who can see a listing (design.md section 5a)
+const serverSession = (caps = {}) => ({ kind: 'server', viewer: { uid: 'u1', name: 'Ann' }, csrf: 'c', capabilities: { fork: true, publish: true, signIn: true, ...caps } });
+
+test('access: shareWithPeople comes from the session, never for a visitor or the local host', () => {
+  assert.equal(makeHost({}, serverSession({ shareWithPeople: true })).host.capabilities.shareWithPeople, true);
+  assert.equal(makeHost({}, serverSession({})).host.capabilities.shareWithPeople, false);
+  assert.equal(makeHost({}, { kind: 'server', viewer: null, capabilities: { signIn: true, shareWithPeople: true } }).host.capabilities.shareWithPeople, false);
+  assert.equal(makeHost({}).host.capabilities.shareWithPeople, false);
+  // Only Mana sends its own share email.
+  assert.equal(makeHost({}, serverSession({ shareWithPeople: true, notifyPeople: true })).host.capabilities.notifyPeople, false);
+});
+
+test('access: setAccess PUTs {visibility, people} to the listing and refreshes the catalogue', async () => {
+  let catalogueReads = 0;
+  const { host, calls } = makeHost({
+    'GET /api/catalogue': () => { catalogueReads++; return { body: { published: {} } }; },
+    'PUT /api/catalogue/u1/kde%20v/access': (init) => ({ body: { listing: { access: JSON.parse(init.body) } } }),
+  }, serverSession({ shareWithPeople: true }));
+  const off = host.subscribeListings(() => {});
+  await flush();
+  const res = await host.setAccess({ uid: 'u1', exp: 'kde v' }, { visibility: 'people', people: ['u2', 'u3'], notify: true });
+  const put = calls.find((c) => c.method === 'PUT');
+  assert.equal(new URL(put.url).pathname, '/api/catalogue/u1/kde%20v/access');
+  assert.deepEqual(JSON.parse(put.body), { visibility: 'people', people: ['u2', 'u3'] });
+  assert.equal(put.headers['X-Alhazen-Platform'], '1'); // a server write (the transport adds CSRF; tested above)
+  assert.deepEqual(res.access, { visibility: 'people', people: ['u2', 'u3'] });
+  assert.equal(catalogueReads, 2);
+  await host.setAccess({ uid: 'u1', exp: 'kde v' }, { visibility: 'private', people: ['u2'] });
+  assert.deepEqual(JSON.parse(calls.filter((c) => c.method === 'PUT')[1].body), { visibility: 'private', people: [] });
+  off();
+});
+
+test('access: people search and names come from /api/people; a short query is refused before any request', async () => {
+  const { host, calls } = makeHost({
+    'GET /api/people': (init) => ({ body: { people: [{ uid: 'u2', name: 'Bob Lee', username: 'bob' }, { uid: 'u3', name: 'cara', username: 'cara' }] } }),
+  }, serverSession({ shareWithPeople: true }));
+  await assert.rejects(host.findPeople('b'), /at least two letters/);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await host.findPeople(' bo '), [{ uid: 'u2', label: 'Bob Lee (bob)' }, { uid: 'u3', label: 'cara' }]);
+  assert.equal(new URL(calls[0].url).search, '?q=bo');
+  assert.deepEqual(await host.describePeople(['u2', 'u3', 'u2']), { u2: 'Bob Lee (bob)', u3: 'cara' });
+  assert.equal(new URL(calls[1].url).search, '?uids=u2,u3');
+  assert.deepEqual(await host.describePeople([]), {});
+  assert.equal(calls.length, 2);
+});
+
+test('access: publish sends the chosen access with the form; without one the server keeps or defaults it', async () => {
+  const bodies = [];
+  const { host } = makeHost({ 'POST /api/forks/f1/publish': (init) => { bodies.push(JSON.parse(init.body)); return { body: {} }; }, 'GET /api/forks': { body: { forks: {} } } },
+    serverSession({ shareWithPeople: true }));
+  await host.publish({ id: 'f1' }, { title: 'T', summary: '', category: 'c', subjects: [], hardware: {}, version: '1', license: 'MIT', name: 'Ann', access: { visibility: 'people', people: ['u2'] }, notify: true });
+  await host.publish({ id: 'f1' }, { title: 'T', summary: '', category: 'c', subjects: [], hardware: {}, version: '2', license: 'MIT', name: 'Ann' });
+  assert.deepEqual(bodies[0].access, { visibility: 'people', people: ['u2'] });
+  assert.equal('notify' in bodies[0] || 'name' in bodies[0], false);
+  assert.equal('access' in bodies[1], false);
+});
+
+test('access: a share link opens the listing page of this platform', () => {
+  const { host } = makeHost({}, serverSession({ shareWithPeople: true }));
+  assert.equal(host.shareLink({ uid: 'u1', exp: 'kde' }), 'http://127.0.0.1:8123/?ehv=exp&ehid=u1~kde');
+});

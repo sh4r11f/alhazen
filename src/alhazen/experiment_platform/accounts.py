@@ -29,7 +29,7 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from alhazen.experiment_platform.errors import AuthError, Conflict, InvalidRequest, NotFound
@@ -92,6 +92,11 @@ def verify_password(password: str, stored: str) -> bool:
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(got, expected)
+
+
+def _like_escape(text: str) -> str:
+    """``text`` as a literal inside a LIKE pattern (escape character ``\\``)."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _token_hash(token: str) -> str:
@@ -221,6 +226,45 @@ class Accounts:
             {"uid": r[0], "username": r[1], "name": r[2], "created": r[3], "disabled": bool(r[4])}
             for r in rows
         ]
+
+    # ------------------------------------------------------------------ people
+    def find_people(self, query: str, limit: int) -> list[dict[str, str]]:
+        """Enabled accounts to share with (design.md section 5a): an exact user name, or a
+        user name, a name, or a word of a name that starts with ``query`` when it has at
+        least 2 characters. Exact user names first, then by user name; at most ``limit``."""
+        q = str(query or "").strip().lower()
+        if not q or limit <= 0:
+            return []
+        if len(q) < 2:
+            where, params = "username = ?", [q]
+        else:
+            prefix = _like_escape(q) + "%"
+            where = (
+                "username = ? OR username LIKE ? ESCAPE '\\' OR lower(name) LIKE ? ESCAPE '\\' "
+                "OR lower(name) LIKE ? ESCAPE '\\'"
+            )
+            params = [q, prefix, prefix, "% " + prefix]
+        rows = self._db().execute(
+            f"SELECT uid, username, name FROM users WHERE disabled = 0 AND ({where}) "
+            "ORDER BY username = ? DESC, username LIMIT ?",
+            (*params, q, int(limit)),
+        )
+        return [{"uid": r[0], "name": r[2], "username": r[1]} for r in rows]
+
+    def describe_people(self, uids: Iterable[str]) -> dict[str, dict[str, str]]:
+        """``{uid: {uid, name, username}}`` for the enabled accounts among ``uids``."""
+        wanted = sorted({str(u) for u in uids})
+        out: dict[str, dict[str, str]] = {}
+        for start in range(0, len(wanted), 500):  # below SQLite's parameter limit
+            part = wanted[start : start + 500]
+            rows = self._db().execute(
+                "SELECT uid, username, name FROM users WHERE disabled = 0 AND uid IN ("
+                + ",".join("?" * len(part))
+                + ")",
+                part,
+            )
+            out.update({r[0]: {"uid": r[0], "name": r[2], "username": r[1]} for r in rows})
+        return out
 
     # ------------------------------------------------------------------ sessions
     def _throttled(self, keys: list[str]) -> bool:

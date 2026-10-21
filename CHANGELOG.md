@@ -25,6 +25,21 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+- **Who can see an experiment (platform, server side).** A listing carries `access`:
+  Only you (`private`), Specific people (`people`, account ids) or Everyone (`public`; a
+  listing from before has no `access` and stays public). A principal who may not see a
+  listing gets 404 for it, its documentation, its versions' files and archives, and
+  copying it; copies made earlier stay theirs. Only the publisher changes it
+  (`PUT /api/catalogue/<pub>/<exp>/access`, the publish form's optional `access`, or
+  `alhazen platform access` for operators); people are existing, enabled accounts, found
+  with `GET /api/people?q=` (at most 10, signed in only) and named with `?uids=`. Session
+  capability `shareWithPeople` (server true, local false). A refresh keeps an existing
+  listing's access; a new one takes `--visibility`/`--people` (default public).
+  `alhazen platform users list` now shows uids. Design: docs/experiment-platform/design.md
+  section 5a.
+
 ## 3.6.0 - 2026-10-21
 
 - **Several rig configs per machine, synced with the platform.** A dashboard's machine now
