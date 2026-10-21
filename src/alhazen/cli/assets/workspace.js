@@ -812,14 +812,15 @@ function developmentRigWarning(mode, name) {
   if (mode === 'training' && !rehearsing() && name) {
     return `${label('training')} drives a real subject, and ${name} is a development rig `
       + '(real_data: false): this launch will be refused before anything is written. Tick '
-      + 'Rehearse to try the stage on this machine, or set real_data: true in this machine’s '
-      + 'rig if the monkey works here.';
+      + 'Rehearse to try the stage on this machine, or choose a config that collects (or set '
+      + 'real_data: true in this one on the General page) if the monkey works here.';
   }
   if (mode !== 'run' || !name) return null;
   return `${label('run')} records real data, and ${name} is a development rig `
     + '(real_data: false): this launch will be refused before anything is written. Use '
-    + `${label('test')} or ${label('simulate')} to try the session on this machine, or set `
-    + 'real_data: true in this machine’s rig if subjects are recorded here.';
+    + `${label('test')} or ${label('simulate')} to try the session on this machine, or choose a `
+    + 'config that collects (or set real_data: true in this one on the General page) if subjects '
+    + 'are recorded here.';
 }
 
 /**

@@ -133,10 +133,16 @@ export function response(json, status = 200) {
  *             (runs launched before the machine rig name them); the first
  *             one listed is also this machine's rig (sessionRig) unless
  *             `sessionRig` is set
- *   sessionRig  /api/session-rig's answer (this machine's rig and what a
+ *   sessionRig  /api/session-rig's answer (the chosen config and what a
  *             session starts from), or null to derive it from `rigs`
- *   machine   /api/machine-rig's answer (before set-up: {configured: false,
- *             templates, suggested})
+ *   machineRigs /api/machine-rigs's answer (Rigs: this machine's configs)
+ *   templates /api/machine-rigs/templates's answer ({templates, suggested})
+ *   rigWrites (path, body) => the answer to a POST /api/machine-rigs/<action>
+ *             (create, save, rename, default, delete, resolve, sync, check),
+ *             or undefined to refuse it; a `{status, json}` object answers
+ *             with that status
+ *   rigHistory / rigVersions  /api/machine-rigs/history's answer and the
+ *             texts by file for /api/machine-rigs/version
  *   schema    the task's JSON schema, for /api/schema without a task (a
  *             project whose run.py declares one task)
  *   schemas   JSON schema by task name, for /api/schema?…&task=<name> (a
@@ -156,6 +162,8 @@ export function sessionRigFrom(rig) {
       name: rig.name, file: `C:/state/machine-rig/rig-${rig.name}.yaml`, sha256: 'sha-' + rig.name,
       values: rig.values, problem: null,
     },
+    config: { id: 'c-' + rig.name, name: rig.name },
+    configs: [{ id: 'c-' + rig.name, name: rig.name, default: true, problem: null }],
     values: rig.values,
     events: null,
     task_events: null,
@@ -173,7 +181,13 @@ function fakeServer() {
     configs: {},
     rigs: {},
     sessionRig: null,
-    machine: { configured: false, error: null, templates: [], suggested: null },
+    machineRigs: { machine: { id: 'mc_0123456789abcdef', label: 'bench' }, default: null, configs: [],
+      sync: { connected: false, state: 'not-connected', at: null, error: null, platform: null },
+      migrated: null, error: null },
+    templates: { templates: [], suggested: null },
+    rigWrites: () => undefined,
+    rigHistory: { saves: [], versions: [] },
+    rigVersions: {},
     schema: {},
     schemas: {},
     launch: () => ({ id: 'launched' }),
@@ -198,25 +212,36 @@ function fakeServer() {
       if (path === '/api/parameters') return response({ values: JSON.parse(body.text) });
       if (path === '/api/projects') return response({ id: 'p' });
       if (path === '/api/projects/remove') return response({});
-      if (path === '/api/machine-rig/save') {
-        const answer = server.saveMachine ? server.saveMachine(body) : null;
-        return answer ? response(answer) : response({ error: 'No save expected' }, 400);
-      }
-      if (path === '/api/machine-rig/setup') {
-        const answer = server.setupMachine ? server.setupMachine(body) : null;
-        return answer ? response(answer, 201) : response({ error: 'No set-up expected' }, 400);
+      if (path.startsWith('/api/machine-rigs/')) {
+        const answer = server.rigWrites(path, body);
+        if (answer === undefined) return response({ error: 'No ' + path + ' expected' }, 400);
+        if (answer && answer.status && answer.json) return response(answer.json, answer.status);
+        return response(answer, path.endsWith('/create') ? 201 : 200);
       }
       throw new Error('the fake launcher has no POST route for ' + url);
     }
     if (path === '/api/state') {
-      /* A project fixture that says nothing of this machine's rig has one,
-       * named after the first rig the test listed (sessionRigFrom): every
-       * test written before the machine rig runs its sessions on it. A test
-       * of the set-up card says `machine_rig: null`. */
+      /* A project fixture that says nothing of this machine's rig configs
+       * has one, the default, named after the first rig the test listed
+       * (sessionRigFrom): every test written before the machine rig runs its
+       * sessions on it. A test of the add-a-config card says
+       * `machine_rig: null` (and so no configs); one that gives `machine_rig`
+       * alone gets that rig as the one config. */
       const first = Object.values(server.rigs)[0];
-      const projects = server.state.projects.map((p) => (p.machine_rig !== undefined || !first ? p
-        : { ...p, machine_rig: { name: first.name, file: `C:/state/machine-rig/rig-${first.name}.yaml`,
-          sha256: 'sha-' + first.name, data_root: 'data' } }));
+      const projects = server.state.projects.map((p) => {
+        let out = p;
+        if (out.machine_rig === undefined && first) {
+          out = { ...out, machine_rig: { id: 'c-' + first.name, name: first.name,
+            file: `C:/state/machine-rig/rig-${first.name}.yaml`, sha256: 'sha-' + first.name, data_root: 'data' } };
+        }
+        if (out.machine_rigs === undefined) {
+          const m = out.machine_rig;
+          const id = m ? (m.id || 'c-' + m.name) : null;
+          out = { ...out, machine_rigs: { default: id,
+            configs: m ? [{ id, name: m.name, default: true, problem: null }] : [] } };
+        }
+        return out;
+      });
       return response({ ...server.state, projects });
     }
     if (path === '/api/manage/people') return response(server.people);
@@ -243,7 +268,13 @@ function fakeServer() {
       if (!first) return response({ error: 'This machine has no rig yet' }, 400);
       return response(sessionRigFrom(first));
     }
-    if (path === '/api/machine-rig') return response(server.machine);
+    if (path === '/api/machine-rigs') return response(server.machineRigs);
+    if (path === '/api/machine-rigs/templates') return response(server.templates);
+    if (path === '/api/machine-rigs/history') return response(server.rigHistory);
+    if (path === '/api/machine-rigs/version') {
+      const text = server.rigVersions[params.get('file')];
+      return text === undefined ? response({ error: 'No such version' }, 404) : response({ text });
+    }
     if (path === '/api/machine-rig/schema') return response(server.rigSchema || {});
     if (path === '/api/rig') {
       const rig = server.rigs[params.get('rig')];
