@@ -150,7 +150,7 @@ function createHttpHost({ session, transport, onSignedOut, onSignIn, useThemeHoo
     // refuses them too; these flags keep the page from offering them).
     capabilities: { ...(session.capabilities || {}), ...(visitor ? { fork: false, publish: false, uploadRevision: false, downloadRevision: false, machineTokens: false } : {}), changeWithMana: false, runOnMachines: false, newWithMana: false, machines: false, themeToggle: true,
       // Machine rig configs (machine-rig-configs.md §4, owner routes): the signed-in person's machines.
-      rigConfigs: !visitor && !!session.viewer },
+      rigConfigs: !visitor && !!(session.capabilities || {}).rigConfigs },
     art: { url: transport.url('api/art/'), encodePath: (p) => String(p).split('/').map(enc).join('/'), error: null },
     fontStylesheet: null,
     inlineStyles: false,

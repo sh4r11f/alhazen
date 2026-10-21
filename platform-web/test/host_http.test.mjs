@@ -233,7 +233,7 @@ test('rig configs: the owner routes of machine-rig-configs.md §4, each change r
     'PUT /api/rigs/mc_0123456789abcdef/default': { body: { record } },
     'POST /api/rigs/mc_0123456789abcdef/configs/c1a2b3c4d5e/resolve': { body: { record } },
     'DELETE /api/rigs/mc_0123456789abcdef': { body: {} },
-  }, { kind: 'server', viewer: { uid: 'u1', name: 'Ann' }, capabilities: { signIn: true, machineTokens: true } });
+  }, { kind: 'server', viewer: { uid: 'u1', name: 'Ann' }, capabilities: { signIn: true, machineTokens: true, rigConfigs: true } });
   assert.equal(host.capabilities.rigConfigs, true);
   const seen = [];
   host.subscribeRigMachine('mc_0123456789abcdef', (r) => seen.push(r.configs.c1a2b3c4d5e.state));
@@ -268,7 +268,8 @@ test('rig configs: a 409 from the server reaches the editor with its message', a
   await assert.rejects(host.putRigConfig('mc_0123456789abcdef', 'c1', { name: 'b', text: 'a: 1', base: 0 }), (e) => e.status === 409 && /changed since you opened it/.test(e.message));
 });
 
-test('rig configs are not offered to a visitor of a public catalogue', () => {
-  const { host } = makeHost({}, { kind: 'server', viewer: null, capabilities: { signIn: true } });
-  assert.equal(host.capabilities.rigConfigs, false);
+test('rig configs are offered only when the server keeps them, and never to a visitor', () => {
+  assert.equal(makeHost({}, { kind: 'server', viewer: null, capabilities: { signIn: true, rigConfigs: true } }).host.capabilities.rigConfigs, false);
+  assert.equal(makeHost({}, { kind: 'local', viewer: { uid: 'local' }, capabilities: { rigConfigs: false } }).host.capabilities.rigConfigs, false);
+  assert.equal(makeHost({}, { kind: 'local', viewer: { uid: 'local' }, capabilities: { rigConfigs: true } }).host.capabilities.rigConfigs, true);
 });
