@@ -2783,22 +2783,23 @@ class Workspace:
 
     def template_texts(self) -> list[dict[str, Any]]:
         """Every template with the text a config made from it would start with (merged,
-        event names left out), for the platform's Add config (machine_rig_sync)."""
+        event names left out), for the platform's Add config (machine_rig_sync). One that
+        cannot be read is listed with ``error`` and no text, so the platform can say why."""
         out = []
         for t in self.machine_templates():
+            entry = {k: t.get(k) for k in ("id", "label", "kind", "name", "summary", "real_data")}
             if t.get("error"):
+                out.append({**entry, "error": str(t["error"])})
                 continue
             try:
                 path, shared, meta = self._template_source(t["id"])
                 text, _removed, _meta = mr.template_text(
                     t["name"], path, shared=shared, template=meta
                 )
-            except (ValueError, ConfigError, mr.MachineRigError, OSError):
+            except (ValueError, ConfigError, mr.MachineRigError, OSError) as exc:
+                out.append({**entry, "error": str(exc)})
                 continue
-            out.append(
-                {k: t.get(k) for k in ("id", "label", "kind", "name", "summary", "real_data")}
-                | {"text": text}
-            )
+            out.append({**entry, "text": text})
         return out
 
     def _changed_rigs(self) -> None:
