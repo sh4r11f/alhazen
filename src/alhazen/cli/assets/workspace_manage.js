@@ -897,7 +897,7 @@
           || (list.children || []).find?.((r) => r.dataset?.config === wanted);
         if (row) {
           row.scrollIntoView?.({block: 'start'});
-          row.querySelector?.('.mrc-edit')?.click?.();
+          row.openEditor?.();
         }
       }
     };
@@ -1016,7 +1016,8 @@
     const work = el('div', 'mrc-config-work');
     const actions = el('div', 'm-row-actions mrc-config-actions');
     const open = (fn) => () => fn(work);
-    const edit = button('Edit', 'quiet mrc-edit', open((where) => configEditor(where, config, done, redraw)));
+    row.openEditor = open((where) => configEditor(where, config, done, redraw));
+    const edit = button('Edit', 'quiet mrc-edit', row.openEditor);
     actions.append(edit,
       button('Rename', 'quiet', open((where) => renameForm(where, config, rigs, done))),
       button('History', 'quiet', open((where) => historyView(where, config))));
