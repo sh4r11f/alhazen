@@ -1871,7 +1871,7 @@ function askSaveRig() {
       renderRig();
       guard(refresh)();
     } catch (e) {
-      problem.textContent = e.status === 409
+      problem.textContent = e.status === 409 || /changed since/.test(e.message)
         ? `${name} was changed since this page read it (on the General page, in another tab or by a `
           + 'sync), so nothing was saved. Choose it again to read the new version.'
         : e.message;

@@ -1055,6 +1055,10 @@
    *  the way to keep one (POST /api/machine-rigs/resolve). */
   function conflictBlock(config, done) {
     const c = config.sync.conflict;
+    // §3 names the platform's side platform_text/…; the index keeps it as
+    // text/revision/sha256 (§2), which an older answer may pass on as it is.
+    const platformText = c.platform_text ?? c.text ?? '';
+    const platformRevision = c.platform_revision ?? c.revision ?? '?';
     const box = el('div', 'mrc-conflict');
     box.setAttribute('role', 'group');
     box.setAttribute('aria-label', `Sync conflict for ${config.name}`);
@@ -1071,7 +1075,7 @@
     const by = c.by ? ` by the ${c.by}` : '';
     columns.append(
       column('This machine’s version', 'What this machine runs now.', config.text),
-      column('The platform’s version', `Revision ${c.platform_revision ?? '?'}${by}${c.at ? `, ${when(c.at)}` : ''}.`, c.platform_text),
+      column('The platform’s version', `Revision ${platformRevision}${by}${c.at ? `, ${when(c.at)}` : ''}.`, platformText),
     );
     const result = el('div');
     const actions = el('div', 'm-form-actions');
@@ -1211,6 +1215,14 @@
     box.append(head, formView, yamlView, result);
     where.replaceChildren(box);
     drawFields();
+    // A config whose file does not read has no settings to show: YAML only.
+    const readable = !!config.values;
+    formTab.hidden = !readable;
+    if (!readable) {
+      tabs.hidden = true;
+      show('yaml');
+      return;
+    }
     show('form');
     if (typeof h.rigSchema === 'function') {
       h.rigSchema().then((answer) => {
@@ -1290,7 +1302,9 @@
     head.append(el('h3', 'm-preview-title', `${config.name}: history`),
       button('Close', 'quiet', () => where.replaceChildren()));
     box.append(head);
-    const saves = [...(history.saves || [])].reverse();
+    // Newest first, whatever order the answer lists them in.
+    const newest = (a, b) => String(b.at || '').localeCompare(String(a.at || ''));
+    const saves = [...(history.saves || [])].sort(newest);
     if (saves.length) {
       const wrap = el('div', 'm-table-wrap');
       const table = el('table', 'm-table');
@@ -1309,7 +1323,7 @@
       box.append(el('p', 'm-unknown', 'No saves recorded yet.'));
     }
     const viewer = el('div');
-    const versions = [...(history.versions || [])].reverse();
+    const versions = [...(history.versions || [])].sort(newest);
     if (versions.length) {
       box.append(el('h4', 'mrc-subtitle', 'Earlier versions'));
       const list = el('ul', 'mrc-versions');
