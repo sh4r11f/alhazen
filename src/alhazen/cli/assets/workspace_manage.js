@@ -934,22 +934,15 @@
   function migrationNote(rigs) {
     const migrated = rigs.migrated;
     if (!migrated) return null;
+    // Dismissed once, per machine, in this browser (as the sidebar's state is).
     const key = `alhazen-mrc-migrated:${rigs.machine?.id || ''}`;
-    try {
-      if (localStorage.getItem(key)) return null;
-    } catch (e) {
-      console.warn(`Could not read ${key}: ${e.message}`);
-    }
+    if (localStorage.getItem(key)) return null;
     const config = (rigs.configs || []).find((c) => c.id === migrated.config);
     const box = message('note', `Your rig from ${migrated.from || '3.5.0'} is now the config `
       + `${config?.name || migrated.config}${config?.default ? ', the default' : ''}. Nothing in its `
       + 'file was moved or rewritten.');
     box.append(button('Dismiss', 'quiet m-small', () => {
-      try {
-        localStorage.setItem(key, '1');
-      } catch (e) {
-        console.warn(`Could not remember ${key}: ${e.message}`);
-      }
+      localStorage.setItem(key, '1');
       box.remove();
     }));
     return box;
