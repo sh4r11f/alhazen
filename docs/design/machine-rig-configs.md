@@ -91,7 +91,7 @@ All answers JSON; errors as today (`{"error": "..."}` with 400/409).
 
 `Rigs`:
 ```json
-{"machine": {"id": "mc_…", "label": "RazerBlade"},
+{"machine": {"id": "mc_…", "label": "Booth 2"},
  "default": "<id>|null",
  "configs": [Config],
  "sync": {"connected": true, "state": "synced|offline|not-connected|unsupported|error",
@@ -138,7 +138,7 @@ machine token, or a local platform's `#token=`).
 ### Machine record (JSON; the same shape on every host)
 
 ```json
-{"schema": 1, "id": "mc_…", "label": "RazerBlade", "alhazen": "3.6.0",
+{"schema": 1, "id": "mc_…", "label": "Booth 2", "alhazen": "3.6.0",
  "seenAt": <ms of the last sync from the machine>, "token": "<platform machine-token id>|null",
  "default": "<config id>|null", "defaultRev": <int>, "defaultBy": "machine|platform",
  "rigSchema": "<RigConfig JSON schema, as JSON text>|null", "rigSchemaSha": "<sha>|null",
