@@ -109,11 +109,27 @@ alhazen platform serve --config /etc/alhazen-platform.toml
   `alhazen platform refresh --store /srv/alhazen-platform --config sources.toml --publisher <uid> --publisher-name "Lab"`
   (`alhazen platform users list` shows uids). Users publish their own copies from the web
   app under their own accounts.
+- Who sees a listing (3.7): Everyone (`public`, the default), Specific people (`people`, a
+  list of account uids) or Only you (`private`). Publishers choose it in the web app; a
+  listing nobody may see answers 404 to everyone else, for its documentation, files and
+  copying too. An operator can read or set it:
+
+  ```
+  alhazen platform access <publisher uid> <exp> --config /etc/alhazen-platform.toml
+  alhazen platform access <publisher uid> <exp> --config FILE --visibility people --people <uid>,<uid>
+  alhazen platform access <publisher uid> <exp> --store DIR --visibility private
+  ```
+
+  `--people` names existing, enabled accounts (`users list` shows their uids), at most 200.
+  A refresh never changes an existing listing's access; a listing a refresh creates takes
+  `--visibility private|people|public` (default `public`; `people` needs `--people`). A
+  local store has no accounts, so its listings are private or public only.
 
 ## Refresh and the release gate
 
 ```
-alhazen platform refresh --store DIR --config sources.toml [--alhazen-repo PATH]
+alhazen platform refresh --store DIR --config sources.toml [--alhazen-repo PATH] \
+    [--visibility private|people|public [--people UID,...]]   # only for new listings
 alhazen platform check --store DIR --config sources.toml
 ```
 

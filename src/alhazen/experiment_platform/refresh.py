@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from alhazen.experiment_platform import access as access_rules
 from alhazen.experiment_platform import catalog, sources
 from alhazen.experiment_platform.errors import InvalidRequest, PlatformError, SourceError
 from alhazen.experiment_platform.store import FileStore
@@ -195,15 +196,24 @@ def refresh(
     alhazen_repo: Path | None = None,
     force_docs_ref_check: bool = True,
     now_ms: int | None = None,
+    access: Mapping[str, Any] | None = None,
 ) -> list[RefreshResult]:
     """Refresh every source; one failure does not stop the others (it is raised after
-    the rest, naming each failed experiment)."""
+    the rest, naming each failed experiment). ``access`` is who can see a listing this
+    refresh creates (default public); an existing listing keeps its own (section 5a)."""
     results: list[RefreshResult] = []
     failures: list[str] = []
     for spec in specs:
         try:
             results.append(
-                refresh_one(store, spec, publisher, alhazen_repo=alhazen_repo, now_ms=now_ms)
+                refresh_one(
+                    store,
+                    spec,
+                    publisher,
+                    alhazen_repo=alhazen_repo,
+                    now_ms=now_ms,
+                    access=access,
+                )
             )
         except PlatformError as error:
             where = spec.subdir or spec.repo.name
@@ -220,7 +230,14 @@ def refresh_one(
     *,
     alhazen_repo: Path | None = None,
     now_ms: int | None = None,
+    access: Mapping[str, Any] | None = None,
 ) -> RefreshResult:
+    pub_uid = str(publisher.get("uid", ""))
+    new_access = (
+        access_rules.normalize(access, pub_uid)
+        if access is not None
+        else access_rules.PUBLIC_ACCESS
+    )
     tree = sources.read_tree(spec.repo, spec.ref, spec.subdir)
     docs_tree = sources.read_tree(spec.repo, spec.docs_ref, spec.subdir) if spec.docs_ref else None
     label = spec.repo_label or repo_label_of(spec.repo)
@@ -300,6 +317,9 @@ def refresh_one(
             (current or {}).get("publishedAt") or listing.get("publishedAt") or t
         )
         listing["updatedAt"] = t
+        # Who sees it never changes on a refresh: an existing listing keeps its access
+        # (stored explicitly from 3.7 on), a new one takes the refresh's.
+        listing["access"] = dict(access_rules.of(current) if current else new_access)
         store.put_listing(pub, built.exp, listing)
         return RefreshResult(
             built.exp,
