@@ -25,7 +25,7 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.7.0 - 2026-10-21
 
 - **Who can see an experiment (platform, server side).** A listing carries `access`:
   Only you (`private`), Specific people (`people`, account ids) or Everyone (`public`; a
@@ -39,6 +39,15 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   listing's access; a new one takes `--visibility`/`--people` (default public).
   `alhazen platform users list` now shows uids. Design: docs/experiment-platform/design.md
   section 5a.
+
+- **Who can see an experiment (web app and Mana).** Listings that are not public carry a badge
+  (Only you, Shared, Shared with you); the publisher's sheet shows who can see it with a
+  Change button (Access dialog with a people picker); publishing a copy asks who can see it
+  first; My experiments shows Not on the marketplace, Shared with you and a collapsed On the
+  marketplace list; Browse has a Visible to filter; Home's sections show public listings plus
+  Shared with you. On Mana, a listing that is not public lives in its publisher's own
+  workspace with a read grant per person, because the hub is readable by everyone it is
+  shared with.
 
 ## 3.6.0 - 2026-10-21
 
