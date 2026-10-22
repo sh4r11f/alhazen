@@ -25,6 +25,17 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+
+## Unreleased
+
+- **Experiment Platform on Mana: bundle files in Storage.** A bundle's files (source and
+  stimulus images) are kept in Firebase Storage and only its metadata stays in the Mana
+  workspace, which every device loads when it opens Mana; bundles there had made the owner's
+  workspace too large to open on a phone. Public bundles sit under the hub's `bundles` storage
+  grant, private ones (copies, non-public listings) in their owner's own Storage. Older bundles
+  are still read, and move to Storage whenever they are copied, moved or published. Design:
+  `docs/experiment-platform/design.md`, section 5a (*Bundle files are in Firebase Storage*).
+
 ## 3.7.1 - 2026-10-21
 
 - **Open dashboard on a machine (Mana).** My machines has an *Open dashboard* button on each
