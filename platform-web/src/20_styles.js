@@ -504,6 +504,7 @@ const CSS = `
 /* [3.8] My machines / Machines: rig configs folded into the machine rows, edited in a Configure window. */
 .eh-machine-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .eh-machine-rigs{margin-top:4px}
+.eh-machine-dash{margin-top:6px}
 .eh-cfg-scrim{z-index:31}
 .eh-dialog.eh-cfg-window{width:min(900px,calc(100% - 32px));padding:0;margin-top:40px}
 .eh-cfg-window:focus,.eh-cfg-window:focus-visible{outline:none}

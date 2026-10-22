@@ -174,6 +174,22 @@ function dashboardPrompt({ jobId, kitPath, minePath, machine, machineLabel }) {
   ].join('\n');
 }
 
+function shutdownPrompt({ jobId, kitPath, minePath, machine, machineLabel }) {
+  return [
+    '[Alhazen Experiment Platform · shut down the dashboard]',
+    'Goal: shut down Mana\'s alhazen dashboard on my machine' + (machineLabel ? ' ' + machineLabel : '') + ', and mark what was open there closed on the platform (job ' + jobId + ' at ' + minePath + '/dashboards/' + jobId + ').',
+    '',
+    '1. Load the kit in Python:\n```python\n' + kitLoader(kitPath) + '\n```',
+    '2. Mana Terminal must be installed in this Mana (`/workspace/mana_terminal.py`). If it is not, call `hubkit.set_dashboard_job("' + jobId + '", {"status": "failed", "summary": "Mana Terminal is not installed. Install it from the marketplace, pair your machine, then try again."})` and stop.',
+    '3. `from mana_terminal import terms` (add /workspace to sys.path). If no window is open, set the job to status "waiting" with summary "Open a terminal on your machine and type mana, then press Shut down again." and stop.',
+    '4. `res = hubkit.shutdown_dashboard(machine=' + (machine ? JSON.stringify(machine) : 'None') + ', log=print, job_id="' + jobId + '")`. It stops the dashboard, marks every run and dashboard job still open on that machine closed and finishes this job itself.',
+    '5. If it raises hubkit.DashboardBusy, a session is running there: the kit has already set this job to "waiting" with that message. Tell me in one sentence and stop; do not stop the session.',
+    '6. A refusal in the terminal (TermDenied) is final: call `hubkit.set_dashboard_job("' + jobId + '", {"status": "stopped", "summary": "<one plain sentence: the step was declined in the terminal, nothing was stopped>"})` and do not retry.',
+    '7. Any other error: read it, fix what can be fixed on the machine through the terminal (I approve each change) and retry once; otherwise set the job to status "failed" with what went wrong.',
+    'Nothing here writes to GitHub or to the shared hub.',
+  ].join('\n');
+}
+
 function UserDiv() {
   const HUB = (relPathAddress('published') || '').replace(/\/published$/, '') || null;
   const KIT = relPathAddress('kit', 'hubkit', 'code');
@@ -418,6 +434,20 @@ function UserDiv() {
     return jobId;
   }
 
+  // [3.8] My machines > Shut down: stop Mana's dashboard on a machine from the platform. The job lives at
+  // MINE/dashboards/<jobId> (kind "shutdown"); the kit's shutdown_dashboard stops the dashboard (refused
+  // while a session runs), marks the jobs still open on that machine closed and finishes this one.
+  async function shutdownDashboard(machine, machineLabel) {
+    const upd = {}; await ensureMine(upd, ['dashboards']);
+    if (Object.keys(upd).length) await FS.update(FS.ref(FS.db, MINE), upd, false);
+    const chatId = await mana.mintChatId();
+    const jobId = String(Date.now());
+    const t = Date.now();
+    await FS.update(FS.ref(FS.db, MINE + '/dashboards/' + jobId), { kind: 'shutdown', chatId, status: 'running', startedAt: t, updatedAt: t, machine: machine || '', machineLabel: machineLabel || '' }, false);
+    await mana.ask(chatId, shutdownPrompt({ jobId, kitPath: KIT, minePath: MINE, machine, machineLabel }), undefined, undefined, undefined, undefined, true);
+    return jobId;
+  }
+
   // One owner change to a machine record: read it fresh, apply the rule, write only what changed.
   async function changeRig(mid, rule, cid) {
     const path = MINE + '/machines/' + rigCheckMachineId(mid);
@@ -435,7 +465,7 @@ function UserDiv() {
     viewer,
     capabilities: { fork: true, publish: true, changeWithMana: true, runOnMachines: true, newWithMana: true,
       uploadRevision: false, downloadRevision: false, machines: true, signIn: false, themeToggle: false, rigConfigs: !!userId,
-      shareWithPeople: !!userId, notifyPeople: !!userId, openDashboard: !!userId },
+      shareWithPeople: !!userId, notifyPeople: !!userId, openDashboard: !!userId, shutdownDashboard: !!userId },
     art,
     fontStylesheet: MANA_FONT_STYLESHEET,
     extraCss: '',
@@ -522,6 +552,7 @@ function UserDiv() {
       return FS.onValue(FS.ref(FS.db, MINE + '/dashboards'), (s) => cb(s.val()), onError);
     },
     openDashboard,
+    shutdownDashboard,
     subscribeMachines(cb, onError) {
       if (!userId) return;
       return FS.onValue(FS.ref(FS.db, `${userId}/file-system/Apps/mana-terminal/app/data`), (s) => cb(s.val()), onError);

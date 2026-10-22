@@ -561,6 +561,12 @@ function PlatformApp({ host }) {
     const m = { running: ['st-warn', 'Working'], done: ['st-ok', 'Done'], waiting: ['st-warn', 'Needs you'], failed: ['st-bad', 'Failed'], stopped: ['st-idle', 'Stopped'] }[st] || ['st-idle', st || '—'];
     return <span className={'status ' + m[0]}>{m[1]}</span>;
   }
+  // A job's chip: Open / Closed for a job that opened a dashboard, else its status.
+  function jobChip(j) {
+    const d = dashJobChip(j);
+    return d ? <span className={'status ' + d.tone} title={d.words === 'Open' ? 'Last known state: the dashboard has not reported that it closed.' : undefined}>{d.words}</span> : statusChip(j.status);
+  }
+  const dashUrlShown = (j) => !!j.url && dashJobState(j) === 'open';
 
   function machinesPanel(compact) {
     const online = machines.sessions;
@@ -640,6 +646,31 @@ function PlatformApp({ host }) {
     );
   }
 
+  // [3.8] A machine row's dashboard, from its newest run or dashboard job (machineDashboard): the last
+  // known state, so an open one says the machine has not reported it closed.
+  function dashLine(d) {
+    if (!d) return null;
+    const chip = d.state === 'open' ? ['st-ok', 'Dashboard open since ' + ago(d.at), 'Last known state: the machine has not reported that it closed.']
+      : d.state === 'closed' ? ['st-idle', 'Dashboard closed ' + ago(d.at), (d.job.closedBy && d.job.closedBy.reason) || '']
+      : d.state === 'stopping' ? ['st-warn', 'Shutting down the dashboard', '']
+      : ['st-warn', 'Starting the dashboard', ''];
+    return <div className="row-sub eh-machine-dash"><span className={'status ' + chip[0]} title={chip[2] || undefined}>{chip[1]}</span></div>;
+  }
+  // Shut down for a machine whose dashboard reads open; it needs an open terminal window there.
+  function shutdownButton(row, d) {
+    if (!caps.shutdownDashboard || !d || d.state !== 'open') return null;
+    const win = row.wins && row.wins[0];
+    return <button className="btn btn-line btn-small" disabled={!win || !!busy} title={win ? 'Shut down the alhazen dashboard on ' + row.label : 'Open a terminal on ' + row.label + ' and type mana first'}
+      onClick={() => setDialog({ kind: 'shutdown', label: row.label, win })}>Shut down</button>;
+  }
+  async function shutdownDashboard(win, label) {
+    try {
+      setBusy('Asking Mana');
+      await host.shutdownDashboard(win ? win.id : '', label);
+      setBusy('');
+      setFlash({ kind: 'ok', text: 'Mana is shutting down the dashboard on ' + (label || 'your machine') + '. Approve each step in the terminal there.' });
+    } catch (e) { setBusy(''); setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); }
+  }
   // A row's rig config line and Configure button (caps.rigConfigs): folded into the machine rows, so
   // the page has one list of machines.
   function rigRowLine(rigs) {
@@ -668,12 +699,13 @@ function PlatformApp({ host }) {
   const openTerminalApp = () => host.openTerminalApp();
   function Machines() {
     const online = machines.sessions;
-    const sessionLabel = (id) => { const s = online.find((x) => x.id === id); if (!s) return id; const dv = machines.devices.find((x) => x.id === s.device) || {}; return dv.label || dv.host || s.device; };
     const runs = [];
     for (const f of forkList) for (const [id, j] of Object.entries(f.jobs || {})) if (j && j.kind === 'run') runs.push({ ...j, id, fork: f });
-    for (const [id, j] of Object.entries(dashJobs || {})) if (id !== 'metadata' && j && j.kind === 'dashboard') runs.push({ ...j, id });
+    for (const [id, j] of Object.entries(dashJobs || {})) if (id !== 'metadata' && j && (j.kind === 'dashboard' || j.kind === 'shutdown')) runs.push({ ...j, id });
     runs.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
     const rows = rigMatch.rows;
+    const jobLabel = (j) => jobMachineLabel(j, online, machines.devices);
+    const rowFor = (label) => rows.find((r) => machineLabelKey(r.label) === machineLabelKey(label)) || null;
     const extra = caps.rigConfigs && rigMatch.unmatched.length ? unmatchedRigRows('Not paired with Mana Terminal', true) : null;
     return (
       <>
@@ -692,11 +724,13 @@ function PlatformApp({ host }) {
                     <div className="row-sub">{[dv.os, dv.user ? 'user ' + dv.user : '', dv.pairedAt ? 'paired ' + ago(dv.pairedAt) : ''].filter(Boolean).join(' · ')}</div>
                     {wins.map((s) => <div key={s.id} className="row-sub eh-machine-win"><span className="mono">{s.shell || 'shell'}</span> · <span className="mono">{s.cwd || s.tty || s.id}</span>{s.startedAt ? ' · opened ' + ago(s.startedAt) : ''}</div>)}
                     {rigRowLine(row.rigs)}
+                    {dashLine(machineDashboard(runs, row.label, online, machines.devices))}
                   </div>
                   {wins.length ? <span className="status st-ok">{wins.length} window{wins.length === 1 ? '' : 's'} open</span> : <span className="status st-idle">{dv.lastSeen ? 'Seen ' + ago(dv.lastSeen) : 'Offline'}</span>}
                   <div className="eh-machine-actions">
                     {configureButton({ dev: row.key }, row.label)}
                     {caps.openDashboard ? <button className="btn btn-primary btn-small" disabled={!wins.length || !!busy} title={wins.length ? 'Open the alhazen dashboard on ' + row.label : 'Open a terminal on this machine and type mana first'} onClick={() => openDashboard(dv, wins[0])}>Open dashboard</button> : null}
+                    {shutdownButton(row, machineDashboard(runs, row.label, online, machines.devices))}
                   </div>
                 </div>);
             })}
@@ -710,10 +744,11 @@ function PlatformApp({ host }) {
         {forks === null ? <p className="eh-muted">Loading…</p> : runs.length ? <div className="list">
           {runs.slice(0, 30).map((j) => (
             <div key={(j.fork ? j.fork.id : 'dashboard') + '~' + j.id} className="row eh-run-row">
-              <div className="row-main"><div className="row-title">{j.fork ? j.fork.title : 'Dashboard'} <span className="eh-muted" style={{ fontWeight: 500 }}>on {j.machine ? sessionLabel(j.machine) : (j.machineLabel || 'my machine')}{j.rigConfig ? ' with ' + j.rigConfig : ''}</span></div>
-                <div className="row-sub">{j.summary || (j.status === 'running' ? 'Mana is working on it.' : '')}{j.url ? <> · Dashboard: <span className="mono">{j.url.split('#')[0]}</span></> : null}</div>
-                <div className="row-sub">Started {ago(j.startedAt)}{j.updatedAt && j.status !== 'running' ? ' · updated ' + ago(j.updatedAt) : ''}</div></div>
-              {statusChip(j.status)}
+              <div className="row-main"><div className="row-title">{j.kind === 'shutdown' ? 'Shut down' : j.fork ? j.fork.title : 'Dashboard'} <span className="eh-muted" style={{ fontWeight: 500 }}>on {jobLabel(j) || 'my machine'}{j.rigConfig ? ' with ' + j.rigConfig : ''}</span></div>
+                <div className="row-sub">{j.summary || (j.status === 'running' ? 'Mana is working on it.' : '')}{dashUrlShown(j) ? <> · Dashboard: <span className="mono">{j.url.split('#')[0]}</span></> : null}</div>
+                <div className="row-sub">Started {ago(j.startedAt)}{j.closedAt ? ' · closed ' + ago(j.closedAt) : j.updatedAt && j.status !== 'running' ? ' · updated ' + ago(j.updatedAt) : ''}</div></div>
+              {jobChip(j)}
+              {dashJobState(j) === 'open' ? shutdownButton(rowFor(jobLabel(j)) || { label: jobLabel(j), wins: [] }, { state: 'open' }) : null}
               {j.fork ? <button className="btn btn-line btn-small" onClick={() => go({ v: 'fork', id: j.fork.id, tab: 'run' })}>Open</button> : null}
               {j.chatId ? <button className="btn btn-quiet btn-small" onClick={() => showChat(j.chatId)}>Chat</button> : null}
             </div>))}
@@ -738,9 +773,9 @@ function PlatformApp({ host }) {
     const jobRow = (j) => (
       <div key={j.id} className="row">
         <div className="row-main"><div className="row-title">{j.kind === 'run' ? 'Run on ' + (j.machine || 'my machine') + (j.rigConfig ? ' with ' + j.rigConfig : '') : j.kind === 'create' ? 'Build the experiment' : j.request}</div>
-          <div className="row-sub">{j.summary || (j.status === 'running' ? 'Mana is working on it.' : '')}{j.url ? <> · Dashboard on the rig: <span className="mono">{j.url.split('#')[0]}</span></> : null}{j.dir ? <> · Folder <span className="mono">{j.dir}</span></> : null}</div>
-          <div className="row-sub">Started {ago(j.startedAt)}{j.updatedAt && j.status !== 'running' ? ' · updated ' + ago(j.updatedAt) : ''}</div></div>
-        {statusChip(j.status)}
+          <div className="row-sub">{j.summary || (j.status === 'running' ? 'Mana is working on it.' : '')}{dashUrlShown(j) ? <> · Dashboard on the rig: <span className="mono">{j.url.split('#')[0]}</span></> : null}{j.dir ? <> · Folder <span className="mono">{j.dir}</span></> : null}</div>
+          <div className="row-sub">Started {ago(j.startedAt)}{j.closedAt ? ' · closed ' + ago(j.closedAt) : j.updatedAt && j.status !== 'running' ? ' · updated ' + ago(j.updatedAt) : ''}</div></div>
+        {jobChip(j)}
         <button className="btn btn-line btn-small" onClick={() => showChat(j.chatId)}>Open chat</button>
       </div>);
     // [2026-10-16] A private copy shows the same Overview / Methods / Tasks & parameters / Versions as a
@@ -787,7 +822,7 @@ function PlatformApp({ host }) {
             <div className="panel"><h3>Current revision</h3>
               <dl className="kv"><dt>Saved</dt><dd>{revs[0] ? ago(revs[0].at) : '—'}</dd><dt>Message</dt><dd>{revs[0] ? revs[0].message : 'Not built yet'}</dd>{head ? <><dt>Revision</dt><dd className="mono">{head.id}</dd></> : null}<dt>Alhazen</dt><dd>{f.alhazen || '—'}</dd></dl></div>
             {caps.runOnMachines ? <div className="panel"><h3>Last run</h3>
-              {lastRun ? <dl className="kv"><dt>Status</dt><dd>{statusChip(lastRun.status)}</dd><dt>Started</dt><dd>{ago(lastRun.startedAt)}</dd>{lastRun.dir ? <><dt>Folder</dt><dd className="mono">{lastRun.dir}</dd></> : null}{lastRun.closedAt ? <><dt>Dashboard</dt><dd>Closed {ago(lastRun.closedAt)}{typeof lastRun.sessionsRecorded === 'number' ? ' · ' + lastRun.sessionsRecorded + ' session' + (lastRun.sessionsRecorded === 1 ? '' : 's') : ''}</dd></> : null}</dl> : <p>Not run yet. Run copies this revision to your rig and opens the alhazen dashboard there.</p>}</div>
+              {lastRun ? <dl className="kv"><dt>Status</dt><dd>{jobChip(lastRun)}</dd><dt>Started</dt><dd>{ago(lastRun.startedAt)}</dd>{lastRun.dir ? <><dt>Folder</dt><dd className="mono">{lastRun.dir}</dd></> : null}{lastRun.closedAt ? <><dt>Dashboard</dt><dd>Closed {ago(lastRun.closedAt)}{typeof lastRun.sessionsRecorded === 'number' ? ' · ' + lastRun.sessionsRecorded + ' session' + (lastRun.sessionsRecorded === 1 ? '' : 's') : ''}</dd></> : null}</dl> : <p>Not run yet. Run copies this revision to your rig and opens the alhazen dashboard there.</p>}</div>
               : <div className="panel"><h3>Running it</h3><p>Experiments run on your rig, not here. Download this revision, unpack it there and run the two commands under Run.</p></div>}
           </div>
       {caps.changeWithMana ? <div className="eh-actions"><button className="btn btn-line" disabled={!head} onClick={() => nav('changes')}>Change with Mana</button><button className="btn btn-line" onClick={() => nav('run')}>Runs</button></div>
@@ -893,6 +928,9 @@ function PlatformApp({ host }) {
         <div className="field"><label htmlFor="eh-sl">Licence</label><input id="eh-sl" value={fm.license} onChange={(e) => set('license', e.target.value)} /></div>
         {d.error ? <p className="eh-access-error" role="alert">{d.error}</p> : null}
         <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!fm.title.trim() || !fm.version.trim() || !!busy} onClick={publish}>{d.f.published ? 'Update' : 'Publish'}</button></div></>; }
+    else if (d.kind === 'shutdown') body = <>
+      <h2>Shut down the dashboard on {d.label}?</h2><p>Mana stops the alhazen dashboard there. It refuses while a session is running; stop the session first.</p>
+      <div className="eh-actions"><button className="btn btn-line" autoFocus onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={() => { close(); shutdownDashboard(d.win, d.label); }}>Shut down</button></div></>;
     else if (d.kind === 'unpublish') body = d.listedAs && d.listedAs !== 'public' ? <>
       <h2>Remove the listing?</h2><p>Nobody you shared it with can open it any more. Copies they already made stay theirs, and your copy is unchanged.</p>
       <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" onClick={() => unpublish(d.f, d.listedAs)}>Remove the listing</button></div></> : <>
