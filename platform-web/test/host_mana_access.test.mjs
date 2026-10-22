@@ -359,3 +359,29 @@ test('bundle files: moving a Storage bundle out of the hub copies it to the publ
   await assert.rejects(bob.bundleChunk(base + '/bundles/kde-2', 0), /only the publisher can open them/);
   w.off();
 });
+
+test('publishing an Only-you listing to everyone carries its figure records and guide descriptor back to the hub, and back again', async () => {
+  const s = seed();
+  const hub = s.sharif['file-system'].Apps['alhazen-experiment-platform'].hub;
+  hub['method-figures'] = { kde: { overview: { title: 'Overview', webPath: 'methods/kde/overview.svg' } }, mbri: { overview: { title: 'mbri' } } };
+  hub.kit = { 'method-guides': { descriptors: { kde: { bundleId: 'kde-2', json: '{"tasks": []}' } } } };
+  const db = makeDb(s);
+  const { host } = hostFor(db, OWNER, []);
+  const w = watch(host); await flush();
+  await host.setAccess({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' }, { visibility: 'private' });
+  await flush();
+  assert.equal(db.at(HUB + '/method-figures/kde'), null);
+  assert.equal(db.at(HUB + '/kit/method-guides/descriptors/kde'), null);
+  assert.equal(db.at(MINE('sharif') + '/listings/kde/methodFigures/overview/title'), 'Overview');
+  assert.equal(db.at(MINE('sharif') + '/listings/kde/guideDescriptor/bundleId'), 'kde-2');
+  assert.equal(db.at(HUB + '/method-figures/mbri/overview/title'), 'mbri'); // another listing's records stay
+  await host.setAccess({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' }, { visibility: 'public', people: [] });
+  await flush();
+  assert.deepEqual(db.at(HUB + '/published/sharif/kde/access'), { visibility: 'public' });
+  assert.equal(db.at(HUB + '/method-figures/kde/overview/webPath'), 'methods/kde/overview.svg');
+  assert.equal(db.at(HUB + '/kit/method-guides/descriptors/kde/json'), '{"tasks": []}');
+  assert.equal(db.at(HUB + '/docs/sharif/kde/readme'), '# kde');
+  assert.equal(db.at(MINE('sharif') + '/listings/kde'), null);
+  assert.equal(w.state.listings.sharif.kde._base, undefined);
+  w.off();
+});

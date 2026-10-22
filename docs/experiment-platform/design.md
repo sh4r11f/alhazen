@@ -267,7 +267,15 @@ collapsed *On the marketplace* list of your public listings. Browse is the marke
 shows public listings only, for every viewer including the publisher (`marketplaceListings`);
 private listings and listings shared with specific people are reached from My experiments, never
 Browse. Home's sections show public listings only, plus a *Shared with you* section when there
-is one. (Until 3.8.5 Browse showed everything the viewer could see, with a "Visible to" filter;
+is one.
+A listing that is not public offers **Publish to the marketplace** directly: a Publish button on
+its *Not on the marketplace* row and a link beside Change on its listing sheet. Both open a
+confirmation that says what it means (in Browse for everyone; methods, source files and every
+recorded version readable and forkable; copies made meanwhile stay their owners') and then make the
+same access change as Change > Everyone. On Mana that move also carries the catalogue builder's
+records for the listing (`method-figures/<exp>` and `kit/method-guides/descriptors/<exp>` in the
+hub, `methodFigures` and `guideDescriptor` beside a non-public listing) in both directions, when the
+mover may write them (the hub owner); before 3.8.6 a move dropped them. (Until 3.8.5 Browse showed everything the viewer could see, with a "Visible to" filter;
 that put a publisher's private research experiments on their marketplace page.)
 
 Host interface additions: `host.setAccess(listing, {visibility, people, notify})` resolving to
