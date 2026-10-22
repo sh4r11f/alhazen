@@ -130,6 +130,14 @@ function machineDashboard(jobs, label, sessions, devices) {
   const j = best.job;
   return { ...best, at: best.state === 'closed' ? j.closedAt : best.state === 'open' ? (j.updatedAt || j.startedAt) : j.startedAt };
 }
+// A job whose step is held by Mana Terminal for the person's yes (hubkit marks it as
+// waiting: {for: 'terminal', machine, what, since}); null otherwise, and once the job has ended.
+function terminalWait(job) {
+  const w = job && job.waiting;
+  if (!w || w.for !== 'terminal') return null;
+  if (job.status && job.status !== 'running' && job.status !== 'queued') return null;
+  return { machine: w.machine || 'your machine', what: w.what || '' };
+}
 // The chip of a job that opened a dashboard (it has a url): Open until it is reported closed, then
 // Closed. Null for other jobs, which keep their status chip.
 function dashJobChip(job) {

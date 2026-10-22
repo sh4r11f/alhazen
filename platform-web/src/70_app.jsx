@@ -173,7 +173,7 @@ function PlatformApp({ host }) {
       setBusy('Asking Mana');
       await host.openDashboard(win ? win.id : '', label);
       setBusy('');
-      setFlash({ kind: 'ok', text: 'Mana is opening the dashboard on ' + (label || 'your machine') + '. Approve each step in the terminal there.' });
+      setFlash({ kind: 'ok', text: 'Mana is opening the dashboard on ' + (label || 'your machine') + '. When Mana Terminal there asks for confirmation, answer it in that window.' });
     } catch (e) { setBusy(''); setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); }
   }
 
@@ -562,7 +562,11 @@ function PlatformApp({ host }) {
     return <span className={'status ' + m[0]}>{m[1]}</span>;
   }
   // A job's chip: Open / Closed for a job that opened a dashboard, else its status.
+  // Held by Mana Terminal for a yes: say where to answer, not just "running".
+  const waitChip = (w) => <span className="status st-warn" title={'Answer the request in the Mana Terminal window on ' + w.machine + (w.what ? ': ' + w.what : '')}>Waiting for confirmation in Mana Terminal</span>;
   function jobChip(j) {
+    const w = terminalWait(j);
+    if (w) return waitChip(w);
     const d = dashJobChip(j);
     return d ? <span className={'status ' + d.tone} title={d.words === 'Open' ? 'Last known state: the dashboard has not reported that it closed.' : undefined}>{d.words}</span> : statusChip(j.status);
   }
@@ -650,6 +654,8 @@ function PlatformApp({ host }) {
   // known state, so an open one says the machine has not reported it closed.
   function dashLine(d) {
     if (!d) return null;
+    const w = terminalWait(d.job);
+    if (w) return <div className="row-sub eh-machine-dash">{waitChip(w)}</div>;
     const chip = d.state === 'open' ? ['st-ok', 'Dashboard open since ' + ago(d.at), 'Last known state: the machine has not reported that it closed.']
       : d.state === 'closed' ? ['st-idle', 'Dashboard closed ' + ago(d.at), (d.job.closedBy && d.job.closedBy.reason) || '']
       : d.state === 'stopping' ? ['st-warn', 'Shutting down the dashboard', '']
@@ -668,7 +674,7 @@ function PlatformApp({ host }) {
       setBusy('Asking Mana');
       await host.shutdownDashboard(win ? win.id : '', label);
       setBusy('');
-      setFlash({ kind: 'ok', text: 'Mana is shutting down the dashboard on ' + (label || 'your machine') + '. Approve each step in the terminal there.' });
+      setFlash({ kind: 'ok', text: 'Mana is shutting down the dashboard on ' + (label || 'your machine') + '. When Mana Terminal there asks for confirmation, answer it in that window.' });
     } catch (e) { setBusy(''); setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); }
   }
   // A row's rig config line and Configure button (caps.rigConfigs): folded into the machine rows, so
@@ -902,7 +908,7 @@ function PlatformApp({ host }) {
       <div className="field"><label htmlFor="eh-nd">What should it do?</label><textarea id="eh-nd" value={d.text} onChange={(e) => setDialog({ ...d, text: e.target.value })} placeholder="Task, stimulus, trial structure, what is measured, human or monkey, hardware." /></div>
       <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!d.title.trim() || !d.text.trim()} onClick={async () => { const t = d.title.trim(), x = d.text.trim(); close(); try { await newExperiment(t, x); } catch (e) { setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } }}>Create</button></div></>;
     else if (d.kind === 'run') body = <>
-      <h2>Run on my machine</h2><p>Mana copies {d.f.title} to the rig, builds its environment and opens the alhazen dashboard. Approve each step in the terminal.</p>
+      <h2>Run on my machine</h2><p>Mana copies {d.f.title} to the rig, builds its environment and opens the alhazen dashboard. When Mana Terminal on the machine asks for confirmation, answer it in that window.</p>
       {machines.sessions.length > 1 ? <div className="field"><label htmlFor="eh-m">Terminal window</label><select id="eh-m" value={d.machine} onChange={(e) => setDialog({ ...d, machine: e.target.value })}><option value="">Newest window</option>{machines.sessions.map((s) => { const dv = machines.devices.find((x) => x.id === s.device) || {}; return <option key={s.id} value={s.id}>{(dv.label || s.device) + ' · ' + (s.tty || s.id)}</option>; })}</select></div> : null}
       {caps.rigConfigs ? <RigConfigPicker host={host} deviceLabel={runDeviceLabel(d.machine)} value={d.rigConfig || ''} onChange={(v) => setDialog({ ...d, rigConfig: v })} /> : null}
       <div style={{ marginTop: 14 }}>{machinesPanel(true)}</div>
@@ -929,7 +935,7 @@ function PlatformApp({ host }) {
         {d.error ? <p className="eh-access-error" role="alert">{d.error}</p> : null}
         <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!fm.title.trim() || !fm.version.trim() || !!busy} onClick={publish}>{d.f.published ? 'Update' : 'Publish'}</button></div></>; }
     else if (d.kind === 'shutdown') body = <>
-      <h2>Shut down the dashboard on {d.label}?</h2><p>Mana stops the alhazen dashboard there. It refuses while a session is running; stop the session first.</p>
+      <h2>Shut down the dashboard on {d.label}?</h2><p>Mana stops the alhazen dashboard there. Mana Terminal on {d.label} asks you to confirm it in its window. Mana refuses while a session is running; stop the session first.</p>
       <div className="eh-actions"><button className="btn btn-line" autoFocus onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={() => { close(); shutdownDashboard(d.win, d.label); }}>Shut down</button></div></>;
     else if (d.kind === 'unpublish') body = d.listedAs && d.listedAs !== 'public' ? <>
       <h2>Remove the listing?</h2><p>Nobody you shared it with can open it any more. Copies they already made stay theirs, and your copy is unchanged.</p>

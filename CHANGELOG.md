@@ -26,6 +26,15 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## Unreleased
+
+### Changed
+- **Experiment Platform (Mana): waiting for Mana Terminal is shown.** While Run on my machine, Open
+  dashboard or Shut down waits for your confirmation in Mana Terminal, the machine row and the run
+  say "Waiting for confirmation in Mana Terminal" (the request is in the tooltip) instead of
+  Starting or Shutting down. The prompts and dialogs say where to answer. Platform only: the
+  dashboard and the experiments are unchanged.
+
 ## 3.8.2 - 2026-10-21
 
 ### Changed

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const H = new Function('window', 'URL', 'URLSearchParams', fs.readFileSync(path.join(HERE, '..', 'src', '60_helpers.js'), 'utf8')
-  + '\nreturn { jobMachineLabel, dashJobState, machineDashboard, dashJobChip };')({}, URL, URLSearchParams);
+  + '\nreturn { jobMachineLabel, dashJobState, machineDashboard, dashJobChip, terminalWait };')({}, URL, URLSearchParams);
 
 const devices = [{ id: 'd_rb', label: 'RazerBlade', host: 'razer' }, { id: 'd_mac', host: 'Sharifs-MacBook-Pro.local' }];
 const sessions = [{ id: 's_rb', device: 'd_rb' }, { id: 's_mac', device: 'd_mac' }];
@@ -63,4 +63,13 @@ test('a job that opened a dashboard is Open until it is reported closed', () => 
   assert.equal(H.dashJobChip({ kind: 'run', status: 'done' }), null);
   assert.equal(H.dashJobChip({ kind: 'run', status: 'failed', url: 'u' }), null);
   assert.equal(H.dashJobChip({ kind: 'shutdown', status: 'done', url: 'u' }), null);
+});
+
+test('a job held by Mana Terminal for a yes says so until it ends', () => {
+  const w = { for: 'terminal', machine: 'RazerBlade', what: 'Shut down the alhazen dashboard', since: 1 };
+  assert.deepEqual(H.terminalWait({ kind: 'shutdown', status: 'running', waiting: w }), { machine: 'RazerBlade', what: 'Shut down the alhazen dashboard' });
+  assert.deepEqual(H.terminalWait({ kind: 'run', status: 'running', waiting: { for: 'terminal' } }), { machine: 'your machine', what: '' });
+  assert.equal(H.terminalWait({ kind: 'shutdown', status: 'done', waiting: w }), null);
+  assert.equal(H.terminalWait({ kind: 'run', status: 'running', waiting: null }), null);
+  assert.equal(H.terminalWait({ kind: 'run', status: 'running', waiting: { for: 'other' } }), null);
 });
