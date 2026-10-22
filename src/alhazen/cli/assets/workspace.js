@@ -2634,6 +2634,7 @@ function renderNav() {
   pill.hidden = !owner;
   if (owner) {
     pill.href = addressOf(owner.id, 'run');
+    pill.title = `Running · ${titleOf(owner)}`;
     pill.replaceChildren(
       node('span', 'nav-running-lamp'),
       node('span', 'nav-running-text', `Running · ${titleOf(owner)}`),
@@ -2693,6 +2694,7 @@ function navGroup(x, index, open, shown, owner) {
     item.dataset.view = name;
     item.dataset.navKey = `${name}:${x.id}`;
     item.setAttribute('aria-current', selected ? 'page' : 'false');
+    item.title = text;
     item.append(node('span', 'nav-glyph', VIEW_GLYPHS[name]), node('span', 'nav-label', text));
     if (name === 'run' && owner?.id === x.id) item.append(node('span', 'nav-lamp', ''));
     pages.append(item);
@@ -3284,6 +3286,35 @@ function rememberedTheme() {
   return 'light';
 }
 
+const SIDEBAR_KEY = 'alhazen-workspace-sidebar';
+const SIDEBAR_STATES = ['open', 'closed'];
+
+/** Open or close the sidebar (the toggle beside the logo). The reader's
+ *  choice, remembered in localStorage; the window's width never changes it.
+ *  Below 861 px the sidebar is a band above the page whatever this says. */
+function setSidebar(choice, remember = true) {
+  if (!SIDEBAR_STATES.includes(choice)) throw new Error(`Unknown sidebar state: ${choice}`);
+  document.documentElement.dataset.sidebar = choice;
+  const toggle = $('sidebar-toggle');
+  const open = choice === 'open';
+  const words = open ? 'Close the sidebar' : 'Open the sidebar';
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.setAttribute('aria-label', words);
+  toggle.title = words;
+  if (remember) localStorage.setItem(SIDEBAR_KEY, choice);
+}
+
+/** The sidebar state remembered from the last visit. With none yet: open on
+ *  a window wide enough for it (1500 px and up, where it always was), closed
+ *  otherwise, as before the choice existed; nothing is stored until the
+ *  reader chooses. An unknown stored value is reported and not applied. */
+function rememberedSidebar() {
+  const stored = localStorage.getItem(SIDEBAR_KEY);
+  if (SIDEBAR_STATES.includes(stored)) return stored;
+  if (stored !== null) console.warn(`Ignoring the unknown sidebar state ${JSON.stringify(stored)}`);
+  return window.matchMedia?.('(min-width: 1500px)').matches ? 'open' : 'closed';
+}
+
 /* ------------------------------------------------------------------ */
 /* Wiring                                                              */
 /* ------------------------------------------------------------------ */
@@ -3293,6 +3324,11 @@ setTheme(rememberedTheme(), false);
 for (const name of THEMES) {
   $(`theme-${name}`).addEventListener('click', () => setTheme(name));
 }
+// The sidebar, open or closed as the reader last left it.
+setSidebar(rememberedSidebar(), false);
+$('sidebar-toggle').addEventListener('click', () => {
+  setSidebar(document.documentElement.dataset.sidebar === 'open' ? 'closed' : 'open');
+});
 
 $('add-project').addEventListener('click', () => openProject());
 $('empty-add').addEventListener('click', () => openProject());

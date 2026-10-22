@@ -26,6 +26,20 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## Unreleased
+
+### Changed
+- **Dashboard: the sidebar opens and closes when you say so.** A toggle beside the logo opens
+  the sidebar (labels, 248 px) or closes it to an icon rail (64 px), and the dashboard remembers
+  the choice. The window's width no longer decides it and the closed rail no longer opens on
+  hover; until you choose, it starts open on windows 1500 px and wider, closed otherwise, as
+  before. Phones keep the band above the page. Closed-rail icons have their page names as
+  tooltips.
+
+### Fixed
+- **Dashboard: long experiment names in the sidebar** wrap instead of running off the
+  "Running ·" pill or under the experiment's running lamp.
+
 ## 3.8.1 - 2026-10-21
 
 ### Fixed

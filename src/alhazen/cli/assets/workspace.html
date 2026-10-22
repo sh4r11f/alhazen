@@ -84,32 +84,42 @@
        The <aside> is a full-height column with the background; its inner
        box sticks to the top of the window while the page scrolls. -->
   <aside class="sidebar">
-    <div class="sidebar-inner">
-      <a class="brand" href="/" aria-label="Alhazen home">
-        <!-- The Alhazen mark: ink in currentColor, the face in the accent
-             (.mark-ink, .mark-face in workspace.css). -->
-        <svg class="brandmark" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
-          <!-- LOGO-START: the same in workspace.html and favicon.svg (a test
-       compares them). The Penrose "impossible A" (hub/assets/icon.svg): the
-       ink faces, then the accent face. -->
-  <path class="mark-ink" d="M7.83 56.61L11.81 49.72L11.98 49.52L12.21 49.35L12.38 49.28L12.64 49.24L20.6 49.24L16.62 42.35L16.55 42.2L16.51 42.01L16.5 41.82L16.53 41.64L16.62 41.39L26.31 24.61L26.49 24.39L26.73 24.23L26.92 24.16L27.12 24.13L27.41 24.16L27.6 24.23L27.77 24.33L27.92 24.47L28.02 24.61L37.41 40.87L44.77 40.87L27.17 10.39L4.15 50.24ZM55.59 57.61L59.27 51.24L13.24 51.24L9.57 57.61ZM26.59 40.87L30.85 33.5L27.17 27.13L19.23 40.87Z"/>
-  <path class="mark-face" d="M22.91 49.24L59.27 49.24L36.26 9.39L28.9 9.39L47.38 41.39L47.45 41.55L47.49 41.75L47.5 41.95L47.46 42.14L47.34 42.41L47.14 42.64L46.89 42.79L46.7 42.85L46.52 42.87L19.23 42.87Z"/>
-  <!-- LOGO-END -->
-        </svg>
-        <span class="brand-name">Alhazen<small>Experiment workspace</small></span>
-      </a>
+    <div class="sidebar-inner" id="sidebar-inner">
+      <div class="sidebar-head">
+        <a class="brand" href="/" aria-label="Alhazen home">
+          <!-- The Alhazen mark: ink in currentColor, the face in the accent
+               (.mark-ink, .mark-face in workspace.css). -->
+          <svg class="brandmark" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+            <!-- LOGO-START: the same in workspace.html and favicon.svg (a test
+         compares them). The Penrose "impossible A" (hub/assets/icon.svg): the
+         ink faces, then the accent face. -->
+    <path class="mark-ink" d="M7.83 56.61L11.81 49.72L11.98 49.52L12.21 49.35L12.38 49.28L12.64 49.24L20.6 49.24L16.62 42.35L16.55 42.2L16.51 42.01L16.5 41.82L16.53 41.64L16.62 41.39L26.31 24.61L26.49 24.39L26.73 24.23L26.92 24.16L27.12 24.13L27.41 24.16L27.6 24.23L27.77 24.33L27.92 24.47L28.02 24.61L37.41 40.87L44.77 40.87L27.17 10.39L4.15 50.24ZM55.59 57.61L59.27 51.24L13.24 51.24L9.57 57.61ZM26.59 40.87L30.85 33.5L27.17 27.13L19.23 40.87Z"/>
+    <path class="mark-face" d="M22.91 49.24L59.27 49.24L36.26 9.39L28.9 9.39L47.38 41.39L47.45 41.55L47.49 41.75L47.5 41.95L47.46 42.14L47.34 42.41L47.14 42.64L46.89 42.79L46.7 42.85L46.52 42.87L19.23 42.87Z"/>
+    <!-- LOGO-END -->
+          </svg>
+          <span class="brand-name">Alhazen<small>Experiment workspace</small></span>
+        </a>
+        <!-- Open or closed: the reader's choice, remembered (setSidebar() in
+             workspace.js); the window's width no longer decides it. -->
+        <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-controls="sidebar-inner"
+                aria-expanded="true" aria-label="Close the sidebar" title="Close the sidebar">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <rect x="2.5" y="3.5" width="15" height="13" rx="2.5"/><path d="M7.5 3.5v13"/>
+          </svg>
+        </button>
+      </div>
       <!-- The workspace's home, then every registered experiment, each
            expanding to its pages (renderNav() in workspace.js). Each page is
            a link to its address, so Back, Forward, reload and a new tab all
            land on the same screen. -->
       <nav class="nav-global" aria-label="Workspace">
-        <a id="nav-experiments" class="nav-item" href="/?view=experiments">
+        <a id="nav-experiments" class="nav-item" href="/?view=experiments" title="Experiments">
           <span class="nav-glyph" aria-hidden="true">▤</span>
           <span class="nav-label">Experiments</span>
           <span id="project-count" class="nav-count">0</span>
         </a>
         <!-- This machine's rig configs, which every experiment shares. -->
-        <a id="nav-rigs" class="nav-item" href="/?view=rigs">
+        <a id="nav-rigs" class="nav-item" href="/?view=rigs" title="Rigs">
           <span class="nav-glyph" aria-hidden="true">▣</span>
           <span class="nav-label">Rigs</span>
         </a>
