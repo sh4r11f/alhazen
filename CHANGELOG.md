@@ -25,7 +25,7 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 3.7.1 - 2026-10-21
 
 - **Open dashboard on a machine (Mana).** My machines has an *Open dashboard* button on each
   paired machine with a terminal window open: Mana opens its alhazen dashboard there without
