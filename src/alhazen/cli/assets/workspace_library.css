@@ -56,12 +56,9 @@
 .ls-warn, .ls-ask { color: var(--accent); }
 .ls-bad { color: var(--bad-ink); }
 
-/* The rail collapses to icons between 861 and 1499 px and becomes a band
- * below 860 px (workspace_split.css): the library lives on the
- * Experiments page there, as the other experiments' groups do. */
-@media (min-width: 861px) and (max-width: 1499px) {
-  .sidebar-inner:not(:hover):not(:focus-within) .library-nav { display: none; }
-}
+/* With the rail closed (workspace_split.css hides it there) and as a band
+ * below 860 px, the library lives on the Experiments page, as the other
+ * experiments' groups do. */
 @media (max-width: 860px) {
   .library-nav { display: none; }
 }

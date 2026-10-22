@@ -2222,6 +2222,44 @@ describe('the Experiments page', () => {
   });
 });
 
+describe('the sidebar, open or closed', () => {
+  const state = (app) => app.document.documentElement.getAttribute('data-sidebar');
+  const toggle = (app) => app.byId('sidebar-toggle');
+
+  it('opens and closes only from its toggle, and remembers the choice', async () => {
+    const app = await pageWith({ storage: { 'alhazen-workspace-sidebar': 'open' } });
+    assert.equal(state(app), 'open');
+    assert.equal(toggle(app).getAttribute('aria-expanded'), 'true');
+    assert.equal(toggle(app).getAttribute('aria-label'), 'Close the sidebar');
+    toggle(app).fire('click');
+    assert.equal(state(app), 'closed');
+    assert.equal(toggle(app).getAttribute('aria-expanded'), 'false');
+    assert.equal(toggle(app).getAttribute('aria-label'), 'Open the sidebar');
+    assert.equal(app.run("localStorage.getItem('alhazen-workspace-sidebar')"), 'closed');
+    toggle(app).fire('click');
+    assert.equal(state(app), 'open');
+    assert.equal(app.run("localStorage.getItem('alhazen-workspace-sidebar')"), 'open');
+  });
+
+  it('applies a remembered closed sidebar when the page loads', async () => {
+    const app = await pageWith({ storage: { 'alhazen-workspace-sidebar': 'closed' } });
+    assert.equal(state(app), 'closed');
+  });
+
+  it('starts from the window width only while nothing is remembered, and stores nothing', async () => {
+    const app = await pageWith({ storage: { 'alhazen-workspace-sidebar': 'half' } });
+    assert.ok(['open', 'closed'].includes(state(app)));
+    assert.equal(app.run("localStorage.getItem('alhazen-workspace-sidebar')"), 'half');
+  });
+
+  it('no longer opens on hover or by the window width in its stylesheet', () => {
+    const css = readFileSync(new URL('../../src/alhazen/cli/assets/workspace_split.css', import.meta.url), 'utf8');
+    assert.ok(!css.includes(':not(:hover)'), 'the rail must not open on hover');
+    assert.ok(!/min-width:\s*1500px/.test(css), 'the window width must not open the rail');
+    assert.ok(css.includes('html[data-sidebar=closed] .nav-label'));
+  });
+});
+
 describe('the colour theme', () => {
   /** The page's data-theme attribute: null means "follow the system". */
   const theme = (app) => app.document.documentElement.getAttribute('data-theme');
