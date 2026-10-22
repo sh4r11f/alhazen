@@ -26,6 +26,17 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## 3.8.6 - 2026-10-21
+
+### Added
+- **Experiment Platform: Publish to the marketplace.** A listing only you (or people you chose)
+  can see has a Publish button on its My experiments row and a *Publish to the marketplace* link
+  on its listing sheet, with a confirmation that says who will be able to read and fork it.
+
+### Fixed
+- **Mana: moving a listing in or out of the marketplace keeps its figure records and guide
+  descriptor.** They were left behind (hub to private) or deleted (private to hub).
+
 ## 3.8.5 - 2026-10-21
 
 ### Fixed
