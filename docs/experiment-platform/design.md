@@ -317,6 +317,7 @@ host.fork(listing, progress) -> forkId
 host.publish(fork, form), host.unpublish(fork), host.removeFork(fork)
 host.startJob(fork, kind, request, machine), host.newExperiment(title, request)   (Mana)
 host.uploadRevision(fork, file, message), host.archiveUrl(handle)                 (standalone)
+host.openDashboard(window, label), host.subscribeDashboards(cb)                  (Mana)
 host.art {url, encodePath, error}, host.copyText(text), host.useTheme(), host.showChat(id)
 ```
 
@@ -349,6 +350,19 @@ portable builder keep small binaries, so their ids differ from text-only bundles
 overlays must be re-bound after review). AI generation ("Change with Mana", "Fork with
 AI", "New experiment with Mana") and execution on paired machines exist only in the Mana
 host.
+
+**Open dashboard (3.7.1).** My machines has an *Open dashboard* button on each paired machine with
+an open terminal window: Mana's dashboard (`<home>/mana-experiments/.dashboard`) opens there with
+no experiment chosen. It lists the experiments already set up on that machine and, through the
+library connection, every copy in the person's library, which it downloads and sets up on
+request; sessions run in each experiment's own environment, so the dashboard needs only alhazen.
+hubkit's `open_dashboard(machine)` opens an already running dashboard in the machine's browser;
+otherwise it installs the newest alhazen release into `<home>/mana-experiments/.alhazen-dashboard`
+(kept between runs, upgraded when a newer release is asked for), connects the library and starts
+`python -m alhazen dashboard --state-dir ...`. The job is `mine/dashboards/<jobId>` (`kind:
+dashboard`); the library service closes it on the dashboard's closing report like a run job.
+Standalone hosts have no remote execution: a rig opens its dashboard with `alhazen dashboard` and
+reaches the library through a machine token (section 8a).
 
 ## 8a. Rigs: the dashboard's library
 

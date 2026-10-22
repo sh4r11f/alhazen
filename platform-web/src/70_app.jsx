@@ -29,6 +29,8 @@ function PlatformApp({ host }) {
   const [madeToken, setMadeToken] = React.useState(null);
   const [machineName, setMachineName] = React.useState('');
   const [revoking, setRevoking] = React.useState('');
+  // Dashboards opened from My machines without an experiment (Mana: MINE/dashboards).
+  const [dashJobs, setDashJobs] = React.useState(null);
   // Who can see a listing (design.md section 5a): labels of the people a publisher shared with, and
   // share links being resolved (listings the host could not list yet: 'pending' | 'found' | 'missing').
   const [peopleNames, setPeopleNames] = React.useState({});
@@ -39,6 +41,7 @@ function PlatformApp({ host }) {
   React.useEffect(() => host.subscribeAssets((v) => setAssets(v || {})), [host.key]);
   React.useEffect(() => host.subscribeForks((v) => setForks(v || {}), () => setForks({})), [host.key]);
   React.useEffect(() => { if (!caps.machines) return; return host.subscribeMachines((v) => setTermData(v), () => setTermData(null)); }, []);
+  React.useEffect(() => { if (!caps.openDashboard || !host.subscribeDashboards) return; return host.subscribeDashboards((v) => setDashJobs(v || {}), () => setDashJobs({})); }, [host.key]);
   React.useEffect(() => { if (!caps.machineTokens || !host.subscribeMachineTokens) return; return host.subscribeMachineTokens((v) => setMachineTokens(v || { machines: [], events: [] }), () => setMachineTokens(null)); }, [host.key]);
 
   const go = (r, replace) => { const next = { v: r.v || 'home', id: r.id || '', tab: r.tab || '', task:r.task || '', set:r.set || '' }; writeRoute(next, replace); setRoute(next); };
@@ -131,6 +134,17 @@ function PlatformApp({ host }) {
   }
 
   const showChat = (chatId) => host.showChat(chatId);
+
+  // Open Mana's dashboard on a machine with no experiment chosen (its newest open terminal window).
+  async function openDashboard(dv, win) {
+    const label = dv.label || dv.host || '';
+    try {
+      setBusy('Asking Mana');
+      await host.openDashboard(win ? win.id : '', label);
+      setBusy('');
+      setFlash({ kind: 'ok', text: 'Mana is opening the dashboard on ' + (label || 'your machine') + '. Approve each step in the terminal there.' });
+    } catch (e) { setBusy(''); setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); }
+  }
 
   // ------------------------------------------------------------ who can see a listing (design.md section 5a)
   const ownListing = (forkId) => (viewerUid ? listings.find((x) => x.key === viewerUid + '~' + forkId) || null : null);
@@ -602,13 +616,14 @@ function PlatformApp({ host }) {
     const sessionLabel = (id) => { const s = online.find((x) => x.id === id); if (!s) return id; const dv = machines.devices.find((x) => x.id === s.device) || {}; return dv.label || dv.host || s.device; };
     const runs = [];
     for (const f of forkList) for (const [id, j] of Object.entries(f.jobs || {})) if (j && j.kind === 'run') runs.push({ ...j, id, fork: f });
+    for (const [id, j] of Object.entries(dashJobs || {})) if (id !== 'metadata' && j && j.kind === 'dashboard') runs.push({ ...j, id });
     runs.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
     const devices = machines.devices.slice().sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
     return (
       <>
         <div className="eh-sechead eh-machines-head" style={{ marginBottom: 6 }}><h1 style={{ fontSize: 34, fontWeight: 800 }}>My machines</h1>
           {machines.installed ? <button className="btn btn-line" onClick={openTerminalApp}>Pair a machine</button> : null}</div>
-        <p className="eh-muted" style={{ margin: '0 0 24px' }}>The computers paired with Mana Terminal. Run on my machine copies an experiment to one of them, builds its environment and opens the alhazen dashboard there. Session data stays on the machine.</p>
+        <p className="eh-muted" style={{ margin: '0 0 24px' }}>The computers paired with Mana Terminal. Open dashboard starts the alhazen dashboard on one of them, listing the experiments set up there and your library; Run on my machine on a copy does the same with that experiment ready. Session data stays on the machine.</p>
         {termData === undefined ? <p className="eh-muted">Loading…</p>
           : !machines.installed ? <div className="empty"><h3>Mana Terminal is not installed</h3><p>It is what lets Mana copy an experiment to your rig and start it there. Install it, pair the rig once, then type <span className="cmd">mana</span> in a terminal on it.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><a className="btn btn-primary" href={host.links.terminalListing}>Get Mana Terminal</a></div></div>
           : devices.length ? <div className="list">
@@ -622,6 +637,7 @@ function PlatformApp({ host }) {
                     {wins.map((s) => <div key={s.id} className="row-sub eh-machine-win"><span className="mono">{s.shell || 'shell'}</span> · <span className="mono">{s.cwd || s.tty || s.id}</span>{s.startedAt ? ' · opened ' + ago(s.startedAt) : ''}</div>)}
                   </div>
                   {wins.length ? <span className="status st-ok">{wins.length} window{wins.length === 1 ? '' : 's'} open</span> : <span className="status st-idle">{dv.lastSeen ? 'Seen ' + ago(dv.lastSeen) : 'Offline'}</span>}
+                  {caps.openDashboard ? <button className="btn btn-primary btn-small" disabled={!wins.length || !!busy} title={wins.length ? 'Open the alhazen dashboard on ' + (dv.label || dv.host) : 'Open a terminal on this machine and type mana first'} onClick={() => openDashboard(dv, wins[0])}>Open dashboard</button> : null}
                 </div>);
             })}
           </div>
@@ -631,15 +647,15 @@ function PlatformApp({ host }) {
         <div className="eh-sechead" style={{ marginTop: 36 }}><h2 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>Runs</h2></div>
         {forks === null ? <p className="eh-muted">Loading…</p> : runs.length ? <div className="list">
           {runs.slice(0, 30).map((j) => (
-            <div key={j.fork.id + '~' + j.id} className="row eh-run-row">
-              <div className="row-main"><div className="row-title">{j.fork.title} <span className="eh-muted" style={{ fontWeight: 500 }}>on {j.machine ? sessionLabel(j.machine) : 'my machine'}{j.rigConfig ? ' with ' + j.rigConfig : ''}</span></div>
+            <div key={(j.fork ? j.fork.id : 'dashboard') + '~' + j.id} className="row eh-run-row">
+              <div className="row-main"><div className="row-title">{j.fork ? j.fork.title : 'Dashboard'} <span className="eh-muted" style={{ fontWeight: 500 }}>on {j.machine ? sessionLabel(j.machine) : (j.machineLabel || 'my machine')}{j.rigConfig ? ' with ' + j.rigConfig : ''}</span></div>
                 <div className="row-sub">{j.summary || (j.status === 'running' ? 'Mana is working on it.' : '')}{j.url ? <> · Dashboard: <span className="mono">{j.url.split('#')[0]}</span></> : null}</div>
                 <div className="row-sub">Started {ago(j.startedAt)}{j.updatedAt && j.status !== 'running' ? ' · updated ' + ago(j.updatedAt) : ''}</div></div>
               {statusChip(j.status)}
-              <button className="btn btn-line btn-small" onClick={() => go({ v: 'fork', id: j.fork.id, tab: 'run' })}>Open</button>
+              {j.fork ? <button className="btn btn-line btn-small" onClick={() => go({ v: 'fork', id: j.fork.id, tab: 'run' })}>Open</button> : null}
               {j.chatId ? <button className="btn btn-quiet btn-small" onClick={() => showChat(j.chatId)}>Chat</button> : null}
             </div>))}
-        </div> : <p className="eh-muted">No runs yet. Open a copy in My experiments and press Run on my machine.</p>}
+        </div> : <p className="eh-muted">No runs yet. Open a dashboard on a machine above, or open a copy in My experiments and press Run on my machine.</p>}
       </>
     );
   }

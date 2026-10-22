@@ -133,6 +133,21 @@ function runPrompt({ fork, forkId, jobId, kitPath, minePath, machine, rigConfig 
   ].join('\n');
 }
 
+function dashboardPrompt({ jobId, kitPath, minePath, machine, machineLabel }) {
+  return [
+    '[Alhazen Experiment Platform · open the dashboard]',
+    'Goal: open Mana\'s alhazen dashboard on my machine' + (machineLabel ? ' ' + machineLabel : '') + ', with no experiment chosen. It lists the experiments already set up there and every copy in my library (job ' + jobId + ' at ' + minePath + '/dashboards/' + jobId + ').',
+    '',
+    '1. Load the kit in Python:\n```python\n' + kitLoader(kitPath) + '\n```',
+    '2. Mana Terminal must be installed in this Mana (`/workspace/mana_terminal.py`). If it is not, call `hubkit.set_dashboard_job("' + jobId + '", {"status": "failed", "summary": "Mana Terminal is not installed. Install it from the marketplace, pair your machine, then try again."})` and stop.',
+    '3. `from mana_terminal import terms` (add /workspace to sys.path). If no window is open, set the job to status "waiting" with summary "Open a terminal on your machine and type mana, then press Open dashboard again." and stop.',
+    '4. `res = hubkit.open_dashboard(machine=' + (machine ? JSON.stringify(machine) : 'None') + ', log=print, job_id="' + jobId + '")`. When Mana\'s dashboard is already open there it is only opened in the browser; otherwise alhazen\'s newest release is installed into a small environment of its own (mana-experiments/.alhazen-dashboard) and the dashboard is started. Each step that changes my machine is approved by me in the terminal; a refusal (TermDenied) is final: set status "stopped" and do not retry.',
+    '5. If a step fails, read the error and res["log"], fix what can be fixed on the machine through the terminal (I approve each change), and retry that step.',
+    '6. Finish with `hubkit.set_dashboard_job("' + jobId + '", {"status": "done", "summary": "<one plain sentence>", "url": res["url"], "alhazen": res.get("alhazen") or "", "machine": <window label>})`, or status "failed" with what went wrong. Say in the summary whether it was already open, and when res["library"] is not ok.',
+    'Nothing here writes to GitHub or to the shared hub.',
+  ].join('\n');
+}
+
 function UserDiv() {
   const HUB = (relPathAddress('published') || '').replace(/\/published$/, '') || null;
   const KIT = relPathAddress('kit', 'hubkit', 'code');
@@ -293,6 +308,19 @@ function UserDiv() {
     return jobId;
   }
 
+  // [3.7.1] My machines > Open dashboard: start Mana's dashboard on a machine with no experiment chosen.
+  // The job lives at MINE/dashboards/<jobId>; the library service closes it when the dashboard reports.
+  async function openDashboard(machine, machineLabel) {
+    const upd = {}; await ensureMine(upd, ['dashboards']);
+    if (Object.keys(upd).length) await FS.update(FS.ref(FS.db, MINE), upd, false);
+    const chatId = await mana.mintChatId();
+    const jobId = String(Date.now());
+    const t = Date.now();
+    await FS.update(FS.ref(FS.db, MINE + '/dashboards/' + jobId), { kind: 'dashboard', chatId, status: 'running', startedAt: t, updatedAt: t, machine: machine || '', machineLabel: machineLabel || '' }, false);
+    await mana.ask(chatId, dashboardPrompt({ jobId, kitPath: KIT, minePath: MINE, machine, machineLabel }), undefined, undefined, undefined, undefined, true);
+    return jobId;
+  }
+
   // One owner change to a machine record: read it fresh, apply the rule, write only what changed.
   async function changeRig(mid, rule, cid) {
     const path = MINE + '/machines/' + rigCheckMachineId(mid);
@@ -310,7 +338,7 @@ function UserDiv() {
     viewer,
     capabilities: { fork: true, publish: true, changeWithMana: true, runOnMachines: true, newWithMana: true,
       uploadRevision: false, downloadRevision: false, machines: true, signIn: false, themeToggle: false, rigConfigs: !!userId,
-      shareWithPeople: !!userId, notifyPeople: !!userId },
+      shareWithPeople: !!userId, notifyPeople: !!userId, openDashboard: !!userId },
     art,
     fontStylesheet: MANA_FONT_STYLESHEET,
     extraCss: '',
@@ -392,6 +420,11 @@ function UserDiv() {
       if (!MINE) return;
       return FS.onValue(FS.ref(FS.db, MINE + '/forks'), (s) => cb(s.val()), onError);
     },
+    subscribeDashboards(cb, onError) {
+      if (!MINE) return;
+      return FS.onValue(FS.ref(FS.db, MINE + '/dashboards'), (s) => cb(s.val()), onError);
+    },
+    openDashboard,
     subscribeMachines(cb, onError) {
       if (!userId) return;
       return FS.onValue(FS.ref(FS.db, `${userId}/file-system/Apps/mana-terminal/app/data`), (s) => cb(s.val()), onError);

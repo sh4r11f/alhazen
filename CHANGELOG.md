@@ -25,6 +25,16 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+- **Open dashboard on a machine (Mana).** My machines has an *Open dashboard* button on each
+  paired machine with a terminal window open: Mana opens its alhazen dashboard there without
+  going through an experiment. The dashboard lists the experiments set up on that machine and
+  the person's whole library. An already running dashboard is only brought up in the browser;
+  otherwise alhazen's newest release is installed into a small environment of its own
+  (`mana-experiments/.alhazen-dashboard`). Dashboard jobs appear with runs and are closed when
+  the dashboard reports. Design: docs/experiment-platform/design.md section 8.
+
 ## 3.7.0 - 2026-10-21
 
 - **Who can see an experiment (platform, server side).** A listing carries `access`:
