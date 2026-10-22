@@ -93,14 +93,62 @@ function librarySections(listings, viewerUid) {
 }
 const kb = (b) => b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB';
 
+// Dashboards on machines (Mana, design.md section 8). Which machine a run, dashboard or shutdown job is
+// on: its machineLabel; else job.machine as an open terminal window mapped to that window's machine (as
+// the Runs list names it); else job.machine taken as a label. Labels compare trimmed and case-blind, the
+// rule rig configs use (65_rigs.jsx rigLabelKey).
+const machineLabelKey = (s) => String(s || '').trim().toLowerCase();
+function jobMachineLabel(job, sessions, devices) {
+  if (job && job.machineLabel) return job.machineLabel;
+  const m = (job && job.machine) || '';
+  const s = (sessions || []).find((x) => x.id === m);
+  if (s) { const dv = (devices || []).find((d) => d.id === s.device) || {}; return dv.label || dv.host || s.device || m; }
+  return m;
+}
+// What a run or dashboard job says about its dashboard: 'starting' (Mana is still opening it), 'open'
+// (opened and not reported closed: the last known state, the machine may have stopped it unreported),
+// 'closed' (it reported closing, or was shut down from the platform), or null (it never opened one).
+function dashJobState(job) {
+  if (!job || (job.kind !== 'run' && job.kind !== 'dashboard')) return null;
+  if (job.closedAt) return 'closed';
+  if (job.status === 'running') return 'starting';
+  if (job.status === 'done' && job.url) return 'open';
+  return null;
+}
+// A machine's dashboard from the newest job on it that says something about one, with a running
+// shutdown as 'stopping': {state: 'open'|'closed'|'starting'|'stopping', job, at} or null.
+function machineDashboard(jobs, label, sessions, devices) {
+  const key = machineLabelKey(label);
+  if (!key) return null;
+  let best = null;
+  for (const job of jobs || []) {
+    if (!job || machineLabelKey(jobMachineLabel(job, sessions, devices)) !== key) continue;
+    const state = job.kind === 'shutdown' ? (job.status === 'running' ? 'stopping' : null) : dashJobState(job);
+    if (state && (!best || (job.startedAt || 0) > (best.job.startedAt || 0))) best = { state, job };
+  }
+  if (!best) return null;
+  const j = best.job;
+  return { ...best, at: best.state === 'closed' ? j.closedAt : best.state === 'open' ? (j.updatedAt || j.startedAt) : j.startedAt };
+}
+// The chip of a job that opened a dashboard (it has a url): Open until it is reported closed, then
+// Closed. Null for other jobs, which keep their status chip.
+function dashJobChip(job) {
+  if (!job || !job.url || (job.kind !== 'run' && job.kind !== 'dashboard')) return null;
+  if (job.closedAt) return { tone: 'st-idle', words: 'Closed' };
+  if (job.status === 'done') return { tone: 'st-ok', words: 'Open' };
+  return null;
+}
+
+// The address of a screen: ?ehv=&ehid=&ehtab=&ehtask=&ehset=, plus ehdev for the Configure window of
+// a paired machine (65_rigs.jsx rigWindowRoute). Other parameters (Mana's chatId) are kept.
 function readRoute() {
   const q = new URLSearchParams(window.location.search);
-  return { v: q.get('ehv') || 'home', id: q.get('ehid') || '', tab: q.get('ehtab') || '', task: q.get('ehtask') || '', set: q.get('ehset') || '' };
+  return { v: q.get('ehv') || 'home', id: q.get('ehid') || '', tab: q.get('ehtab') || '', task: q.get('ehtask') || '', set: q.get('ehset') || '', dev: q.get('ehdev') || '' };
 }
-function writeRoute(r, replace) {
+function writeRoute(r, replace, state) {
   const u = new URL(window.location.href);
-  for (const [k, v] of [['ehv', r.v === 'home' ? '' : r.v], ['ehid', r.id], ['ehtab', r.tab], ['ehtask',r.task], ['ehset',r.set]]) { if (v) u.searchParams.set(k, v); else u.searchParams.delete(k); }
-  window.history[replace ? 'replaceState' : 'pushState']({}, '', u.toString());
+  for (const [k, v] of [['ehv', r.v === 'home' ? '' : r.v], ['ehid', r.id], ['ehtab', r.tab], ['ehtask', r.task], ['ehset', r.set], ['ehdev', r.dev]]) { if (v) u.searchParams.set(k, v); else u.searchParams.delete(k); }
+  window.history[replace ? 'replaceState' : 'pushState'](state || {}, '', u.toString());
 }
 
 function fillTokens(md, tasks) {

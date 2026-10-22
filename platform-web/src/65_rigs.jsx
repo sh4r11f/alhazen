@@ -207,14 +207,63 @@ function rigNewId() {
 
 function rigMachineName(m) { return (m && (m.label || m.id)) || 'this machine'; }
 
+// Which synced rig machines a paired machine is, by label: the dashboard sends its machine's label
+// (library.json `machine`, else the host name), Mana Terminal and machine tokens name the same machine.
+// Compared trimmed and case-blind. One machine can sync from more than one dashboard state folder, so
+// a label can match several records.
+const rigLabelKey = (s) => String(s || '').trim().toLowerCase();
+function rigMachinesForLabel(machines, label) {
+  const key = rigLabelKey(label);
+  return key ? (machines || []).filter((m) => m && rigLabelKey(m.label) === key) : [];
+}
+
+// The Machines page's rows: each paired machine ({key, label, ...}) with the rig machines that match
+// its label (newest sync first), and the rig machines no row matches (a machine that syncs but is not
+// paired here, or whose label changed). No record is made up for a row without a match.
+function rigMatchMachines(rows, machines) {
+  const bySeen = (a, b) => (b.seenAt || 0) - (a.seenAt || 0);
+  const used = new Set();
+  const out = (rows || []).map((row) => {
+    const rigs = rigMachinesForLabel(machines, row.label).slice().sort(bySeen);
+    for (const m of rigs) used.add(m.id);
+    return { ...row, rigs };
+  });
+  const unmatched = (machines || []).filter((m) => m && !used.has(m.id)).sort(bySeen);
+  return { rows: out, unmatched };
+}
+
+// One line about a machine's configs for its row: names (default first) and what needs the person.
+function rigRowSummary(rigs) {
+  const configs = [];
+  for (const m of rigs || []) for (const c of rigLiveConfigs(m)) configs.push({ c, isDefault: c.id === m.default });
+  if (!configs.length) return { text: (rigs || []).length ? 'No rig configs' : '', attention: '' };
+  const names = configs.map(({ c, isDefault }) => c.name + (isDefault ? ' (default)' : ''));
+  const text = 'Rig configs: ' + (names.length > 3 ? names.slice(0, 3).join(', ') + ' and ' + (names.length - 3) + ' more' : names.join(', '));
+  const conflicts = configs.filter(({ c }) => c.conflict || c.hasConflict).length;
+  const refused = configs.filter(({ c }) => !(c.conflict || c.hasConflict) && c.state === 'rejected').length;
+  const attention = [conflicts ? conflicts + (conflicts === 1 ? ' conflict' : ' conflicts') : '', refused ? refused + ' refused by the machine' : ''].filter(Boolean).join(', ');
+  return { text, attention };
+}
+
+// The Configure window lives in the address, so Back closes it and a link reopens it:
+//   ?ehv=machines&ehid=<machine id>[&ehtab=<config id|new>]         a synced machine's window
+//   ?ehv=machines&ehdev=<paired machine>[&ehid=<id>&ehtab=<config>]  a paired machine's window
+// The first form is the address the full-screen editor had before 3.8, so old links still open.
+function rigWindowRoute({ dev = '', mid = '', cid = '' } = {}) {
+  return { v: 'machines', dev: dev || '', id: mid || '', tab: mid && cid ? cid : '' };
+}
+function rigWindowFromRoute(r) {
+  if (!r || r.v !== 'machines' || !(r.dev || r.id)) return null;
+  return { dev: r.dev || '', mid: r.id || '', cid: r.id ? r.tab || '' : '' };
+}
+
 // The Run dialog's choices: the configs of the machine whose label matches the terminal window's
 // device, else every machine's configs grouped by machine. Values are config names (what the
 // dashboard's --rig-config takes); a config the machine has not taken or reports a problem with is
 // listed but not selectable.
 function rigPickerGroups(machines, deviceLabel) {
-  const norm = (s) => String(s || '').trim().toLowerCase();
   const list = (machines || []).filter((m) => m && Object.keys(m.configs || {}).length);
-  const matched = deviceLabel ? list.filter((m) => norm(m.label) === norm(deviceLabel)) : [];
+  const matched = rigMachinesForLabel(list, deviceLabel);
   const use = matched.length ? matched : list;
   return {
     matched: matched.length > 0,
@@ -257,12 +306,12 @@ function useRigYaml(host) {
   return state;
 }
 
-function useRigMachines(host) {
+function useRigMachines(host, enabled = true) {
   const [data, setData] = React.useState(undefined);
   React.useEffect(() => {
-    if (!host.subscribeRigMachines) return undefined;
+    if (!enabled || !host.subscribeRigMachines) return undefined;
     return host.subscribeRigMachines((v) => setData(v || { machines: [] }), (e) => setData({ error: (e && e.message) || String(e) }));
-  }, [host.key]);
+  }, [host.key, enabled]);
   return data;
 }
 
@@ -271,51 +320,132 @@ function RigStatus({ c, label }) {
   return <span className={'status st-' + st.tone}>{st.words}</span>;
 }
 
-// The list on Machines / My machines: every machine that synced, with its configs.
-function RigConfigsSection({ host, go, onFlash }) {
-  const data = useRigMachines(host);
-  const [forgetting, setForgetting] = React.useState('');
+// One synced machine's configs in the Configure window: a row per config (default first) with its
+// state, then adding a config and forgetting the machine.
+function RigConfigList({ host, record, heading, onOpen, onFlash }) {
+  const [forgetting, setForgetting] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  const machines = (data && data.machines ? data.machines : []).slice().sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
-  async function forget(m) {
+  const label = rigMachineName(record);
+  const configs = rigLiveConfigs(record);
+  const meta = [record.alhazen ? 'alhazen ' + record.alhazen : '', record.seenAt ? 'synced ' + rigAgo(record.seenAt) : 'not synced yet'].filter(Boolean).join(' · ');
+  async function forget() {
     setBusy(true);
-    try { await host.forgetRigMachine(m.id); setForgetting(''); onFlash('ok', rigMachineName(m) + ' was removed here; it comes back at its next sync.'); }
-    catch (e) { onFlash('bad', 'Could not forget ' + rigMachineName(m) + ': ' + ((e && e.message) || e)); }
-    finally { setBusy(false); }
+    try { await host.forgetRigMachine(record.id); onFlash('ok', label + ' was removed here; it comes back at its next sync.'); }
+    catch (e) { onFlash('bad', 'Could not forget ' + label + ': ' + ((e && e.message) || e)); }
+    finally { setBusy(false); setForgetting(false); }
   }
-  return <section className="eh-rigs" aria-labelledby="eh-rigs-title">
-    <h2 id="eh-rigs-title" className="eh-rigs-title">Rig configs</h2>
-    <p className="eh-muted eh-rigs-lede">The rig settings each machine runs its sessions with. Change them here or on the machine's dashboard; the two stay in step, and the machine checks every change before it uses it.</p>
-    {data === undefined ? <p className="eh-muted">Loading…</p>
-      : data.error ? <p className="eh-rig-error" role="alert">The rig configs could not be read: {data.error}</p>
-      : null}
-    {data && data.problems && data.problems.length ? <p className="eh-rig-error" role="alert">{data.problems.length === 1 ? 'One machine record' : data.problems.length + ' machine records'} could not be read: {data.problems.join('; ')}</p> : null}
-    {data === undefined || data.error ? null
-      : !machines.length ? <div className="empty"><h3>No machine has synced its rig configs yet</h3><p>A machine appears here once its alhazen dashboard (3.6 or newer) is connected to this library.</p></div>
-      : machines.map((m) => {
-        const configs = rigLiveConfigs(m);
-        return <div key={m.id} className="eh-rig-machine">
-          <div className="eh-rig-mhead">
-            <div className="eh-rig-mtitle"><h3>{rigMachineName(m)}</h3>
-              <p>{[m.alhazen ? 'alhazen ' + m.alhazen : '', m.seenAt ? 'synced ' + rigAgo(m.seenAt) : 'not synced yet'].filter(Boolean).join(' · ')}</p></div>
-            {forgetting === m.id
-              ? <div className="eh-actions eh-rig-confirm"><span>Forget {rigMachineName(m)}? Its configs stay on the machine.</span><button className="btn btn-line btn-small" onClick={() => setForgetting('')}>Keep</button><button className="btn btn-primary btn-small" disabled={busy} onClick={() => forget(m)}>Forget</button></div>
-              : <div className="eh-actions"><button className="btn btn-line btn-small" onClick={() => go({ v: 'machines', id: m.id, tab: 'new' })}>Add a config</button><button className="btn btn-quiet btn-small" onClick={() => setForgetting(m.id)}>Forget</button></div>}
-          </div>
-          <div className="list">
-            {configs.length ? configs.map((c) => {
-              const st = rigConfigState(c, rigMachineName(m)); const problem = rigProblemOf(c);
-              return <button key={c.id} className="row rowbtn eh-rig-row" onClick={() => go({ v: 'machines', id: m.id, tab: c.id })}>
-                <div className="row-main"><div className="row-title">{c.name}{c.id === m.default ? <span className="eh-rig-default">Default</span> : null}</div>
-                  {st.detail ? <div className="row-sub">{st.detail}</div> : null}
-                  {problem ? <div className="row-sub eh-rig-problem">The machine reports: {problem}</div> : null}</div>
-                <RigStatus c={c} label={rigMachineName(m)} />
-              </button>;
-            }) : <div className="row"><div className="row-main"><div className="row-sub">No configs on this machine.</div></div></div>}
-          </div>
-        </div>;
-      })}
+  return <section className="eh-cfg-machine" aria-label={heading ? heading + ', ' + meta : meta}>
+    {heading ? <h3 className="eh-cfg-mtitle">{heading}<span>{meta}</span></h3> : null}
+    <div className="list">
+      {configs.length ? configs.map((c) => {
+        const st = rigConfigState(c, label); const problem = rigProblemOf(c);
+        return <button key={c.id} className="row rowbtn eh-rig-row" onClick={() => onOpen(record.id, c.id)}>
+          <div className="row-main"><div className="row-title">{c.name}{c.id === record.default ? <span className="eh-rig-default">Default</span> : null}</div>
+            {st.detail ? <div className="row-sub">{st.detail}</div> : null}
+            {problem ? <div className="row-sub eh-rig-problem">The machine reports: {problem}</div> : null}</div>
+          <RigStatus c={c} label={label} />
+        </button>;
+      }) : <div className="row"><div className="row-main"><div className="row-sub">No configs on this machine.</div></div></div>}
+    </div>
+    {forgetting
+      ? <div className="eh-actions eh-rig-confirm eh-cfg-actions"><span>Forget this record of {label}? Its configs stay on the machine.</span><button className="btn btn-line btn-small" onClick={() => setForgetting(false)}>Keep</button><button className="btn btn-primary btn-small" disabled={busy} onClick={forget}>Forget</button></div>
+      : <div className="eh-actions eh-cfg-actions"><button className="btn btn-line btn-small" onClick={() => onOpen(record.id, 'new')}>Add a config</button><button className="btn btn-quiet btn-small" onClick={() => setForgetting(true)}>Forget</button></div>}
   </section>;
+}
+
+const RIG_FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]:not([tabindex="-1"])';
+
+// The Configure window (My machines / Machines): one machine's rig configs, and editing, adding,
+// the default, deleting and conflicts, all inside the window. `win` comes from the address
+// (rigWindowFromRoute): `dev` is a paired machine's row key, `mid` a synced machine, `cid` an open
+// config or 'new'. `rows` are the page's rows matched to synced machines (rigMatchMachines).
+function RigMachineWindow({ host, win, rows, rowsLoading, rigData, onOpen, onBack, onClose, onFlash, flash, renderUnmatched }) {
+  const ref = React.useRef(null);
+  const [dirty, setDirty] = React.useState(false);
+  const [leaving, setLeaving] = React.useState(null); // 'close' | 'back' while unsaved changes wait
+  const row = win.dev ? (rows || []).find((r) => r.key === win.dev) || null : null;
+  const machinesList = (rigData && rigData.machines) || [];
+  const record = win.mid ? machinesList.find((m) => m.id === win.mid) || null : null;
+  const rigs = win.dev ? (row ? row.rigs : []) : record ? [record] : [];
+  const title = win.dev ? (row ? row.label : 'Machine') : record ? rigMachineName(record) : win.mid || 'Machine';
+  const listTarget = { dev: win.dev, mid: win.dev ? '' : win.mid };
+
+  React.useEffect(() => {
+    const opener = document.activeElement;
+    if (ref.current) ref.current.focus({ preventScroll: true });
+    return () => { if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true }); };
+  }, []);
+  // A new view inside the window starts at its top, with focus kept inside the window.
+  React.useEffect(() => {
+    setLeaving(null);
+    if (!ref.current) return;
+    ref.current.scrollTop = 0;
+    if (!ref.current.contains(document.activeElement)) ref.current.focus({ preventScroll: true });
+  }, [win.dev, win.mid, win.cid]);
+
+  const leave = (what) => { if (dirty) { setLeaving(what); return; } if (what === 'close') onClose(); else onBack(listTarget); };
+  // Escape closes and Tab stays inside, wherever focus is (a view change can drop it to the page).
+  const leaveRef = React.useRef(leave); leaveRef.current = leave;
+  React.useEffect(() => {
+    function onKeyDown(e) {
+      const box = ref.current;
+      if (!box) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); leaveRef.current('close'); return; }
+      if (e.key !== 'Tab') return;
+      const items = [...box.querySelectorAll(RIG_FOCUSABLE)].filter((el) => el.getClientRects().length > 0);
+      if (!items.length) { e.preventDefault(); box.focus(); return; }
+      const first = items[0], last = items[items.length - 1], at = document.activeElement;
+      if (!box.contains(at)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+      else if (e.shiftKey && (at === first || at === box)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+    }
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, []);
+
+  const metaOf = !win.dev ? record : rigs.length === 1 ? rigs[0] : null;
+  const meta = metaOf ? [metaOf.alhazen ? 'alhazen ' + metaOf.alhazen : '', metaOf.seenAt ? 'synced ' + rigAgo(metaOf.seenAt) : 'not synced yet'].filter(Boolean).join(' · ') : '';
+  let body;
+  if (win.cid) {
+    body = <>
+      <button className="eh-cfg-back" onClick={() => leave('back')}><span aria-hidden="true">←</span> All configs</button>
+      <RigConfigEditor key={win.mid + ':' + win.cid} host={host} mid={win.mid} cid={win.cid} onBack={() => onBack(listTarget)}
+        onOpenConfig={(cid) => onOpen({ dev: win.dev, mid: win.mid, cid }, true)} onFlash={onFlash} onDirty={setDirty} />
+    </>;
+  } else if (rigData === undefined || (win.dev && rowsLoading)) body = <p className="eh-muted">Loading…</p>;
+  else if (rigData && rigData.error) body = <p className="eh-rig-error" role="alert">The rig configs could not be read: {rigData.error}</p>;
+  else if (win.dev && !row) body = <div className="empty"><h3>This machine is not paired any more</h3><p>It may have been unpaired or renamed. Close this window and choose it again.</p></div>;
+  else if (!win.dev && !record) body = <div className="empty"><h3>This machine is not on the platform</h3><p>It appears once its dashboard syncs with this library.</p></div>;
+  else if (!rigs.length) body = <div className="eh-cfg-unmatched">
+    <h3>No rig configs from {title} yet</h3>
+    <p>They appear here once the alhazen dashboard on {title} (3.6 or newer) has connected to your library; the dashboard sends them and keeps them in step.</p>
+    {renderUnmatched ? renderUnmatched(row) : null}
+  </div>;
+  else body = <>
+    {rigs.length > 1 ? <p className="eh-muted eh-cfg-note">{title} syncs from {rigs.length} dashboards, each with its own settings folder and configs.</p> : null}
+    {rigs.map((m, i) => <RigConfigList key={m.id} host={host} record={m} heading={rigs.length > 1 ? 'Dashboard ' + (i + 1) : ''} onOpen={(mid, cid) => onOpen({ dev: win.dev, mid, cid })} onFlash={onFlash} />)}
+  </>;
+
+  return <div className="eh-scrim eh-cfg-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) leave('close'); }}>
+    <div ref={ref} className="eh-dialog eh-cfg-window" role="dialog" aria-modal="true" aria-labelledby="eh-cfg-title" tabIndex={-1}>
+      <div className="eh-cfg-head">
+        <div className="eh-cfg-titles"><h2 id="eh-cfg-title">{title}</h2>
+          <p>{['Rig configs', meta].filter(Boolean).join(' · ')}</p></div>
+        <button className="btn btn-quiet btn-small eh-cfg-close" onClick={() => leave('close')}>Close</button>
+      </div>
+      {leaving ? <div className="eh-cfg-leave" role="alert"><span>Your changes are not saved.</span>
+        <button className="btn btn-line btn-small" onClick={() => setLeaving(null)}>Keep editing</button>
+        <button className="btn btn-primary btn-small" onClick={() => { const what = leaving; setLeaving(null); setDirty(false); if (what === 'close') onClose(); else onBack(listTarget); }}>{leaving === 'close' ? 'Discard and close' : 'Discard'}</button></div> : null}
+      {flash}
+      {rigData && rigData.problems && rigData.problems.length && !win.cid ? <p className="eh-rig-error" role="alert">{rigData.problems.length === 1 ? 'One machine record' : rigData.problems.length + ' machine records'} could not be read: {rigData.problems.join('; ')}</p> : null}
+      <div className="eh-cfg-body">{body}</div>
+    </div>
+  </div>;
+}
+
+// The page row for a synced machine no paired machine matches.
+function rigMachineMeta(m) {
+  return [m.alhazen ? 'alhazen ' + m.alhazen : '', m.seenAt ? 'rig configs synced ' + rigAgo(m.seenAt) : 'not synced yet'].filter(Boolean).join(' · ');
 }
 
 // One setting in the form.
@@ -378,7 +508,7 @@ function RigForm({ values, schema, disabled, onSet }) {
 
 // Creating a config on one machine: a name and a starting point (a copy of one of its configs or
 // one of the rigs its dashboard offers as templates).
-function RigNewConfig({ host, record, go, onFlash, homeLabel = 'Machines' }) {
+function RigNewConfig({ host, record, onOpenConfig, onBack, onFlash }) {
   const { Y, error: yamlError } = useRigYaml(host);
   const label = rigMachineName(record);
   const configs = rigLiveConfigs(record);
@@ -407,13 +537,12 @@ function RigNewConfig({ host, record, go, onFlash, homeLabel = 'Machines' }) {
     try {
       await host.putRigConfig(record.id, cid, { name: name.trim(), text, base: 0, basedOn: null });
       onFlash('ok', name.trim() + ' was added. Waiting for ' + label + ' to take it.');
-      go({ v: 'machines', id: record.id, tab: cid }, true);
+      onOpenConfig(cid);
     } catch (error) { setErr((error && error.message) || String(error)); }
     finally { setBusy(false); }
   }
   return <form className="eh-rig-editor eh-rig-new" onSubmit={create}>
-    <nav className="eh-crumb" aria-label="Location"><button type="button" onClick={() => go({ v: 'machines' })}>{homeLabel}</button><span>/</span><span>{label}</span></nav>
-    <h1 className="eh-rig-h1">Add a rig config to {label}</h1>
+    <h3 className="eh-rig-h1">Add a rig config</h3>
     <div className="field"><label htmlFor="eh-rig-new-name">Name</label>
       <input id="eh-rig-new-name" autoFocus value={name} maxLength={64} spellCheck={false} placeholder="monkey-daq" onChange={(e) => setName(e.target.value)} aria-invalid={nameTaken ? 'true' : undefined} />
       <small>{nameTaken ? label + ' already has a config with this name.' : 'Letters, digits, dots, dashes and underscores. The rig file on the machine is named after it.'}</small></div>
@@ -431,12 +560,14 @@ function RigNewConfig({ host, record, go, onFlash, homeLabel = 'Machines' }) {
     {problem ? <p className="eh-rig-error" role="alert">{problem}</p> : null}
     {err ? <p className="eh-rig-error" role="alert">{err}</p> : null}
     <div className="eh-actions eh-rig-actions"><button className="btn btn-primary" type="submit" disabled={busy || !text || !name.trim() || nameTaken}>{busy ? 'Adding…' : 'Add the config'}</button>
-      <button className="btn btn-line" type="button" onClick={() => go({ v: 'machines' })}>Cancel</button></div>
+      <button className="btn btn-line" type="button" onClick={onBack}>Cancel</button></div>
   </form>;
 }
 
-// The editor for one config.
-function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }) {
+// The editor for one config, inside the Configure window. `onBack` returns to the window's list,
+// `onOpenConfig(cid)` shows another config (after one is created), `onDirty(bool)` says whether
+// there are unsaved changes.
+function RigConfigEditor({ host, mid, cid, onBack, onOpenConfig, onFlash, onDirty }) {
   const [record, setRecord] = React.useState(undefined);
   const [loadError, setLoadError] = React.useState('');
   React.useEffect(() => host.subscribeRigMachine(mid, (r) => { setRecord(r || null); setLoadError(''); }, (e) => { setLoadError((e && e.message) || String(e)); }), [host.key, mid]);
@@ -458,12 +589,14 @@ function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }
     }
   }, [config && config.revision, config && config.text, config && config.deleted]);
 
-  const back = () => go({ v: 'machines' });
-  if (loadError && record === undefined) return <div className="eh-rig-editor"><p className="eh-rig-error" role="alert">This machine could not be read: {loadError}</p><button className="btn btn-line" onClick={back}>Back to {homeLabel}</button></div>;
+  React.useEffect(() => { if (onDirty) onDirty(dirty); }, [dirty]);
+  React.useEffect(() => () => { if (onDirty) onDirty(false); }, []);
+  const back = onBack;
+  if (loadError && record === undefined) return <div className="eh-rig-editor"><p className="eh-rig-error" role="alert">This machine could not be read: {loadError}</p><button className="btn btn-line" onClick={back}>Back to the list</button></div>;
   if (record === undefined) return <div className="eh-rig-editor"><p className="eh-muted">Loading…</p></div>;
-  if (!record) return <div className="eh-rig-editor"><div className="empty"><h3>This machine is not on the platform</h3><p>It appears once its dashboard syncs with this library.</p></div><div className="eh-actions eh-rig-actions"><button className="btn btn-line" onClick={back}>Back to {homeLabel}</button></div></div>;
-  if (cid === 'new') return <RigNewConfig host={host} record={record} go={go} onFlash={onFlash} homeLabel={homeLabel} />;
-  if (!config || config.deleted) return <div className="eh-rig-editor"><div className="empty"><h3>{config ? 'This config is being deleted' : 'This config is not on the platform'}</h3><p>{config ? 'Waiting for ' + label + ' to delete it.' : 'It was deleted, or the machine has not synced it.'}</p></div><div className="eh-actions eh-rig-actions"><button className="btn btn-line" onClick={back}>Back to {homeLabel}</button></div></div>;
+  if (!record) return <div className="eh-rig-editor"><div className="empty"><h3>This machine is not on the platform</h3><p>It appears once its dashboard syncs with this library.</p></div><div className="eh-actions eh-rig-actions"><button className="btn btn-line" onClick={back}>Back to the list</button></div></div>;
+  if (cid === 'new') return <RigNewConfig host={host} record={record} onOpenConfig={onOpenConfig} onBack={back} onFlash={onFlash} />;
+  if (!config || config.deleted) return <div className="eh-rig-editor"><div className="empty"><h3>{config ? 'This config is being deleted' : 'This config is not on the platform'}</h3><p>{config ? 'Waiting for ' + label + ' to delete it.' : 'It was deleted, or the machine has not synced it.'}</p></div><div className="eh-actions eh-rig-actions"><button className="btn btn-line" onClick={back}>Back to the list</button></div></div>;
   if (!draft) return <div className="eh-rig-editor"><p className="eh-muted">Loading…</p></div>;
 
   const st = rigConfigState(config, label);
@@ -499,9 +632,8 @@ function RigConfigEditor({ host, mid, cid, go, onFlash, homeLabel = 'Machines' }
   const running = config.running || null;
 
   return <div className="eh-rig-editor">
-    <nav className="eh-crumb" aria-label="Location"><button onClick={back}>{homeLabel}</button><span>/</span><span>{label}</span></nav>
     <div className="eh-rig-titlerow">
-      <h1 className="eh-rig-h1">{config.name}{isDefault ? <span className="eh-rig-default">Default</span> : null}</h1>
+      <h3 className="eh-rig-h1">{config.name}{isDefault ? <span className="eh-rig-default">Default</span> : null}</h3>
       <span className={'status st-' + st.tone}>{st.words}</span>
     </div>
     <p className="eh-muted eh-rig-statusline">{[config.state === 'rejected' || config.conflict ? '' : st.detail, config.updatedAt ? 'Last changed ' + (config.updatedBy === 'platform' ? 'here ' : config.updatedBy === 'machine' ? 'on ' + label + ' ' : '') + rigAgo(config.updatedAt) : ''].filter(Boolean).join(' · ')}</p>
