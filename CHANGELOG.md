@@ -26,7 +26,7 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
-## Unreleased
+## 3.8.3 - 2026-10-21
 
 ### Changed
 - **Experiment Platform (Mana): waiting for Mana Terminal is shown.** While Run on my machine, Open
