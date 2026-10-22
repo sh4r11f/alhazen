@@ -749,7 +749,7 @@ function PlatformApp({ host }) {
                 <div className="row-sub">Started {ago(j.startedAt)}{j.closedAt ? ' · closed ' + ago(j.closedAt) : j.updatedAt && j.status !== 'running' ? ' · updated ' + ago(j.updatedAt) : ''}</div></div>
               {jobChip(j)}
               {dashJobState(j) === 'open' ? shutdownButton(rowFor(jobLabel(j)) || { label: jobLabel(j), wins: [] }, { state: 'open' }) : null}
-              {j.fork ? <button className="btn btn-line btn-small" onClick={() => go({ v: 'fork', id: j.fork.id, tab: 'run' })}>Open</button> : null}
+              {j.fork ? <button className="btn btn-line btn-small" onClick={() => go({ v: 'fork', id: j.fork.id, tab: 'run' })}>Open copy</button> : null}
               {j.chatId ? <button className="btn btn-quiet btn-small" onClick={() => showChat(j.chatId)}>Chat</button> : null}
             </div>))}
         </div> : <p className="eh-muted">No runs yet. Open a dashboard on a machine above, or open a copy in My experiments and press Run on my machine.</p>}
