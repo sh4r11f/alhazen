@@ -24,8 +24,8 @@ module with no imports, so the fragments share names instead of importing them):
 | `30_hub_docs.js` | `HubDocs`, the vanilla reader (schematics, timelines, Markdown subset) |
 | `40_reader.jsx` | the experiment page and task/parameter readers (`EHExperimentPage`, ...) |
 | `50_logos.jsx` | experiment emblems and glyphs |
-| `60_helpers.js` | formatting, routing (`?ehv=&ehid=&ehtab=&ehtask=&ehset=`), Markdown tokens |
-| `65_rigs.jsx` | machine rig configs: the list on Machines, the editor (form by sections from the machine's rig schema, YAML view), new config, the Run choice (docs/design/machine-rig-configs.md) |
+| `60_helpers.js` | formatting, routing (`?ehv=&ehid=&ehtab=&ehtask=&ehset=&ehdev=`), Markdown tokens |
+| `65_rigs.jsx` | machine rig configs: matching machines to synced records by label, the Configure window of a machine (its configs, the editor with a form by sections from the machine's rig schema and a YAML view, new config), the Run choice (docs/design/machine-rig-configs.md) |
 | `70_app.jsx` | `PlatformApp({host})`: Home, Browse, experiment pages, My experiments, copies, dialogs |
 | `rigsync.js` | Mana only: the owner-side rig config rules, a port of `experiment_platform/rigsync.py` (`test/rigsync.test.mjs` replays cases generated from the Python module by `test/gen_rigsync_cases.py`) |
 | `host_mana.jsx` | `UserDiv()`: the Mana host (Firebase paths, Mana chats, prompts, Mana Terminal) |

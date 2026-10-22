@@ -125,3 +125,26 @@ test('Open dashboard writes a running dashboard job and asks one chat with the k
   await flush();
   assert.ok(seen.at(-1) && seen.at(-1)[jobId], 'subscribers see the job');
 });
+
+test('Shut down writes a running shutdown job and asks one chat to call shutdown_dashboard with that job', async () => {
+  const db = makeDb({ sharif: { 'file-system': { Apps: { 'alhazen-experiment-platform': { hub: { kit: { hubkit: { code: '# kit' } } } } } } } });
+  const asks = [];
+  const mails = []; mails.mana = { mintChatId: async () => 'chat-9', ask: async (...a) => { asks.push(a); } };
+  const { host } = hostFor(db, 'sharif', mails);
+  assert.equal(host.capabilities.shutdownDashboard, true);
+  const jobId = await host.shutdownDashboard('s_w1', 'RazerBlade');
+  const job = db.at(MINE('sharif') + '/dashboards/' + jobId);
+  assert.equal(job.kind, 'shutdown'); assert.equal(job.status, 'running'); assert.equal(job.chatId, 'chat-9');
+  assert.equal(job.machine, 's_w1'); assert.equal(job.machineLabel, 'RazerBlade');
+  assert.ok(job.startedAt > 0 && job.updatedAt === job.startedAt);
+  assert.equal(asks.length, 1);
+  const [chat, text, , , , , notify] = asks[0];
+  assert.equal(chat, 'chat-9'); assert.equal(notify, true);
+  assert.match(text, new RegExp('hubkit\\.shutdown_dashboard\\(machine="s_w1", log=print, job_id="' + jobId + '"\\)'));
+  assert.match(text, /DashboardBusy/);
+  assert.match(text, /TermDenied/);
+  assert.match(text, /"status": "stopped"/);
+  assert.match(text, /# kit|hubkit/);
+  const none = await host.shutdownDashboard('', '');
+  assert.match(asks[1][1], new RegExp('shutdown_dashboard\\(machine=None, log=print, job_id="' + none + '"\\)'));
+});

@@ -26,6 +26,32 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## Unreleased
+
+### Changed
+- **Dashboard: rig configs have their own page.** This machine's rig configs live on **Rigs**, in the
+  sidebar beside Experiments (`?view=rigs`), shared by every experiment instead of shown inside each
+  experiment's General page. The page has everything the General panel had (list, Add a config with
+  every registered experiment's rigs and the shared rigs as starting points, Edit, Rename, Make
+  default, Delete, History, Sync now, connection and migration notes). General keeps its notes and
+  people with one line linking to Rigs; the Run page's **Edit this config** opens that config's
+  editor on Rigs, and its notes about a config that doesn't load point there. Placement only: rig
+  storage, validation, sync and the Run page's per-session choice are unchanged.
+- **Experiment Platform: rig configs belong to the machine.** My machines (Machines on standalone
+  hosts) is one list of machines; each row shows its rig configs in one line and has **Configure**,
+  which opens the machine's configs in a window: the list with the default and each config's state,
+  the editor (settings and YAML, save, refusals, conflicts, make default, delete) and adding a
+  config, all in place. Machines are matched to their synced records by label; a paired machine
+  whose dashboard never synced says so and offers Open dashboard. The window is in the address
+  (Back closes it); the old `?ehv=machines&ehid=…&ehtab=…` editor links open it.
+
+### Added
+- **Experiment Platform (Mana): Shut down a dashboard.** Each machine row shows its dashboard's last
+  known state (starting, open since, closed), and **Shut down** stops Mana's dashboard there from
+  the platform (refused while a session runs) and marks the runs still open on that machine closed.
+  Runs, a copy's Run tab and Last run show dashboard jobs as Open or Closed, and the dashboard
+  address only while open.
+
 ## 3.7.2 - 2026-10-21
 
 - **Experiment Platform on Mana: bundle files in Storage.** A bundle's files (source and

@@ -1,5 +1,5 @@
 /* Alhazen experiment workspace — this machine's rig configs, on the Run and
- * General pages.
+ * Rigs pages.
  *
  * A dashboard workspace is one machine, with several named rig configs, one
  * of them the default (docs/design/machine-rig-configs.md). Every session
@@ -24,7 +24,7 @@
  *
  * `rig` is the Run page's session rig: {machine: {id, name, values, sha256,
  * ...} (the chosen config), prefill, current, events, taskEvents, source,
- * dropped}; the General page's config editor passes {machine: {values},
+ * dropped}; the Rigs page's config editor passes {machine: {values},
  * current} with the saved config as the baseline. The pure helpers
  * touch no DOM, so tests/js/workspace_rig.test.mjs loads them on their own;
  * the renderers take the page's `node(tag, class, text)`.
@@ -633,7 +633,7 @@ const RigEditor = (() => {
     card.append(node('p', 'help', first
       ? 'Every session on this machine runs on one of its rig configs. Start the first one from '
         + 'a registered experiment’s rig or one of alhazen’s shared rigs; it is written out as one '
-        + 'complete file you can edit later on the General page, and a session can still change it '
+        + 'complete file you can edit later on the Rigs page, and a session can still change it '
         + 'for itself.'
       : 'A config starts as a copy of another one on this machine, or of a registered '
         + 'experiment’s rig or one of alhazen’s shared rigs.'));

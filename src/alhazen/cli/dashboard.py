@@ -83,6 +83,7 @@ PAGE_ASSETS = {
     "/icon-run.svg": ("icon-run.svg", "image/svg+xml"),
     "/icon-data.svg": ("icon-data.svg", "image/svg+xml"),
     "/icon-history.svg": ("icon-history.svg", "image/svg+xml"),
+    "/icon-rigs.svg": ("icon-rigs.svg", "image/svg+xml"),
     # The Data view (workspace_data.py serves its reads).
     "/workspace_data.js": ("workspace_data.js", "text/javascript; charset=utf-8"),
     "/workspace_data.css": ("workspace_data.css", "text/css; charset=utf-8"),

@@ -1224,6 +1224,16 @@ class TestHTTP:
         status, _, body = call("/api/library/download", {"id": "nope"})
         assert status == 502 and "not in the library" in json.loads(body)["error"]
 
+    def test_the_rigs_page_has_its_own_address(self, http):
+        """The Rigs page (?view=rigs) is the same page, with its own sidebar
+        entry and screen: the address is the browser's, so a reload of it lands
+        on the page that shows it (tests/js/workspace_machine_rigs.test.mjs)."""
+        call, _ = http
+        status, headers, page = call("/?view=rigs")
+        assert status == 200 and headers["Content-Type"].startswith("text/html")
+        assert b'id="nav-rigs"' in page and b'href="/?view=rigs"' in page
+        assert b'id="rigs-view"' in page
+
     def test_the_page_font_and_favicon_are_served_from_the_package(self, http):
         """The workspace ships its own font (the page may load nothing from
         outside, and a rig may have no internet) and its logo as the icon."""
@@ -1244,7 +1254,7 @@ class TestHTTP:
         assert [p.get("class") for p in root.iter(f"{svg}path")] == ["mark-ink", "mark-face"]
         assert root.find(f".//{svg}text") is None
         # The sidebar's page icons are served the same way.
-        for name in ("experiments", "general", "run", "data", "history"):
+        for name in ("experiments", "rigs", "general", "run", "data", "history"):
             status, headers, body = call(f"/icon-{name}.svg")
             assert status == 200 and headers["Content-Type"] == "image/svg+xml"
             ElementTree.fromstring(body)

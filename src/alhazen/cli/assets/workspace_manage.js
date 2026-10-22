@@ -1,12 +1,15 @@
 /* Alhazen experiment workspace — the management pages: Experiments (the
- * workspace's home), an experiment's General page and its History page.
+ * workspace's home), Rigs (this machine's rig configs), an experiment's
+ * General page and its History page.
  *
  * Served beside workspace.js, which owns the shell (sidebar, addresses,
  * polling) and calls this script through window.WorkspaceManage:
  *
  *   renderHome(container, state, helpers)     the Experiments page
- *   showGeneral(container, project, helpers)  General: notes, people, rigs
+ *   showGeneral(container, project, helpers)  General: notes and people
  *   showHistory(container, project, helpers)  History: launches and sessions
+ *   showRigs(container, helpers)              Rigs: this machine's rig configs,
+ *                                              shared by every experiment
  *   hide()                                    the page was left
  *   leave() -> Promise<boolean>               may the page be left? (asks
  *                                              in place when edits are unsaved)
@@ -29,6 +32,8 @@
   let current = {page: null, project: null, epoch: 0};
   /* The forms with unsaved edits, by name. */
   const unsaved = new Set();
+  /* The open page's bar that asks before unsaved edits are left (leave()). */
+  let leaveBar = null;
   /* The Experiments page's search text, kept across redraws. */
   let homeQuery = '';
   /* History's filter text. */
@@ -286,13 +291,23 @@
     const guardBar = el('div', 'm-leave');
     guardBar.id = 'm-leave';
     guardBar.hidden = true;
+    leaveBar = guardBar;
     container.replaceChildren(
       guardBar,
       experimentPanel(p),
       subjectsPanel(container, p, people),
       experimentersPanel(container, p, people),
-      machinePanel(p),
+      rigsPointer(),
     );
+  }
+
+  /** General's one line about rigs: they are the machine's, on the Rigs page. */
+  function rigsPointer() {
+    const line = el('p', 'm-hint m-rigs-pointer');
+    line.id = 'm-rigs-pointer';
+    line.append(el('span', '', 'This machine’s rig configs are shared by every experiment: '),
+      h.link('m-link', 'Rigs', null, 'rigs'), el('span', '', '.'));
+    return line;
   }
 
   /** Reload the people and redraw General, telling the Run page too. */
@@ -812,10 +827,12 @@
     return box;
   }
 
-  /* -- this machine's rig configs ------------------------------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* Rigs: this machine's rig configs                                  */
+  /* ---------------------------------------------------------------- */
 
-  /* A config to bring into view (and open) once the panel has drawn: the
-   * Run page's "Edit" names the config it runs on (focusRig). */
+  /* A config to bring into view (and open) once the Rigs page has drawn:
+   * the Run page's "Edit this config" names the config it runs on (focusRig). */
   let pendingRig = null;
 
   /** Whether an answer failed because the file changed since it was opened. */
@@ -823,23 +840,42 @@
     return e?.status === 409 || /changed (elsewhere|on disk|since)/.test(e?.message || '');
   }
 
-  /** This machine's rig configs (docs/design/machine-rig-configs.md): every
+  /** The Rigs page: this machine's rig configs (docs/design/machine-rig-configs.md),
+   *  which every experiment's sessions share, with no experiment open: every
    *  config with its default mark, whether it loads, its sync state and last
-   *  save, and the ways to add, edit, rename, make default, delete and see
-   *  the history of one; the platform connection and Sync now. Shared and
+   *  save, and the ways to add, edit, rename, make default, delete and see the
+   *  history of one; the platform connection and Sync now. Shared and
    *  experiment rigs appear only as a starting point in Add a config. */
-  function machinePanel(p) {
-    const aside = el('div', 'm-panel-actions');
-    const box = panel('THIS MACHINE', 'This machine’s rig configs', aside);
+  function showRigs(container, helpers) {
+    h = helpers;
+    const epoch = current.epoch + 1;
+    current = {page: 'rigs', project: null, epoch};
+    unsaved.clear();
+    const guardBar = el('div', 'm-leave');
+    guardBar.id = 'm-rigs-leave';
+    guardBar.hidden = true;
+    leaveBar = guardBar;
+    const heading = el('div', 'home-heading');
+    const titles = el('div');
+    titles.append(el('h1', '', 'Rigs'));
+    const aside = el('div', 'm-panel-actions mrc-page-actions');
+    heading.append(titles, aside);
+    const intro = el('p', 'm-hint mrc-intro', 'This machine’s rig configs. Every session of every '
+      + 'experiment runs on one of them, chosen on the Run page (the default first). A session can '
+      + 'change its config for itself there; change a config here to change it for every later '
+      + 'session.');
+    const box = el('section', 'm-panel mrc-page');
     box.id = 'm-machine';
-    box.append(el('p', 'm-hint', 'Every session this workspace launches, of every experiment, runs '
-      + 'on one of these configs, chosen on the Run page (the default first). A session can change '
-      + 'its config for itself there; change a config here to change it for every later session.'));
     const body = el('div', 'mrc');
     box.append(body);
-    let rigs = null;
+    container.replaceChildren(guardBar, heading, intro, box);
+    machineRigs(body, aside);
+  }
+
+  /** Fill `body` with this machine's rig configs and `aside` with Sync now and
+   *  Add a config, reading them from the server. */
+  function machineRigs(body, aside) {
     const draw = (answer, notice = null) => {
-      rigs = answer;
       aside.replaceChildren();
       const sync = button('Sync now', 'quiet', async () => {
         sync.disabled = true;
@@ -876,14 +912,14 @@
           onCancel: () => create.replaceChildren(),
           onDone: async (next) => {
             const made = (next.configs || []).find((c) => c.id === next.created);
-            draw(next, message('ok', made ? `Added ${made.name}. It is on the Run page’s list now.`
+            draw(next, message('ok', made ? `Added ${made.name}. It is on every experiment’s Run page now.`
               : 'Added the config.'));
             h.refresh();
           },
         });
       };
       const list = el('div', 'mrc-list');
-      for (const config of answer.configs || []) list.append(configRow(config, answer, p, draw));
+      for (const config of answer.configs || []) list.append(configRow(config, answer, draw));
       if (!(answer.configs || []).length) {
         body.append(message('note', 'This machine has no rig config yet. Add one to launch sessions.'));
         openCreate();
@@ -909,7 +945,6 @@
         body.replaceChildren(message('error', e.message));
       }
     })();
-    return box;
   }
 
   /** The machine and its platform connection, in one line. */
@@ -948,8 +983,9 @@
     return box;
   }
 
-  /** A config's settings in a few lines: what a session on it starts from. */
-  function configFacts(config, p) {
+  /** A config's settings in a few lines: what a session on it starts from.
+   *  A relative data folder is inside the folder of whichever experiment runs. */
+  function configFacts(config) {
     const v = config.values || {};
     const m = v.monitor || {};
     const devices = v.devices || {};
@@ -964,7 +1000,7 @@
     add('Devices', parts.join(' · '));
     add('Real data', v.real_data === false ? 'refused: a development rig (real_data: false)' : 'collected');
     const root = v.data_root;
-    add('Data folder', root ? `${root}${/^([A-Za-z]:|\/|~)/.test(root) ? '' : ` (inside each experiment’s folder: ${p.path}/${root})`}` : 'none');
+    add('Data folder', root ? `${root}${/^([A-Za-z]:|\/|~)/.test(root) ? '' : ', inside each experiment’s own folder'}` : 'none');
     const last = (config.saves || []).at(-1);
     if (last) {
       add('Last saved', `${when(last.at)} from the ${last.by}${last.changes?.length ? ` (${last.changes.join(', ')})` : ''}`);
@@ -978,7 +1014,7 @@
   /** One config: name, default mark, whether it loads, its sync state, its
    *  facts, any refused platform edit or conflict, and its actions, with
    *  room under them for the editor, Rename, Delete or History. */
-  function configRow(config, rigs, p, redraw) {
+  function configRow(config, rigs, redraw) {
     const R = window.RigEditor;
     const row = el('article', 'mrc-config' + (config.default ? ' mrc-default' : ''));
     row.dataset.config = config.id;
@@ -1002,7 +1038,7 @@
       }
       row.append(box);
     }
-    row.append(configFacts(config, p));
+    row.append(configFacts(config));
     if (config.legacy && (rigs.configs || []).length > 1) {
       row.append(el('p', 'm-hint', 'A 3.5.0 dashboard on this state folder still runs this config, '
         + 'the one it knows as this machine’s rig.'));
@@ -1809,13 +1845,14 @@
   function hide() {
     current = {page: null, project: null, epoch: current.epoch + 1};
     unsaved.clear();
+    leaveBar = null;
   }
 
   /** May the page be left? Yes at once with nothing unsaved; otherwise the
    *  bar at the top of the page asks, and the answer resolves. */
   function leave() {
     if (!unsaved.size) return Promise.resolve(true);
-    const bar = document.getElementById('m-leave');
+    const bar = leaveBar || document.getElementById('m-leave');
     if (!bar) return Promise.resolve(true);
     return new Promise((resolve) => {
       bar.hidden = false;
@@ -1832,10 +1869,10 @@
   }
 
   window.WorkspaceManage = {
-    renderHome, showGeneral, showHistory, hide, leave,
+    renderHome, showGeneral, showHistory, showRigs, hide, leave,
     dirty: () => unsaved.size > 0,
     /* Bring this machine's rig config `id` into view, its editor open, the
-     * next time the General page draws (the Run page's Edit). */
+     * next time the Rigs page draws (the Run page's Edit this config). */
     focusRig: (id) => { pendingRig = id; },
   };
 }());
