@@ -103,17 +103,17 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme=light]) {
     color-scheme: dark;
-    --paper: #151311;
-    --surface: #1c1a17;
-    --surface-2: #23201c;
-    --surface-3: #2e2a25;
-    --ink: #ece6da;
-    --muted: #ada393;
-    --line: #3b362f;
-    --field: #151311;
-    --field-border: #7d7467;
-    --hover-border: #9a9082;
-    --hover-bg: #28241f;
+    --paper: #0c0c0e;
+    --surface: #141416;
+    --surface-2: #1b1b1e;
+    --surface-3: #27272b;
+    --ink: #ececef;
+    --muted: #a1a1aa;
+    --line: #2e2e33;
+    --field: #0c0c0e;
+    --field-border: #6e6e76;
+    --hover-border: #8e8e96;
+    --hover-bg: #1f1f23;
     --accent: #d8706a;
     --accent-hover: #e58a84;
     --accent-soft: #3a1d1d;
@@ -130,41 +130,41 @@
     --bad-ink: #f2958c;
     --bad-bg: #341917;
     --bad-line: #6e2d28;
-    --console-bg: #0c0b09;
-    --console-ink: #e2dbcf;
-    --media-bg: #0c0b09;
+    --console-bg: #050506;
+    --console-ink: #e4e4e7;
+    --media-bg: #050506;
     --shadow: #00000066;
     --backdrop: #000000b3;
-    --rail: #1a1815;
-    --rail-2: #24211d;
-    --rail-3: #2e2a25;
-    --rail-ink: #ece6da;
-    --rail-muted: #ada393;
-    --rail-line: #2e2a25;
-    --node: #23201c;
-    --node-ink: #ada393;
-    --instrument: #100e0c;
-    --instrument-2: #191714;
-    --instrument-line: #2c2823;
-    --instrument-ink: #ece6da;
-    --instrument-muted: #ada393;
+    --rail: #101012;
+    --rail-2: #1c1c1f;
+    --rail-3: #27272b;
+    --rail-ink: #ececef;
+    --rail-muted: #a1a1aa;
+    --rail-line: #27272b;
+    --node: #1b1b1e;
+    --node-ink: #a1a1aa;
+    --instrument: #08080a;
+    --instrument-2: #111113;
+    --instrument-line: #242428;
+    --instrument-ink: #ececef;
+    --instrument-muted: #a1a1aa;
   }
 }
 
 /* The dark palette, for the reader's explicit Dark choice. */
 :root[data-theme=dark] {
     color-scheme: dark;
-    --paper: #151311;
-    --surface: #1c1a17;
-    --surface-2: #23201c;
-    --surface-3: #2e2a25;
-    --ink: #ece6da;
-    --muted: #ada393;
-    --line: #3b362f;
-    --field: #151311;
-    --field-border: #7d7467;
-    --hover-border: #9a9082;
-    --hover-bg: #28241f;
+    --paper: #0c0c0e;
+    --surface: #141416;
+    --surface-2: #1b1b1e;
+    --surface-3: #27272b;
+    --ink: #ececef;
+    --muted: #a1a1aa;
+    --line: #2e2e33;
+    --field: #0c0c0e;
+    --field-border: #6e6e76;
+    --hover-border: #8e8e96;
+    --hover-bg: #1f1f23;
     --accent: #d8706a;
     --accent-hover: #e58a84;
     --accent-soft: #3a1d1d;
@@ -181,24 +181,24 @@
     --bad-ink: #f2958c;
     --bad-bg: #341917;
     --bad-line: #6e2d28;
-    --console-bg: #0c0b09;
-    --console-ink: #e2dbcf;
-    --media-bg: #0c0b09;
+    --console-bg: #050506;
+    --console-ink: #e4e4e7;
+    --media-bg: #050506;
     --shadow: #00000066;
     --backdrop: #000000b3;
-    --rail: #1a1815;
-    --rail-2: #24211d;
-    --rail-3: #2e2a25;
-    --rail-ink: #ece6da;
-    --rail-muted: #ada393;
-    --rail-line: #2e2a25;
-    --node: #23201c;
-    --node-ink: #ada393;
-    --instrument: #100e0c;
-    --instrument-2: #191714;
-    --instrument-line: #2c2823;
-    --instrument-ink: #ece6da;
-    --instrument-muted: #ada393;
+    --rail: #101012;
+    --rail-2: #1c1c1f;
+    --rail-3: #27272b;
+    --rail-ink: #ececef;
+    --rail-muted: #a1a1aa;
+    --rail-line: #27272b;
+    --node: #1b1b1e;
+    --node-ink: #a1a1aa;
+    --instrument: #08080a;
+    --instrument-2: #111113;
+    --instrument-line: #242428;
+    --instrument-ink: #ececef;
+    --instrument-muted: #a1a1aa;
 }
 
 /* ---- Element defaults ---- */

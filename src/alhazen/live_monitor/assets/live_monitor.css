@@ -790,9 +790,9 @@ line.trial-shape { fill: none; }
  * written "Alhazen". Chart tokens, colours and axes are untouched. */
 :root { --font: "Manrope", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif; --page: #efe8dd; --wash: #ece5da; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --page: #100e0c; --wash: #23201c; }
+  :root:not([data-theme="light"]) { --page: #08080a; --wash: #1b1b1e; }
 }
-:root[data-theme="dark"] { --page: #100e0c; --wash: #23201c; }
+:root[data-theme="dark"] { --page: #08080a; --wash: #1b1b1e; }
 .brand { font: 800 16px/1.3 var(--font); letter-spacing: -.01em; text-transform: none; }
 .brand::first-letter { text-transform: uppercase; }
 #status { font: 650 12.5px/1.2 var(--font); text-transform: lowercase; letter-spacing: normal; }

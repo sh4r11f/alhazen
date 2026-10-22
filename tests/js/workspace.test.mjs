@@ -2386,7 +2386,7 @@ describe('the colour theme', () => {
     // Both palettes are the Hub's (hub/assets/hub.css): warm paper, oxblood.
     assert.equal(light.paper.toLowerCase(), '#fbf9f5');
     assert.equal(light.accent.toLowerCase(), '#7f1d1d');
-    assert.equal(dark.paper.toLowerCase(), '#151311');
+    assert.equal(dark.paper.toLowerCase(), '#0c0c0e');
     const low = [];
     for (const [name, colours] of [['light', light], ['dark', dark]]) {
       for (const [pairs, need] of [[TEXT, 4.5], [EDGES, 3]]) {
