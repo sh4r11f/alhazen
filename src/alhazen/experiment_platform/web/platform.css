@@ -400,6 +400,11 @@
 .eh-mine-row:hover{background:var(--hover-bg)}
 .eh-row-remove{flex:none;color:var(--muted)}
 .eh-row-action{flex:none;align-self:center}
+.eh-mine-child{background:var(--paper)}
+.eh-mine-child .eh-row-open{padding:10px 6px 10px 128px;position:relative}
+.eh-mine-child .eh-row-open::before{content:'';position:absolute;left:66px;top:0;bottom:50%;width:22px;border-left:1px solid var(--line-strong,var(--line));border-bottom:1px solid var(--line-strong,var(--line));border-bottom-left-radius:6px}
+.eh-mine-child .row-title{font-weight:600;font-size:14px}
+@container (max-width:560px){.eh-mine-child .eh-row-open{padding-left:44px}.eh-mine-child .eh-row-open::before{left:20px;width:14px}}
 .eh-row-remove:hover{color:var(--accent-ink)}
 .eh-remove-plan h3{font-size:14px;font-weight:800;margin:16px 0 6px}
 .eh-remove-plan ul{margin:0;padding-left:20px;color:var(--ink)}
