@@ -98,8 +98,8 @@ CARRIED_PATHS = (
 MACHINE_ONLY = (("real_data",),)
 
 NOT_SET_UP = (
-    "This machine has no rig config yet. Add one on an experiment's General page (This "
-    "machine's rig configs) or run `alhazen rig init` in a terminal."
+    "This machine has no rig config yet. Add one on the Rigs page, or run `alhazen rig init` "
+    "in a terminal."
 )
 
 

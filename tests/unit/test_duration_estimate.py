@@ -690,6 +690,37 @@ class TestWorkspaceEstimates:
         assert command[1:3] == ["--mode", "simulate"]
         assert "--headless" in command and "--curriculum" in command
 
+    def test_the_run_pages_rig_config_reaches_the_rig_it_resolves(self, estimator):
+        """The Run page sends one draft to /api/estimate and to Launch; with a rig
+        config chosen it carries rig_config, which the estimate once refused as an
+        unknown field (alhazen 3.6.0 to 3.8.0)."""
+        from alhazen.cli.workspace_estimate import EstimateRequest
+
+        est_, space, asked, *_ = estimator
+        body = {
+            "project": space.projects[0]["id"],
+            "mode": "run",
+            "task": "timed",
+            "rig": "",
+            "rig_values": None,
+            "rig_config": "booth",
+        }
+        assert EstimateRequest.model_validate(body).rig_config == "booth"
+        pid = space.projects[0]["id"]
+        for name in ("booth", "laptop"):
+            space.setup_machine({"name": name, "template": f"{pid}:configs/rig-sim.yaml"})
+        # The chosen config is the rig the estimate asks with, as Launch would run it.
+        answer = est_.estimate(EstimateRequest.model_validate(body))
+        assert answer["status"] == "ok" and len(asked) == 1
+        rig = asked[0][asked[0].index("--rig") + 1]
+        assert Path(rig).name == "rig-booth.yaml"
+        est_.estimate(EstimateRequest.model_validate({**body, "rig_config": "laptop"}))
+        assert Path(asked[1][asked[1].index("--rig") + 1]).name == "rig-laptop.yaml"
+        with pytest.raises(ValueError, match="no rig config 'nope'"):
+            est_.estimate(EstimateRequest.model_validate({**body, "rig_config": "nope"}))
+        with pytest.raises(ValueError, match="either"):
+            est_.estimate(request(space, mode="run", rig_config="booth"))
+
 
 class TestRealChild:
     """One real child: run.py in this interpreter, the edited params in a
