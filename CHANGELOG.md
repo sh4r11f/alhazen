@@ -26,7 +26,7 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
-## Unreleased
+## 3.7.2 - 2026-10-21
 
 - **Experiment Platform on Mana: bundle files in Storage.** A bundle's files (source and
   stimulus images) are kept in Firebase Storage and only its metadata stays in the Mana
