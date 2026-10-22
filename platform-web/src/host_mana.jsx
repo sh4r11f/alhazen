@@ -2,7 +2,8 @@
 // Mana injects React, FS, mana, useStorageUrl, relPathAddress, userId, ownerId, openChat, copyText,
 // useTheme, ReactMarkdown and remarkGfm; this file maps them onto the host interface PlatformApp uses
 // (design.md section 7). Storage layout (unchanged from the approved Mana app):
-// Data beneath the app node: published/<uid>/<exp> listings, bundles/<uid>/<id> sources,
+// Data beneath the app node: published/<uid>/<exp> listings, bundles/<uid>/<id> source metas
+// (their files are in Firebase Storage, see manaBundleStore),
 // docs/<uid>/<exp>, kit/hubkit (agent toolkit), assets (hero, mark).
 // Each viewer's own forks: <viewer>/file-system/alhazen-experiment-platform-mine (forks, bundles, docs).
 const TERMINAL_LISTING = '/home/JGs3HVBXEJdU5xyEXc9WwkGT05y2/shared/LtTbJMTjunRRHrceu2JpyYCZoo82/mana-terminal';
@@ -40,6 +41,31 @@ function manaListingPlace(kind, hub, pub, exp) {
   if (kind === 'hub') return { kind, listing: hub + '/published/' + pub + '/' + exp, docs: hub + '/docs/' + pub + '/' + exp, bundle: (id) => hub + '/bundles/' + pub + '/' + id, base: null };
   const base = manaMineOf(pub) + '/listings/' + exp;
   return { kind, listing: base + '/listing', docs: base + '/docs', bundle: (id) => base + '/bundles/' + id, base };
+}
+// [2026-10-21] Bundle files live in Firebase Storage, not the database. Every device that opens
+// Mana loads the owner's whole file-system tree, and bundles (source plus base64 stimulus images,
+// one copy per release) had grown it past what a phone can hold. A bundle's database node keeps
+// only its meta; meta.store = { v: 1, owner, path } names a Storage directory below the owner and
+// chunk i is the object <owner>/<path>/<i>.json, the same JSON text chunks/<i> used to hold.
+// Public (hub) bundles sit under the hub's `bundles` storage grant
+// (app-storage/<hub app path>/bundles/<publisher>/<id>), readable by everyone who can read the
+// hub; private ones (copies, non-public listings) under alhazen-experiment-platform-mine/bundles/<id>
+// in their owner's own Storage (content-addressed, so a copy and its private listing share files).
+// Bundles written before this (chunks/<i> in the database) are still read, and their files go to
+// Storage whenever they are copied, moved or published.
+const MANA_BUNDLE_STORE_V = 1;
+const manaHubBundlePrefix = (hub) => 'app-storage/' + hub.slice(hub.indexOf('/file-system/') + '/file-system/'.length) + '/bundles';
+function manaBundleStore(kind, hub, uid, pub, id) {
+  return kind === 'hub'
+    ? { v: MANA_BUNDLE_STORE_V, owner: hub.split('/')[0], path: manaHubBundlePrefix(hub) + '/' + pub + '/' + id }
+    : { v: MANA_BUNDLE_STORE_V, owner: uid, path: MANA_MINE_NAME + '/bundles/' + id };
+}
+const manaChunkObject = (store, i) => store.path + '/' + i + '.json';
+// Whether files at `store` already sit where a bundle of `kind` belongs (then they are named, not copied).
+function manaStoreFits(store, kind, hub, uid) {
+  if (!store || typeof store.path !== 'string') return false;
+  if (kind === 'hub') return store.owner === hub.split('/')[0] && store.path.startsWith(manaHubBundlePrefix(hub) + '/');
+  return store.owner === uid && store.path.startsWith(MANA_MINE_NAME + '/bundles/');
 }
 const manaPermissionDenied = (e) => /permission[_ ]denied/i.test(String((e && (e.code || e.message)) || e));
 const manaPlaceKind = (access) => (accessOf({ access }).visibility === 'public' ? 'hub' : 'mine');
@@ -156,6 +182,13 @@ function UserDiv() {
   const SHARES = ownerId ? ownerId + '/file-system/' + MANA_SHARES_NAME : null;
   const lastListings = React.useRef({});
   const art = useStorageUrl('art');
+  // Public bundle files (manaBundleStore). Async work reads the grant through a ref, so a copy
+  // started before the grant arrived still sees it.
+  const bundleFiles = useStorageUrl('bundles');
+  const bundleFilesRef = React.useRef(bundleFiles);
+  bundleFilesRef.current = bundleFiles;
+  const HUB_BUNDLES = HUB ? manaHubBundlePrefix(HUB) : null;
+  const bundleMetas = React.useRef(new Map());
   const lastPublished = React.useRef(null);
   const viewer = userId ? { uid: userId, name: (FS.auth.currentUser && (FS.auth.currentUser.displayName || (FS.auth.currentUser.email || '').split('@')[0])) || 'Unknown' } : null;
 
@@ -218,15 +251,75 @@ function UserDiv() {
     }
     await FS.update(FS.ref(FS.db, SHARES), patch, false);
   }
-  // Copy one bundle chunk by chunk (one write each), meta last; skipped when the target is complete.
-  async function moveBundle(srcPath, dstPath, required) {
+  // ---- bundle files in Storage (manaBundleStore)
+  async function bundleGrant() {
+    for (let n = 0; n < 80; n++) {
+      const g = bundleFilesRef.current;
+      if (g && g.url) return g;
+      if (g && g.error) throw new Error('Bundle storage: ' + (g.error.message || String(g.error)));
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    throw new Error('Bundle storage is not ready yet; try again in a moment.');
+  }
+  const inHubFiles = (store) => !!(HUB_BUNDLES && store && store.owner === ownerId && typeof store.path === 'string' && store.path.startsWith(HUB_BUNDLES + '/'));
+  const hubRel = (store, i) => manaChunkObject(store, i).slice(HUB_BUNDLES.length + 1);
+  async function chunkUrl(store, i) {
+    if (inHubFiles(store)) { const g = await bundleGrant(); return g.url + g.encodePath(hubRel(store, i)); }
+    if (store.owner === userId) return FS.getDownloadURL(FS.storageRef(FS.storage, store.owner + '/' + manaChunkObject(store, i)));
+    throw new Error('These files are kept in their publisher’s own storage, so only the publisher can open them.');
+  }
+  async function readChunkText(path, meta, i) {
+    if (!(meta && meta.store)) return get(path + '/chunks/' + i);
+    const res = await fetch(await chunkUrl(meta.store, i));
+    if (!res.ok) throw new Error('Could not read the experiment files (' + res.status + ').');
+    return res.text();
+  }
+  async function writeChunk(store, i, text) {
+    const blob = new Blob([text], { type: 'application/json' });
+    if (inHubFiles(store)) {
+      const g = await bundleGrant(); const rel = hubRel(store, i);
+      const have = await g.stat(rel).catch(() => null);
+      if (have && have.size === blob.size) return; // content-addressed: already there
+      if (have) await g.remove(rel); // a partial earlier upload
+      await g.upload(rel, blob, { contentType: 'application/json' });
+      const back = await g.stat(rel).catch(() => null);
+      if (!back || back.size !== blob.size) throw new Error('A stored file did not read back complete; nothing was changed.');
+      return;
+    }
+    if (store.owner !== userId) throw new Error('Files can only be written to your own storage.');
+    await FS.uploadBytes(FS.storageRef(FS.storage, store.owner + '/' + manaChunkObject(store, i)), blob, { contentType: 'application/json' });
+  }
+  async function bundleReadable(path, meta) {
+    const last = (meta.chunkCount || 0) - 1;
+    if (last < 0) return true;
+    if (!meta.store) return (await get(path + '/chunks/' + last)) != null;
+    try { const res = await fetch(await chunkUrl(meta.store, last)); return res.ok; } catch (e) { return false; }
+  }
+  // Put a bundle's files where a bundle of `kind` ('hub' or 'mine') belongs and return the meta naming them.
+  async function placeBundle(srcPath, meta, kind, pub, bid, progress) {
+    const { store: _old, ...rest } = meta;
+    if (manaStoreFits(meta.store, kind, HUB, userId)) return { ...meta };
+    const store = manaBundleStore(kind, HUB, userId, pub, bid);
+    const n = meta.chunkCount || 0;
+    for (let i = 0; i < n; i++) {
+      if (progress) progress(`Copying files (${i + 1} of ${n})`);
+      await writeChunk(store, i, await readChunkText(srcPath, meta, i));
+    }
+    return { ...rest, store };
+  }
+  // Best effort: the hub files of a bundle no listing names any more.
+  async function removeHubFiles(meta) {
+    if (!meta || !inHubFiles(meta.store)) return;
+    const g = await bundleGrant();
+    for (let i = 0; i < (meta.chunkCount || 0); i++) await g.remove(hubRel(meta.store, i)).catch(() => {});
+  }
+  // Copy one bundle's files to where `kind` keeps them, meta last; skipped when the target is complete.
+  async function moveBundle(srcPath, dstPath, required, kind, pub) {
     if (await get(dstPath + '/meta/complete')) return;
     const meta = await get(srcPath + '/meta');
     if (!meta) { if (required) throw new Error('This listing has no source files.'); return; }
-    for (let i = 0; i < (meta.chunkCount || 0); i++) {
-      await FS.update(FS.ref(FS.db, dstPath), { ['chunks/' + i]: await get(srcPath + '/chunks/' + i) }, false);
-    }
-    await FS.update(FS.ref(FS.db, dstPath), { meta: { ...meta, complete: true, copiedFrom: srcPath } }, false);
+    const placed = await placeBundle(srcPath, meta, kind, pub, dstPath.slice(dstPath.lastIndexOf('/') + 1));
+    await FS.update(FS.ref(FS.db, dstPath), { meta: { ...placed, complete: true, copiedFrom: srcPath } }, false);
   }
   async function writeDocs(path, docs) {
     const at = path.lastIndexOf('/'), parent = path.slice(0, at), key = path.slice(at + 1);
@@ -247,7 +340,7 @@ function UserDiv() {
       upd['listings/' + L.exp + '/metadata'] = { type: 'link', hidden: true, displayName: rec.title || L.exp, createdAt: t, updatedAt: t, ...(manaReadGrants(access) ? { permissions: manaReadGrants(access) } : {}) };
       await FS.update(FS.ref(FS.db, MINE), upd, false);
     }
-    for (const b of plan.bundles) await moveBundle(plan.src.bundle(b), plan.dst.bundle(b), b === rec.bundle.id);
+    for (const b of plan.bundles) await moveBundle(plan.src.bundle(b), plan.dst.bundle(b), b === rec.bundle.id, to, L.uid);
     const docs = await get(plan.src.docs);
     if (docs) await writeDocs(plan.dst.docs, docs);
     const listing = { ...plan.listing, access, updatedAt: t };
@@ -259,10 +352,15 @@ function UserDiv() {
     for (const b of plan.bundles) {
       const m = await get(plan.dst.bundle(b) + '/meta');
       if (!m) continue; // a version whose files were never stored
-      if (!m.complete || (m.chunkCount && (await get(plan.dst.bundle(b) + '/chunks/' + (m.chunkCount - 1))) == null)) throw new Error('The moved files did not read back complete; the old listing was kept.');
+      if (!m.complete || !(await bundleReadable(plan.dst.bundle(b), m))) throw new Error('The moved files did not read back complete; the old listing was kept.');
     }
     if (docs && !(await get(plan.dst.docs))) throw new Error('The moved methods did not read back; the old listing was kept.');
-    if (from === 'hub') await FS.update(FS.ref(FS.db, HUB), Object.fromEntries(plan.deletes.map((p) => [p.slice(HUB.length + 1), null])), false);
+    if (from === 'hub') {
+      const goneMetas = [];
+      for (const b of plan.bundles) if (plan.deletes.includes(plan.src.bundle(b))) { const m = await get(plan.src.bundle(b) + '/meta'); if (m) goneMetas.push(m); }
+      await FS.update(FS.ref(FS.db, HUB), Object.fromEntries(plan.deletes.map((p) => [p.slice(HUB.length + 1), null])), false);
+      for (const m of goneMetas) if (!manaStoreFits(m.store, 'mine', HUB, userId)) await removeHubFiles(m).catch(() => {});
+    }
     else await FS.update(FS.ref(FS.db, MINE), { ['listings/' + L.exp]: null, ['listed/' + L.exp]: null }, false);
     if (to === 'mine') await FS.update(FS.ref(FS.db, MINE), { ['listed/' + L.exp]: { visibility: access.visibility, at: t } }, false);
     return listing;
@@ -284,15 +382,14 @@ function UserDiv() {
     return { access: next, notified };
   }
 
-  async function copyBundle(srcPath, destBase, bid, upd, prefix, progress) {
+  // Copy a bundle for a copy ('mine', the viewer's own Storage) or a listing (its place's kind):
+  // files to Storage first, then only the meta goes into the update.
+  async function copyBundle(srcPath, destBase, bid, upd, prefix, progress, kind = 'mine', pub = userId) {
     if (await get(destBase + '/' + bid + '/meta/complete')) return;
     const meta = await get(srcPath + '/meta');
     if (!meta) throw new Error('This listing has no source files.');
-    for (let i = 0; i < (meta.chunkCount || 0); i++) {
-      progress(`Copying files (${i + 1} of ${meta.chunkCount})`);
-      upd[prefix + bid + '/chunks/' + i] = await get(srcPath + '/chunks/' + i);
-    }
-    upd[prefix + bid + '/meta'] = { ...meta, complete: true, copiedFrom: srcPath, createdAt: Date.now() };
+    const placed = await placeBundle(srcPath, meta, kind, pub, bid, progress);
+    upd[prefix + bid + '/meta'] = { ...placed, complete: true, copiedFrom: srcPath, createdAt: Date.now() };
   }
 
   async function startJob(fork, kind, request, machine, options) {
@@ -489,8 +586,12 @@ function UserDiv() {
     async forgetRigMachine(mid) { await FS.remove(FS.ref(FS.db, MINE + '/machines/' + rigCheckMachineId(mid)), false); },
     loadYaml: loadManaYaml,
 
-    bundleMeta: (path) => get(path + '/meta'),
-    bundleChunk: async (path, i) => JSON.parse(await get(path + '/chunks/' + i) || '[]'),
+    bundleMeta: async (path) => { const m = await get(path + '/meta'); if (m) bundleMetas.current.set(path, m); return m; },
+    async bundleChunk(path, i) {
+      const meta = bundleMetas.current.get(path) || (await get(path + '/meta'));
+      if (meta) bundleMetas.current.set(path, meta);
+      return JSON.parse((await readChunkText(path, meta, i)) || '[]');
+    },
 
     async fork(L, progress) {
       const upd = {};
@@ -556,7 +657,7 @@ function UserDiv() {
         await ensureMine(upd, ['listings', 'listed']);
       }
       const bundleDir = place.bundle(bid).slice(0, -(bid.length + 1));
-      await copyBundle(head.path, bundleDir, bid, upd, rel(bundleDir) + '/', progress);
+      await copyBundle(head.path, bundleDir, bid, upd, rel(bundleDir) + '/', progress, kind, userId);
       const meta = await get(head.path + '/meta');
       const t = Date.now();
       const prev = old || {};
