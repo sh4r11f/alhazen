@@ -336,6 +336,9 @@ host.publish(fork, form), host.unpublish(fork), host.removeFork(fork)
 host.startJob(fork, kind, request, machine), host.newExperiment(title, request)   (Mana)
 host.uploadRevision(fork, file, message), host.archiveUrl(handle)                 (standalone)
 host.openDashboard(window, label), host.subscribeDashboards(cb)                  (Mana)
+host.subscribeRigMachines(cb), host.subscribeRigMachine(mid, cb), host.putRigConfig(...),
+host.deleteRigConfig(...), host.setRigDefault(...), host.resolveRigConfig(...),
+host.forgetRigMachine(mid), host.loadYaml()                                      (rigConfigs)
 host.art {url, encodePath, error}, host.copyText(text), host.useTheme(), host.showChat(id)
 ```
 
@@ -348,6 +351,25 @@ under the strict Content-Security-Policy.
 Differences between hosts are explicit in the UI: standalone hosts replace "Change with
 Mana" by download / upload of a revision and show the exact commands to run a copy on a rig;
 "My machines" and "Fork with AI" appear only where Mana Terminal and Mana chats exist.
+
+**Machines and their rig configs (3.8).** The Machines page (My machines in Mana) is one list of
+machines: the computers paired with Mana Terminal, or the machine tokens on a standalone host,
+plus any machine whose dashboard syncs rig configs but matches no row. A row is matched to the
+rig machines its dashboard synced by label (library.json `machine`, else the host name; trimmed,
+case-blind), the same rule as the Run dialog's config choice; one machine can match more than
+one record when dashboards with different state folders sync from it. Each row shows one line
+about its configs and has **Configure**, which opens the machine's Configure window: an in-page
+modal (keyboard and touch, Escape or the scrim closes it, it scrolls inside itself) listing the
+configs with the default and their state, and, in the same window, the editor (settings form and
+YAML, save, refusals, conflicts, make default, delete) and the new-config form. A row with no
+synced record opens a window that says so and offers Open dashboard (Mana), which connects the
+machine; no machine record is ever made in the browser, ids come from the dashboard. The window
+is in the address so Back closes it and a link reopens it:
+`?ehv=machines&ehdev=<row>[&ehid=<machine>&ehtab=<config|new>]` for a paired machine,
+`?ehv=machines&ehid=<machine>[&ehtab=<config|new>]` for a synced machine (the address of the
+full-screen editor before 3.8, so old links still open). Each step into the window is a history
+entry; Close goes back past all of them. The rig configs belong to the machine and every
+experiment run on it uses them; nothing about them is set inside an experiment's page.
 
 `platform-web/build.mjs` produces (1) `src/alhazen/experiment_platform/web/platform.js`
 for the standalone hosts and (2) `--mana <file>`: the Mana `user_div` code (the same source
@@ -423,9 +445,10 @@ workspace_library` for the page and the jobs).
   `alhazen-library` service (which vendors `rigsync.py`) for the machine's syncs. The machine
   syncs when it reads the library, every five minutes while the dashboard runs, after each
   change made on it and on demand; a platform without these routes (404) leaves its configs
-  local. The Machines page (My machines in Mana) shows each machine's configs with the same
-  sections as the dashboard's editor and a YAML view; Mana's Run dialog names the config, and
-  the dashboard opens with it chosen (`?rig=`, `alhazen dashboard --rig-config`).
+  local. On the Machines page (My machines in Mana) each machine's Configure window (section 7)
+  shows its configs with the same sections as the dashboard's editor and a YAML view; Mana's Run
+  dialog names the config, and the dashboard opens with it chosen (`?rig=`, `alhazen dashboard
+  --rig-config`).
 - **Closing.** When the dashboard stops (Shut down on the page, Ctrl+C), after its active run
   has ended, it sends `dashboard-closed` to its library: machine, alhazen version, start and
   close times, why it closed, the run jobs named in its connections, and every session launched
