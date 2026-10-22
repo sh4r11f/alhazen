@@ -2530,8 +2530,10 @@ function leaveExperiment(page = 'experiments') {
   if (page === 'rigs') renderRigs();
 }
 
-/** The Rigs page, drawn by workspace_manage.js; a plain message when that
- *  script is missing or fails, so the page is never blank. */
+/** The Rigs page, drawn by workspace_manage.js (which says in the page why
+ *  the configs could not be read); a plain message when that script is
+ *  missing, so the page is never blank. A failure to draw it is a bug, and
+ *  goes to the caller's guard(), which shows it. */
 function renderRigs() {
   const target = $('rigs-view');
   const manage = window.WorkspaceManage;
@@ -2539,13 +2541,7 @@ function renderRigs() {
     target.replaceChildren(node('p', 'data-unavailable', 'Rig configs are not available'));
     return;
   }
-  try {
-    manage.showRigs(target, pageHelpers());
-  } catch (e) {
-    console.error(e);
-    target.replaceChildren(node('p', 'data-unavailable',
-      `This machine’s rig configs could not be shown: ${e.message}`));
-  }
+  manage.showRigs(target, pageHelpers());
 }
 
 /** Go to a screen: a new history entry (or the current one replaced), then
