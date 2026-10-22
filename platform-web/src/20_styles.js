@@ -398,6 +398,7 @@ const CSS = `
 .eh-row-open{flex:1;min-width:0;display:flex;align-items:center;gap:14px;padding:14px 6px 14px 18px;background:none;border:0;text-align:left;color:inherit;border-radius:0}
 .eh-mine-row:hover{background:var(--hover-bg)}
 .eh-row-remove{flex:none;color:var(--muted)}
+.eh-row-action{flex:none;align-self:center}
 .eh-row-remove:hover{color:var(--accent-ink)}
 .eh-remove-plan h3{font-size:14px;font-weight:800;margin:16px 0 6px}
 .eh-remove-plan ul{margin:0;padding-left:20px;color:var(--ink)}

@@ -216,6 +216,18 @@ function PlatformApp({ host }) {
     } catch (e) { setBusy(''); setDialog({ ...d, error: e.message || String(e) }); }
   }
   const openAccess = (L) => setDialog({ kind: 'access', L, access: accessDraft(L), error: '' });
+  // Publish a listing that only the publisher (or people they chose) can see to the marketplace:
+  // the same access change as Change > Everyone, offered directly with what it means spelled out.
+  const canPublishToMarket = (L) => !!L && !!host.setAccess && accessCanManage(L, viewerUid) && accessOf(L).visibility !== 'public';
+  const openMarket = (L) => setDialog({ kind: 'market', L, error: '' });
+  async function publishToMarket(d) {
+    try {
+      setBusy('Publishing');
+      await host.setAccess(d.L, { visibility: 'public', people: [], notify: false });
+      setBusy(''); setDialog(null);
+      setFlash({ kind: 'ok', text: d.L.title + ' is on the marketplace: everyone can find it in Browse.' });
+    } catch (e) { setBusy(''); setDialog({ ...d, error: e.message || String(e) }); }
+  }
   // A share link to a listing the host has not listed yet (Mana keeps non-public listings outside
   // the hub): ask the host once whether this viewer can read it.
   React.useEffect(() => {
@@ -551,7 +563,7 @@ function PlatformApp({ host }) {
     // Who can see it: the publisher sees it for every listing and can change it; anyone else sees it
     // only when the listing was shared with them.
     const manage = accessCanManage(L, viewerUid) && !!host.setAccess;
-    const accessRow = manage || accessBadge(L, viewerUid) ? <div className="eh-access-row"><dt>Visible to</dt><dd><span>{accessSummary(L, viewerUid, { ...peopleNames, ...((L.access && L.access.names) || {}) })}</span>{manage ? <button className="eh-inline-link" disabled={!!busy} onClick={() => openAccess(L)}>Change</button> : null}</dd></div> : null;
+    const accessRow = manage || accessBadge(L, viewerUid) ? <div className="eh-access-row"><dt>Visible to</dt><dd><span>{accessSummary(L, viewerUid, { ...peopleNames, ...((L.access && L.access.names) || {}) })}</span>{manage ? <button className="eh-inline-link" disabled={!!busy} onClick={() => openAccess(L)}>Change</button> : null}{canPublishToMarket(L) ? <button className="eh-inline-link" disabled={!!busy} onClick={() => openMarket(L)}>Publish to the marketplace</button> : null}</dd></div> : null;
     return <EHDocumentationBoundary key={L.key+':'+(d?.metadata?.updatedAt || d?.__loadError || 'loading')}><EHExperimentPage L={L} d={d} route={route} art={art} actions={actions} renderTabs={tabs} renderFiles={filesTab} renderReplication={replication} go={go} onFile={onFile} accessBadge={accessBadge(L, viewerUid)} accessRow={accessRow} /></EHDocumentationBoundary>;
   }
 
@@ -594,7 +606,7 @@ function PlatformApp({ host }) {
     return g === 'public' ? <span className="status st-ok">On the marketplace</span> : <span className="tag-access">{g === 'private' ? 'Listed, only you' : 'Listed, shared'}</span>;
   }
 
-  function listingRow(L, sub) {
+  function listingRow(L, sub, publishable) {
     const badge = accessBadge(L, viewerUid);
     return <div key={L.key} className="row eh-mine-row">
       <button className="eh-row-open" onClick={() => go({ v: 'exp', id: L.key })}>
@@ -602,6 +614,7 @@ function PlatformApp({ host }) {
         <div className="row-main"><div className="row-title">{L.title}</div><div className="row-sub">{sub}</div></div>
         {badge ? <span className="tag-access">{badge}</span> : null}
       </button>
+      {publishable && canPublishToMarket(L) ? <button className="btn btn-line btn-small eh-row-action" disabled={!!busy} aria-label={'Publish ' + L.title + ' to the marketplace'} onClick={() => openMarket(L)}>Publish</button> : null}
     </div>;
   }
 
@@ -619,8 +632,8 @@ function PlatformApp({ host }) {
           {caps.newWithMana ? <button className="btn btn-primary" disabled={!viewerUid} onClick={() => setDialog({ kind: 'new', title: '', text: '' })}>New experiment</button> : null}</div>
         <p className="eh-muted" style={{ margin: '0 0 24px' }}>{hasListings ? 'Your listings, listings shared with you, and your copies. Only you can see and change your copies; publish one to list it for everyone, for people you choose, or only for you.' : 'Your copies. Only you can see and change them; publish one to list it for everyone, for people you choose, or only for you.'}</p>
         {sec.notOnMarketplace.length ? <section className="eh-mine-section"><h2>Not on the marketplace</h2>
-          <p className="eh-muted">Your listings that only you, or the people you chose, can see. Add one to your library to change it or run it.</p>
-          <div className="list">{sec.notOnMarketplace.map((L) => listingRow(L, facts(L, accessSummary(L, viewerUid, names))))}</div></section> : null}
+          <p className="eh-muted">Your listings that only you, or the people you chose, can see. Add one to your library to change it or run it, or publish it to the marketplace.</p>
+          <div className="list">{sec.notOnMarketplace.map((L) => listingRow(L, facts(L, accessSummary(L, viewerUid, names)), true))}</div></section> : null}
         {sec.sharedWithYou.length ? <section className="eh-mine-section"><h2>Shared with you</h2>
           <div className="list">{sec.sharedWithYou.map((L) => listingRow(L, facts(L, 'From ' + ((L.publisher || {}).name || 'Unknown'))))}</div></section> : null}
         <section className="eh-mine-section">{hasListings ? <h2>Your copies</h2> : null}
@@ -940,6 +953,13 @@ function PlatformApp({ host }) {
       <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" onClick={() => unpublish(d.f, d.listedAs)}>Remove the listing</button></div></> : <>
       <h2>Take off the marketplace?</h2><p>The listing disappears from Browse. Copies others already forked stay theirs, and your copy is unchanged.</p>
       <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" onClick={() => unpublish(d.f, 'public')}>Take off</button></div></>;
+    else if (d.kind === 'market') { const nv = Math.max(1, Object.keys(d.L.versions || {}).length); const shared = accessOf(d.L).visibility === 'people';
+      body = <>
+      <h2>Publish {d.L.title} to the marketplace?</h2>
+      <p>It appears in Browse for everyone. Anyone can read its methods, open its source files and fork it, for {nv === 1 ? 'its one version' : 'all ' + nv + ' versions'}.</p>
+      <p>You can take it off the marketplace later, but copies people made in the meantime stay theirs.{shared ? ' The people you shared it with keep seeing it.' : ''}</p>
+      {d.error ? <p className="eh-access-error" role="alert">{d.error}</p> : null}
+      <div className="eh-actions"><button className="btn btn-line" autoFocus onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={() => publishToMarket(d)}>{busy === 'Publishing' ? 'Publishing…' : 'Publish to the marketplace'}</button></div></>; }
     else if (d.kind === 'access') { const a = d.access; const before = accessOf(d.L).visibility;
       body = <>
       <h2>Who can see {d.L.title}</h2>

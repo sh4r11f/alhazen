@@ -38,9 +38,13 @@ function manaParseShareKey(key) {
 }
 // Where each part of a listing is stored, for both kinds of location.
 function manaListingPlace(kind, hub, pub, exp) {
-  if (kind === 'hub') return { kind, listing: hub + '/published/' + pub + '/' + exp, docs: hub + '/docs/' + pub + '/' + exp, bundle: (id) => hub + '/bundles/' + pub + '/' + id, base: null };
+  // `kit`: the catalogue builder's records for the listing (method-figure records, the task-guide
+  // descriptor). Derived and rebuildable, but a move carries them so the next refresh still finds them.
+  if (kind === 'hub') return { kind, listing: hub + '/published/' + pub + '/' + exp, docs: hub + '/docs/' + pub + '/' + exp, bundle: (id) => hub + '/bundles/' + pub + '/' + id, base: null,
+    kit: { methodFigures: hub + '/method-figures/' + exp, guideDescriptor: hub + '/kit/method-guides/descriptors/' + exp } };
   const base = manaMineOf(pub) + '/listings/' + exp;
-  return { kind, listing: base + '/listing', docs: base + '/docs', bundle: (id) => base + '/bundles/' + id, base };
+  return { kind, listing: base + '/listing', docs: base + '/docs', bundle: (id) => base + '/bundles/' + id, base,
+    kit: { methodFigures: base + '/methodFigures', guideDescriptor: base + '/guideDescriptor' } };
 }
 // [2026-10-21] Bundle files live in Firebase Storage, not the database. Every device that opens
 // Mana loads the owner's whole file-system tree, and bundles (source plus base64 stimulus images,
@@ -359,6 +363,13 @@ function UserDiv() {
     for (const b of plan.bundles) await moveBundle(plan.src.bundle(b), plan.dst.bundle(b), b === rec.bundle.id, to, L.uid);
     const docs = await get(plan.src.docs);
     if (docs) await writeDocs(plan.dst.docs, docs);
+    // Kit records: only the hub owner may write the hub's copies; anyone else's move goes on without them.
+    const kitMoved = [];
+    for (const [k, srcKit] of Object.entries(plan.src.kit)) {
+      const v = await get(srcKit);
+      if (v == null) continue;
+      try { await writeDocs(plan.dst.kit[k], v); kitMoved.push(k); } catch (e) { if (!manaPermissionDenied(e)) throw e; }
+    }
     const listing = { ...plan.listing, access, updatedAt: t };
     if (to === 'mine') await FS.update(FS.ref(FS.db, plan.dst.base), { listing, 'metadata/permissions': manaReadGrants(access), 'metadata/updatedAt': t }, false);
     else await FS.update(FS.ref(FS.db, HUB + '/published/' + L.uid), { [L.exp]: listing }, false);
@@ -371,11 +382,13 @@ function UserDiv() {
       if (!m.complete || !(await bundleReadable(plan.dst.bundle(b), m))) throw new Error('The moved files did not read back complete; the old listing was kept.');
     }
     if (docs && !(await get(plan.dst.docs))) throw new Error('The moved methods did not read back; the old listing was kept.');
+    for (const k of kitMoved) if ((await get(plan.dst.kit[k])) == null) throw new Error('The moved figure records did not read back; the old listing was kept.');
     if (from === 'hub') {
       const goneMetas = [];
       for (const b of plan.bundles) if (plan.deletes.includes(plan.src.bundle(b))) { const m = await get(plan.src.bundle(b) + '/meta'); if (m) goneMetas.push(m); }
       await FS.update(FS.ref(FS.db, HUB), Object.fromEntries(plan.deletes.map((p) => [p.slice(HUB.length + 1), null])), false);
       for (const m of goneMetas) if (!manaStoreFits(m.store, 'mine', HUB, userId)) await removeHubFiles(m).catch(() => {});
+      if (kitMoved.length) await FS.update(FS.ref(FS.db, HUB), Object.fromEntries(kitMoved.map((k) => [plan.src.kit[k].slice(HUB.length + 1), null])), false).catch(() => {});
     }
     else await FS.update(FS.ref(FS.db, MINE), { ['listings/' + L.exp]: null, ['listed/' + L.exp]: null }, false);
     if (to === 'mine') await FS.update(FS.ref(FS.db, MINE), { ['listed/' + L.exp]: { visibility: access.visibility, at: t } }, false);
