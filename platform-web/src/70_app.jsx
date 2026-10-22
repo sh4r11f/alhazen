@@ -554,7 +554,15 @@ function PlatformApp({ host }) {
     if (!L) return published === null || resolving ? <p className="eh-muted">Loading…</p> : <div className="empty"><h3>This experiment is not in the catalogue</h3><p>It may have been taken off, or it is not shared with you. <button className="btn btn-quiet" onClick={() => go({v:'browse'})}>Browse experiments</button></p></div>;
     const d = docs[L.key];
     const mine = forkedFrom[L.key];
-    const actions = mine ? <><button className="btn btn-primary" onClick={() => go({v:'fork',id:mine})}>Open my copy</button><button className="btn btn-line" disabled={!!busy} onClick={() => forkListing(L)}>Fork again</button></> : <>{caps.signIn && !viewerUid ? <button className="btn btn-primary" onClick={() => host.signIn()}>Sign in to add to library</button> : <button className="btn btn-primary" disabled={!!busy || !viewerUid} onClick={() => forkListing(L)}>Add to library</button>}{caps.changeWithMana ? <button className="btn btn-line" disabled={!!busy || !viewerUid} onClick={() => setDialog({kind:'forkai',L,text:''})}>Fork with AI</button> : null}</>;
+    // [3.9] Your own listing (one you publish) is not something to add to a library: offer what you
+    // do with it. Without a copy: Run on a machine and Change with Mana (each makes the copy first),
+    // Make a copy as a quiet link. With a copy: Open my copy, then Duplicate / Duplicate with Mana.
+    // Someone else's listing keeps Add to library / Fork with AI (Open my copy / Fork again once copied).
+    const own = !!viewerUid && accessCanManage(L, viewerUid) && caps.runOnMachines;
+    const actions = own ? (mine
+      ? <><button className="btn btn-primary" onClick={() => go({v:'fork',id:mine})}>Open my copy</button><button className="btn btn-line" disabled={!!busy} onClick={() => forkListing(L)}>Duplicate</button>{caps.changeWithMana ? <button className="btn btn-line" disabled={!!busy} onClick={() => setDialog({kind:'forkai',L,text:'',mode:'duplicate'})}>Duplicate with Mana</button> : null}</>
+      : <><button className="btn btn-primary" disabled={!!busy} onClick={() => setDialog({kind:'run',L,machine:''})}>Run on a machine</button>{caps.changeWithMana ? <button className="btn btn-line" disabled={!!busy} onClick={() => setDialog({kind:'forkai',L,text:'',mode:'change'})}>Change with Mana</button> : null}<button className="btn btn-quiet btn-small" disabled={!!busy} onClick={() => forkListing(L)}>Make a copy</button></>)
+      : mine ? <><button className="btn btn-primary" onClick={() => go({v:'fork',id:mine})}>Open my copy</button><button className="btn btn-line" disabled={!!busy} onClick={() => forkListing(L)}>Fork again</button></> : <>{caps.signIn && !viewerUid ? <button className="btn btn-primary" onClick={() => host.signIn()}>Sign in to add to library</button> : <button className="btn btn-primary" disabled={!!busy || !viewerUid} onClick={() => forkListing(L)}>Add to library</button>}{caps.changeWithMana ? <button className="btn btn-line" disabled={!!busy || !viewerUid} onClick={() => setDialog({kind:'forkai',L,text:''})}>Fork with AI</button> : null}</>;
     const onFile = async file => {
       go({v:'exp',id:L.key,tab:'files'});
       try { await openFile(L.bundle.path,file); }
@@ -626,35 +634,45 @@ function PlatformApp({ host }) {
     for (const L of sec.notOnMarketplace) Object.assign(names, (L.access && L.access.names) || {});
     const facts = (L, first) => [first, L.version ? 'v' + L.version : '', L.updatedAt ? 'updated ' + ago(L.updatedAt) : ''].filter(Boolean).join(' · ');
     const hasListings = sec.notOnMarketplace.length || sec.sharedWithYou.length || sec.onMarketplace.length;
+    // [3.9] Copies sit under the listing they came from when that listing is shown here (not on the
+    // marketplace, or shared with you), so one experiment is not listed twice; the rest stay below.
+    const shownKeys = new Set([...sec.notOnMarketplace, ...sec.sharedWithYou].map((L) => L.key));
+    const copiesOf = (L) => forkList.filter((f) => f.origin && !f.origin.scratch && f.origin.publisherUid + '~' + f.origin.exp === L.key);
+    const looseCopies = forkList.filter((f) => !(f.origin && !f.origin.scratch && shownKeys.has(f.origin.publisherUid + '~' + f.origin.exp)));
+    const revN = (f) => Object.keys(f.revisions || {}).length;
+    const forkRow = (f, under) => {
+      const jobs = Object.values(f.jobs || {}).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+      const live = jobs.find((j) => j.status === 'running' || j.status === 'waiting');
+      const title = under ? (f.title && f.title !== under.title ? f.title : 'Your copy') : f.title;
+      const from = f.origin && f.origin.scratch ? 'Started from scratch' : `From ${f.origin.title}${f.origin.publisherName ? ' by ' + f.origin.publisherName : ''}`;
+      const sub = [under ? (f.origin && f.origin.version ? 'From v' + f.origin.version : '') : from, revN(f) + ' revision' + (revN(f) === 1 ? '' : 's'), 'changed ' + ago(f.updatedAt)].filter(Boolean).join(' · ');
+      return (
+        <div key={f.id} className={'row eh-mine-row' + (under ? ' eh-mine-child' : '')}>
+          <button className="eh-row-open" onClick={() => go({ v: 'fork', id: f.id })}>
+            {under ? null : <div className="row-art"><EHExperimentLogo item={f}/></div>}
+            <div className="row-main"><div className="row-title">{title}</div><div className="row-sub">{sub}</div></div>
+            {f.published ? publishedChip(f) : null}
+            {live ? statusChip(live.status) : null}
+          </button>
+          <button className="btn btn-quiet btn-small eh-row-remove" aria-label={'Remove ' + f.title + ' from your library'} onClick={() => setDialog({ kind: 'remove', f })}>Remove</button>
+        </div>);
+    };
+    const withCopies = (L, row) => [row, ...copiesOf(L).map((f) => forkRow(f, L))];
     return (
       <>
         <div className="eh-sechead" style={{ marginBottom: 6 }}><h1 style={{ fontSize: 34, fontWeight: 800 }}>My experiments</h1>
           {caps.newWithMana ? <button className="btn btn-primary" disabled={!viewerUid} onClick={() => setDialog({ kind: 'new', title: '', text: '' })}>New experiment</button> : null}</div>
         <p className="eh-muted" style={{ margin: '0 0 24px' }}>{hasListings ? 'Your listings, listings shared with you, and your copies. Only you can see and change your copies; publish one to list it for everyone, for people you choose, or only for you.' : 'Your copies. Only you can see and change them; publish one to list it for everyone, for people you choose, or only for you.'}</p>
         {sec.notOnMarketplace.length ? <section className="eh-mine-section"><h2>Not on the marketplace</h2>
-          <p className="eh-muted">Your listings that only you, or the people you chose, can see. Add one to your library to change it or run it, or publish it to the marketplace.</p>
-          <div className="list">{sec.notOnMarketplace.map((L) => listingRow(L, facts(L, accessSummary(L, viewerUid, names)), true))}</div></section> : null}
+          <p className="eh-muted">Your listings that only you, or the people you chose, can see. Open one to run or change it, or publish it to the marketplace. Your copies sit under the listing they came from.</p>
+          <div className="list">{sec.notOnMarketplace.flatMap((L) => withCopies(L, listingRow(L, facts(L, accessSummary(L, viewerUid, names)), true)))}</div></section> : null}
         {sec.sharedWithYou.length ? <section className="eh-mine-section"><h2>Shared with you</h2>
-          <div className="list">{sec.sharedWithYou.map((L) => listingRow(L, facts(L, 'From ' + ((L.publisher || {}).name || 'Unknown'))))}</div></section> : null}
-        <section className="eh-mine-section">{hasListings ? <h2>Your copies</h2> : null}
-          {forks === null ? <p className="eh-muted">Loading…</p> : forkList.length ? <div className="list">
-            {forkList.map((f) => {
-              const jobs = Object.values(f.jobs || {}).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
-              const live = jobs.find((j) => j.status === 'running' || j.status === 'waiting');
-              return (
-                <div key={f.id} className="row eh-mine-row">
-                  <button className="eh-row-open" onClick={() => go({ v: 'fork', id: f.id })}>
-                    <div className="row-art"><EHExperimentLogo item={f}/></div>
-                    <div className="row-main"><div className="row-title">{f.title}</div>
-                      <div className="row-sub">{f.origin && f.origin.scratch ? 'Started from scratch' : `From ${f.origin.title}${f.origin.publisherName ? ' by ' + f.origin.publisherName : ''}`} · {Object.keys(f.revisions || {}).length} revision{Object.keys(f.revisions || {}).length === 1 ? '' : 's'} · changed {ago(f.updatedAt)}</div></div>
-                    {f.published ? publishedChip(f) : null}
-                    {live ? statusChip(live.status) : null}
-                  </button>
-                  <button className="btn btn-quiet btn-small eh-row-remove" aria-label={'Remove ' + f.title + ' from your library'} onClick={() => setDialog({ kind: 'remove', f })}>Remove</button>
-                </div>);
-            })}
+          <div className="list">{sec.sharedWithYou.flatMap((L) => withCopies(L, listingRow(L, facts(L, 'From ' + ((L.publisher || {}).name || 'Unknown')))))}</div></section> : null}
+        {forks !== null && forkList.length && !looseCopies.length ? null : <section className="eh-mine-section">{hasListings ? <h2>{shownKeys.size && forkList.length > looseCopies.length ? 'Other copies' : 'Your copies'}</h2> : null}
+          {forks === null ? <p className="eh-muted">Loading…</p> : looseCopies.length ? <div className="list">
+            {looseCopies.map((f) => forkRow(f, null))}
           </div> : (caps.signIn && !viewerUid ? <div className="empty"><h3>Sign in to keep experiments</h3><p>Your copies are private to your account.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-primary" onClick={() => host.signIn()}>Sign in</button></div></div> : <div className="empty"><h3>Nothing here yet</h3><p>{caps.newWithMana ? 'Fork an experiment from Browse, or start a new one.' : 'Fork an experiment from Browse.'}</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-line" onClick={() => go({ v: 'browse' })}>Browse experiments</button></div></div>)}
-        </section>
+        </section>}
         {sec.onMarketplace.length ? <details className="eh-mine-section eh-mine-public"><summary>On the marketplace <span>{sec.onMarketplace.length}</span></summary>
           <div className="list">{sec.onMarketplace.map((L) => listingRow(L, facts(L, 'Everyone')))}</div></details> : null}
       </>
@@ -910,20 +928,23 @@ function PlatformApp({ host }) {
     const d = dialog; const close = () => setDialog(null);
     let body = null;
     if (d.kind === 'forkai') body = <>
-      <h2>Fork with AI</h2><p>{d.L.title} is copied to My experiments, then Mana changes your copy as you describe.</p>
+      <h2>{d.mode === 'change' ? 'Change with Mana' : d.mode === 'duplicate' ? 'Duplicate with Mana' : 'Fork with AI'}</h2>
+      <p>{d.mode === 'change' ? 'Mana makes your copy of ' + d.L.title + ' in My experiments, then changes the copy as you describe. Your listing stays as it is.' : d.mode === 'duplicate' ? 'Mana makes another copy of ' + d.L.title + ' and changes it as you describe. Your current copy and your listing stay as they are.' : d.L.title + ' is copied to My experiments, then Mana changes your copy as you describe.'}</p>
       <div className="field"><label htmlFor="eh-ai">What should change?</label><textarea id="eh-ai" autoFocus value={d.text} onChange={(e) => setDialog({ ...d, text: e.target.value })} /></div>
-      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!d.text.trim() || !!busy} onClick={async () => { const text = d.text.trim(); close(); await forkListing(d.L, async (forkId, rec) => { await startJob(forkId, rec, 'change', text); go({ v: 'fork', id: forkId, tab: 'changes' }, true); }); }}>Fork and ask</button></div></>;
+      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!d.text.trim() || !!busy} onClick={async () => { const text = d.text.trim(); close(); await forkListing(d.L, async (forkId, rec) => { await startJob(forkId, rec, 'change', text); go({ v: 'fork', id: forkId, tab: 'changes' }, true); }); }}>{d.mode === 'change' ? 'Copy and ask' : d.mode === 'duplicate' ? 'Duplicate and ask' : 'Fork and ask'}</button></div></>;
     else if (d.kind === 'new') body = <>
       <h2>New experiment</h2><p>Mana scaffolds an alhazen experiment in My experiments and builds what you describe.</p>
       <div className="field"><label htmlFor="eh-nt">Name</label><input id="eh-nt" autoFocus value={d.title} onChange={(e) => setDialog({ ...d, title: e.target.value })} /></div>
       <div className="field"><label htmlFor="eh-nd">What should it do?</label><textarea id="eh-nd" value={d.text} onChange={(e) => setDialog({ ...d, text: e.target.value })} placeholder="Task, stimulus, trial structure, what is measured, human or monkey, hardware." /></div>
       <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!d.title.trim() || !d.text.trim()} onClick={async () => { const t = d.title.trim(), x = d.text.trim(); close(); try { await newExperiment(t, x); } catch (e) { setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } }}>Create</button></div></>;
     else if (d.kind === 'run') body = <>
-      <h2>Run on my machine</h2><p>Mana copies {d.f.title} to the rig, builds its environment and opens the alhazen dashboard. When Mana Terminal on the machine asks for confirmation, answer it in that window.</p>
+      <h2>{d.L ? 'Run on a machine' : 'Run on my machine'}</h2><p>{d.L ? 'Mana makes your copy of ' + d.L.title + ' in My experiments, copies it to the rig, builds its environment and opens the alhazen dashboard.' : 'Mana copies ' + d.f.title + ' to the rig, builds its environment and opens the alhazen dashboard.'} When Mana Terminal on the machine asks for confirmation, answer it in that window.</p>
       {machines.sessions.length > 1 ? <div className="field"><label htmlFor="eh-m">Terminal window</label><select id="eh-m" value={d.machine} onChange={(e) => setDialog({ ...d, machine: e.target.value })}><option value="">Newest window</option>{machines.sessions.map((s) => { const dv = machines.devices.find((x) => x.id === s.device) || {}; return <option key={s.id} value={s.id}>{(dv.label || s.device) + ' · ' + (s.tty || s.id)}</option>; })}</select></div> : null}
       {caps.rigConfigs ? <RigConfigPicker host={host} deviceLabel={runDeviceLabel(d.machine)} value={d.rigConfig || ''} onChange={(v) => setDialog({ ...d, rigConfig: v })} /> : null}
       <div style={{ marginTop: 14 }}>{machinesPanel(true)}</div>
-      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={async () => { close(); try { await startJob(d.f.id, d.f, 'run', '', d.machine, { rigConfig: d.rigConfig ? d.rigConfig.slice(d.rigConfig.indexOf('|') + 1) : '' }); go({ v: 'fork', id: d.f.id, tab: 'run' }, true); } catch (e) { setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } }}>Run</button></div></>;
+      <div className="eh-actions"><button className="btn btn-line" onClick={close}>Cancel</button><button className="btn btn-primary" disabled={!!busy} onClick={async () => { close(); const opts = { rigConfig: d.rigConfig ? d.rigConfig.slice(d.rigConfig.indexOf('|') + 1) : '' };
+        const run = async (id, rec) => { try { await startJob(id, rec, 'run', '', d.machine, opts); go({ v: 'fork', id, tab: 'run' }, true); } catch (e) { setFlash({ kind: 'bad', text: 'Could not start: ' + (e.message || e) }); } };
+        if (d.L) await forkListing(d.L, run); else await run(d.f.id, d.f); }}>Run</button></div></>;
     else if (d.kind === 'share') { const fm = d.form; const set = (k, v) => setDialog({ ...d, form: { ...fm, [k]: v } });
       const togg = (k) => set('subjects', fm.subjects.includes(k) ? fm.subjects.filter((x) => x !== k) : [...fm.subjects, k]);
       const a = d.access;

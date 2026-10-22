@@ -287,7 +287,17 @@ recorded version readable and forkable; copies made meanwhile stay their owners'
 same access change as Change > Everyone. On Mana that move also carries the catalogue builder's
 records for the listing (`method-figures/<exp>` and `kit/method-guides/descriptors/<exp>` in the
 hub, `methodFigures` and `guideDescriptor` beside a non-public listing) in both directions, when the
-mover may write them (the hub owner); before 3.8.6 a move dropped them. (Until 3.8.5 Browse showed everything the viewer could see, with a "Visible to" filter;
+mover may write them (the hub owner); before 3.8.6 a move dropped them.
+
+**Actions on your own listing (3.9).** A listing the viewer publishes is not offered *Add to
+library*: without a copy its sheet shows **Run on a machine** (makes the copy, then the Run dialog's
+run) and **Change with Mana** (makes the copy, then a change request), with **Make a copy** as a
+quiet link; with a copy, **Open my copy**, **Duplicate** and **Duplicate with Mana**. Someone else's
+listing keeps *Add to library* / *Fork with AI* (*Open my copy* / *Fork again* once copied), and a
+host without runs on machines keeps the old labels. In My experiments a copy sits under the
+listing it came from when that listing is shown there (*Not on the marketplace*, *Shared with
+you*); the remaining copies are listed below as *Other copies* (or *Your copies* when none are
+grouped). (Until 3.8.5 Browse showed everything the viewer could see, with a "Visible to" filter;
 that put a publisher's private research experiments on their marketplace page.)
 
 Host interface additions: `host.setAccess(listing, {visibility, people, notify})` resolving to
