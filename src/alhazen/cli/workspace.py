@@ -3072,6 +3072,8 @@ class Workspace:
         task = task or None
         is_mode = mode is None or mode in {m.value for m in Mode}
         declared = self._declared_events(project, task) if is_mode else None
+        source: dict[str, Any] | None
+        dropped: list[str]
         if mode == Mode.MEASURE.value:
             values, source, dropped = copy.deepcopy(machine.values), None, []
         else:
@@ -3183,13 +3185,13 @@ class Workspace:
             in_machine, machine_value = mr.get_path(machine.values, path)
             if found and (not in_machine or value != machine_value):
                 carried[mr.dotted(path)] = value
-        path = run_dir / machine.path.name
-        ref = RigRef(machine.name, path, "experiment")
+        session_path = run_dir / machine.path.name
+        ref = RigRef(machine.name, session_path, "experiment")
         return LaunchRig(
             machine.name,
             MACHINE_SPEC,
-            str(path),
-            path,
+            str(session_path),
+            session_path,
             MergedRig(values, None, None),
             ref,
             machine=machine,
