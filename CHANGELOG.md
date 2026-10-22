@@ -26,6 +26,23 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## 3.8.4 - 2026-10-21
+
+### Fixed
+- **`alhazen` commands where no home directory can be determined.** The machine-rig command
+  looked up the default state folder when the module was imported, so on a machine (or CI
+  runner) with no resolvable home directory every `alhazen` command failed with "Could not
+  determine home directory", including `validate`. It is now resolved when the command runs.
+- **Library page: a background refresh is no longer missed.** The workspace library took its
+  "refreshing" snapshot after starting the background read, so a fast read could finish first
+  and the page reported a stale list or swallowed a failed read. The snapshot is now taken
+  before the read starts.
+
+### Changed
+- Development only: `platform-web/test/gen_rigsync_cases.py` formatted to the line limit (the
+  generated cases are byte-identical) and four type errors in `workspace.py` fixed, so `ruff`
+  and `mypy` pass in CI again.
+
 ## 3.8.3 - 2026-10-21
 
 ### Changed
