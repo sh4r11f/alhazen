@@ -134,7 +134,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/smoke/bin/alhazen" new smoke_demo
           cd smoke_demo
-          PYTHONPATH=src "$RUNNER_TEMP/smoke/bin/python" run.py --mode simulate \
+          PYTHONPATH=src "$RUNNER_TEMP/smoke/bin/python" run.py --task smoke-demo --mode simulate \
             --rig configs/rig-lab.yaml --headless
           # A zero exit with no data written is not a session that ran.
           run_dir=$(find data-rehearsal -type d -name 'run-*' | head -n 1)
