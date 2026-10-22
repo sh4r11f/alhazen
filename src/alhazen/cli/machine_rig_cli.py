@@ -29,7 +29,13 @@ from alhazen.config.experiment import experiment_title
 from alhazen.config.rigs import resolve_rig
 from alhazen.errors import ConfigError
 
-DEFAULT_STATE = Path.home() / ".alhazen" / "dashboard"
+
+def default_state() -> Path:
+    """The dashboard's own state folder. Looked up when a rig command runs, not at import:
+    every ``alhazen`` command imports this module, and on a machine whose home folder cannot
+    be determined (no HOME / USERPROFILE) an import-time ``Path.home()`` made every command,
+    ``alhazen validate`` included, fail before it started."""
+    return Path.home() / ".alhazen" / "dashboard"
 
 
 def add_parser(sub: Any) -> None:
@@ -63,7 +69,7 @@ def add_parser(sub: Any) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    machine = MachineRigs(Path(args.state_dir).expanduser() if args.state_dir else DEFAULT_STATE)
+    machine = MachineRigs(Path(args.state_dir).expanduser() if args.state_dir else default_state())
     if args.rig_action in ("show", "list"):
         status = machine.status()
         if status.get("error") or not status["configs"]:

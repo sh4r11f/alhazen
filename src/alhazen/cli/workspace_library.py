@@ -178,13 +178,17 @@ class Library:
             return {"configured": True, "error": str(error), "items": []}
         if source is None:
             return {"configured": False, "items": []}
-        if self._due(source):
-            self._refresh_in_background()
+        due = self._due(source)
+        # Read the state before a background read starts, so the answer that starts one
+        # says so: read after, a fast read could already have finished and this answer
+        # would report neither the dropped list nor the read it started.
         with self._lock:
             forks = dict(self._forks)
             jobs = {k: dict(v) for k, v in self._jobs.items()}
             fetched, problem = self._fetched, self._error
-            refreshing = self._refreshing > 0
+            refreshing = self._refreshing > 0 or due
+        if due:
+            self._refresh_in_background()
         registered = {str(Path(p["path"]).resolve()): p["id"] for p in self.workspace.projects}
         items = [
             self._item(source, fid, fork, registered, jobs.get(fid)) for fid, fork in forks.items()
