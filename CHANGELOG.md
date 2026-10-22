@@ -26,7 +26,7 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
-## Unreleased
+## 3.8.1 - 2026-10-21
 
 ### Fixed
 - **Dashboard: the duration estimate refused a chosen rig config.** Once a machine had a rig
