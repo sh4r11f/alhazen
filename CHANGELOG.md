@@ -26,6 +26,16 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## 3.8.9 - 2026-10-22
+
+### Changed
+- **Experiment Platform: actions on your own listings.** A listing you publish no longer offers
+  *Add to library*. Without a copy: Run on a machine and Change with Mana (each makes the copy
+  first), and Make a copy. With a copy: Open my copy, Duplicate, Duplicate with Mana. Other
+  people's listings keep Add to library and Fork with AI.
+- **My experiments: copies under their listing.** A copy of a listing shown in My experiments sits
+  under it; the remaining copies are listed as Other copies.
+
 ## 3.8.8 - 2026-10-22
 
 ### Changed
