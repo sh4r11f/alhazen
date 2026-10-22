@@ -71,6 +71,37 @@ function manaStoreFits(store, kind, hub, uid) {
   if (kind === 'hub') return store.owner === hub.split('/')[0] && store.path.startsWith(manaHubBundlePrefix(hub) + '/');
   return store.owner === uid && store.path.startsWith(MANA_MINE_NAME + '/bundles/');
 }
+// [2026-10-22] Docs in Storage too. A listing's docs record (methods, readme, tasks, the task guide,
+// the parameter guide, ...) was large JSON text in the database, copied again into every private
+// listing and every copy's snapshot. Each text longer than MANA_DOC_INLINE_MAX is now stored once,
+// content-addressed, and the record keeps a pointer { sha, bytes, store: { v, owner, path } }:
+// public ones in the hub's `bundles` grant under _docs/<sha>.txt, private ones in their owner's own
+// Storage (alhazen-experiment-platform-mine/docs/<sha>.txt). A copy whose text is identical names the
+// same object. Listings shared with specific people keep their text inline: those people cannot
+// read the publisher's own Storage. Records written before this (inline strings) still read.
+const MANA_DOC_STORE_V = 1;
+const MANA_DOC_INLINE_MAX = 1024;
+const manaHubDocPrefix = (hub) => manaHubBundlePrefix(hub) + '/_docs';
+function manaDocStore(kind, hub, uid, sha) {
+  return kind === 'hub'
+    ? { v: MANA_DOC_STORE_V, owner: hub.split('/')[0], path: manaHubDocPrefix(hub) + '/' + sha + '.txt' }
+    : { v: MANA_DOC_STORE_V, owner: uid, path: MANA_MINE_NAME + '/docs/' + sha + '.txt' };
+}
+const manaIsDocPointer = (v) => !!(v && typeof v === 'object' && !Array.isArray(v) && typeof v.sha === 'string' && /^[0-9a-f]{64}$/.test(v.sha)
+  && v.store && typeof v.store.owner === 'string' && typeof v.store.path === 'string');
+// Whether a pointer already sits where a docs record of `kind` keeps its text: 'hub', 'mine' (the
+// viewer's own Storage), 'copy' (either: a copy names what its viewer can read) or 'inline' (never).
+function manaDocFits(ptr, kind, hub, uid) {
+  if (!manaIsDocPointer(ptr)) return false;
+  const inHub = !!hub && ptr.store.owner === hub.split('/')[0] && ptr.store.path.startsWith(manaHubDocPrefix(hub) + '/');
+  const inMine = ptr.store.owner === uid && ptr.store.path.startsWith(MANA_MINE_NAME + '/docs/');
+  if (kind === 'hub') return inHub;
+  if (kind === 'mine') return inMine;
+  if (kind === 'copy') return inHub || inMine;
+  return false;
+}
+// Where a listing place keeps its docs text.
+const manaDocKind = (placeKind, access) => (placeKind === 'hub' ? 'hub' : accessOf({ access }).visibility === 'people' ? 'inline' : 'mine');
 const manaPermissionDenied = (e) => /permission[_ ]denied/i.test(String((e && (e.code || e.message)) || e));
 const manaPlaceKind = (access) => (accessOf({ access }).visibility === 'public' ? 'hub' : 'mine');
 // The Firebase read grants that mirror access.people (null: nobody besides the publisher).
@@ -333,6 +364,88 @@ function UserDiv() {
     const g = await bundleGrant();
     for (let i = 0; i < (meta.chunkCount || 0); i++) await g.remove(hubRel(meta.store, i)).catch(() => {});
   }
+  // ---- docs text in Storage (manaDocStore)
+  const docTexts = React.useRef(new Map());
+  async function sha256Hex(text) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  async function docUrl(store) {
+    if (HUB_BUNDLES && store.owner === ownerId && store.path.startsWith(HUB_BUNDLES + '/')) { const g = await bundleGrant(); return g.url + g.encodePath(store.path.slice(HUB_BUNDLES.length + 1)); }
+    if (store.owner === userId) return FS.getDownloadURL(FS.storageRef(FS.storage, store.owner + '/' + store.path));
+    throw new Error('These methods are kept in their publisher’s own storage, so only the publisher can open them.');
+  }
+  // One fetch per object for the life of the page; a text is checked against its sha256.
+  function docText(ptr) {
+    const cache = docTexts.current;
+    if (!cache.has(ptr.sha)) {
+      const p = (async () => {
+        const res = await fetch(await docUrl(ptr.store));
+        if (!res.ok) throw new Error('Could not read the methods (' + res.status + ').');
+        const text = await res.text();
+        if ((await sha256Hex(text)) !== ptr.sha) throw new Error('A stored methods file did not match its checksum.');
+        return text;
+      })();
+      cache.set(ptr.sha, p);
+      p.catch(() => cache.delete(ptr.sha));
+    }
+    return cache.get(ptr.sha);
+  }
+  // The docs record with every pointer replaced by its text (what the reader expects).
+  async function resolveDocs(rec) {
+    if (!rec || typeof rec !== 'object') return rec;
+    const out = { ...rec };
+    await Promise.all(Object.entries(rec).map(async ([k, v]) => { if (k !== 'metadata' && manaIsDocPointer(v)) out[k] = await docText(v); }));
+    return out;
+  }
+  async function putDocText(text, kind, known) {
+    const sha = known || (await sha256Hex(text));
+    const store = manaDocStore(kind, HUB, userId, sha);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    if (kind === 'hub') {
+      const g = await bundleGrant(); const rel = store.path.slice(HUB_BUNDLES.length + 1);
+      const have = await g.stat(rel).catch(() => null);
+      if (!(have && have.size === blob.size)) { // content-addressed: an object of that size is this text
+        if (have) await g.remove(rel);
+        await g.upload(rel, blob, { contentType: 'text/plain;charset=utf-8' });
+        const back = await g.stat(rel).catch(() => null);
+        if (!back || back.size !== blob.size) throw new Error('A stored methods file did not read back complete; nothing was changed.');
+      }
+    } else {
+      if (store.owner !== userId) throw new Error('Methods can only be written to your own storage.');
+      await FS.uploadBytes(FS.storageRef(FS.storage, store.owner + '/' + store.path), blob, { contentType: 'text/plain;charset=utf-8' });
+    }
+    docTexts.current.set(sha, Promise.resolve(text));
+    return { sha, bytes: blob.size, store };
+  }
+  // The docs record as a place of `kind` keeps it (manaDocFits): long texts stored, pointers that
+  // already fit named as they are, others copied; 'inline' turns every pointer back into text.
+  async function placeDocs(rec, kind) {
+    if (!rec || typeof rec !== 'object') return rec;
+    const out = { ...rec };
+    const into = kind === 'copy' ? 'mine' : kind;
+    for (const [k, v] of Object.entries(rec)) {
+      if (k === 'metadata') continue;
+      if (manaIsDocPointer(v)) {
+        if (manaDocFits(v, kind, HUB, userId)) continue;
+        const text = await docText(v);
+        out[k] = kind === 'inline' ? text : await putDocText(text, into, v.sha);
+      } else if (typeof v === 'string' && kind !== 'inline' && v.length > MANA_DOC_INLINE_MAX) out[k] = await putDocText(v, into);
+    }
+    return out;
+  }
+  // Best effort, after a listing left the hub: its public doc objects that no hub docs record and
+  // none of the mover's own copies still name (only the hub owner can remove them).
+  async function removeHubDocs(rec) {
+    const gone = new Set(Object.entries(rec || {}).filter(([k, v]) => k !== 'metadata' && manaDocFits(v, 'hub', HUB, userId)).map(([, v]) => v.sha));
+    if (!gone.size || userId !== ownerId) return;
+    const used = (all, depth) => { for (const v of Object.values(all || {})) if (v && typeof v === 'object') { if (manaIsDocPointer(v)) gone.delete(v.sha); else if (depth) used(v, depth - 1); } };
+    used(await get(HUB + '/docs'), 3);
+    if (MINE) used(await get(MINE + '/docs'), 2);
+    if (!gone.size) return;
+    const g = await bundleGrant();
+    for (const sha of gone) await g.remove(manaDocStore('hub', HUB, userId, sha).path.slice(HUB_BUNDLES.length + 1)).catch(() => {});
+  }
   // Copy one bundle's files to where `kind` keeps them, meta last; skipped when the target is complete.
   async function moveBundle(srcPath, dstPath, required, kind, pub) {
     if (await get(dstPath + '/meta/complete')) return;
@@ -362,7 +475,7 @@ function UserDiv() {
     }
     for (const b of plan.bundles) await moveBundle(plan.src.bundle(b), plan.dst.bundle(b), b === rec.bundle.id, to, L.uid);
     const docs = await get(plan.src.docs);
-    if (docs) await writeDocs(plan.dst.docs, docs);
+    if (docs) await writeDocs(plan.dst.docs, await placeDocs(docs, manaDocKind(to, access)));
     // Kit records: only the hub owner may write the hub's copies; anyone else's move goes on without them.
     const kitMoved = [];
     for (const [k, srcKit] of Object.entries(plan.src.kit)) {
@@ -381,7 +494,11 @@ function UserDiv() {
       if (!m) continue; // a version whose files were never stored
       if (!m.complete || !(await bundleReadable(plan.dst.bundle(b), m))) throw new Error('The moved files did not read back complete; the old listing was kept.');
     }
-    if (docs && !(await get(plan.dst.docs))) throw new Error('The moved methods did not read back; the old listing was kept.');
+    if (docs) {
+      const backDocs = await get(plan.dst.docs);
+      if (!backDocs) throw new Error('The moved methods did not read back; the old listing was kept.');
+      await resolveDocs(backDocs).catch(() => { throw new Error('The moved methods could not be read; the old listing was kept.'); });
+    }
     for (const k of kitMoved) if ((await get(plan.dst.kit[k])) == null) throw new Error('The moved figure records did not read back; the old listing was kept.');
     if (from === 'hub') {
       const goneMetas = [];
@@ -389,6 +506,7 @@ function UserDiv() {
       await FS.update(FS.ref(FS.db, HUB), Object.fromEntries(plan.deletes.map((p) => [p.slice(HUB.length + 1), null])), false);
       for (const m of goneMetas) if (!manaStoreFits(m.store, 'mine', HUB, userId)) await removeHubFiles(m).catch(() => {});
       if (kitMoved.length) await FS.update(FS.ref(FS.db, HUB), Object.fromEntries(kitMoved.map((k) => [plan.src.kit[k].slice(HUB.length + 1), null])), false).catch(() => {});
+      if (docs) await removeHubDocs(docs).catch(() => {});
     }
     else await FS.update(FS.ref(FS.db, MINE), { ['listings/' + L.exp]: null, ['listed/' + L.exp]: null }, false);
     if (to === 'mine') await FS.update(FS.ref(FS.db, MINE), { ['listed/' + L.exp]: { visibility: access.visibility, at: t } }, false);
@@ -402,6 +520,9 @@ function UserDiv() {
     const to = manaPlaceKind(next);
     if ((L._base ? 'mine' : 'hub') !== to) await moveListing(L, to, next, t);
     else if (to === 'mine') {
+      // Private keeps docs text in the publisher's Storage; shared with people keeps it inline.
+      const d = await get(L._base + '/docs');
+      if (d) { const placed = await placeDocs(d, manaDocKind('mine', next)); if (JSON.stringify(placed) !== JSON.stringify(d)) await writeDocs(L._base + '/docs', placed); }
       await FS.update(FS.ref(FS.db, L._base), { 'listing/access': next, 'listing/updatedAt': t, 'metadata/permissions': manaReadGrants(next), 'metadata/updatedAt': t }, false);
       await FS.update(FS.ref(FS.db, MINE), { ['listed/' + L.exp]: { visibility: next.visibility, at: t } }, false);
     } else await FS.update(FS.ref(FS.db, HUB + '/published/' + L.uid + '/' + L.exp), { access: next, updatedAt: t }, false);
@@ -572,7 +693,12 @@ function UserDiv() {
     },
     subscribeDocs(listing, cb, onError) {
       if (!HUB) return;
-      return FS.onValue(FS.ref(FS.db, placeOf(listing).docs), (s) => cb(s.val()), onError);
+      let seq = 0, closed = false;
+      const off = FS.onValue(FS.ref(FS.db, placeOf(listing).docs), (s) => {
+        const n = ++seq;
+        resolveDocs(s.val()).then((d) => { if (!closed && n === seq) cb(d); }, (e) => { if (!closed && n === seq) (onError || console.error)(e); });
+      }, onError);
+      return () => { closed = true; if (off) off(); };
     },
     // [2026-10-16] Methods for a private copy: the docs snapshot of the version it was forked from,
     // saved beside the copy (MINE/docs/<origin bundle>). Older copies are backfilled from the hub's docs
@@ -581,20 +707,29 @@ function UserDiv() {
       if (!MINE) return;
       const originBundle = fork.origin.bundle;
       let tried = false;
-      return FS.onValue(FS.ref(FS.db, MINE + '/docs/' + originBundle), async (snap) => {
+      let closed = false;
+      const off = FS.onValue(FS.ref(FS.db, MINE + '/docs/' + originBundle), async (snap) => {
         const v = snap.val();
-        if (v) { cb({ docs: v }); return; }
+        if (v) {
+          // A snapshot whose stored text cannot be read any more (its listing left the hub) reads as stale.
+          let docs = null;
+          try { docs = await resolveDocs(v); } catch (e) { console.warn('Copy methods unreadable:', e.message); }
+          if (!closed) cb(docs ? { docs } : { stale: true });
+          return;
+        }
         if (tried) return; tried = true;
         try {
-          const hub = HUB ? await get(HUB + '/docs/' + fork.origin.publisherUid + '/' + fork.origin.exp) : null;
+          const hubRaw = HUB ? await get(HUB + '/docs/' + fork.origin.publisherUid + '/' + fork.origin.exp) : null;
+          const hub = hubRaw ? await resolveDocs(hubRaw) : null;
           if (hub && ehDocBundle(hub) === originBundle) {
             const t = Date.now();
-            await FS.update(FS.ref(FS.db, MINE + '/docs'), { [originBundle]: { ...hub, metadata: { type: 'entry', derived: true, source: HUB + '/docs/' + fork.origin.publisherUid + '/' + fork.origin.exp, createdAt: t, updatedAt: t } }, 'metadata/type': 'link', 'metadata/hidden': true }, false);
+            await FS.update(FS.ref(FS.db, MINE + '/docs'), { [originBundle]: { ...(await placeDocs(hubRaw, 'copy')), metadata: { type: 'entry', derived: true, source: HUB + '/docs/' + fork.origin.publisherUid + '/' + fork.origin.exp, createdAt: t, updatedAt: t } }, 'metadata/type': 'link', 'metadata/hidden': true }, false);
             return;
           }
-          await cb({ stale: true });
+          if (!closed) await cb({ stale: true });
         } catch (e) { onError(e); }
       }, onError);
+      return () => { closed = true; if (off) off(); };
     },
     // [2026-10-21] Machine rig configs (machine-rig-configs.md §4): each machine's record at
     // MINE/machines/<mid> (configs under rigs/<cid>), written by the viewer's alhazen-library service
@@ -645,8 +780,11 @@ function UserDiv() {
       // Keep this version's methods with the copy, so its pages stay right after the listing moves on.
       const docsPath = HUB ? placeOf(L).docs : null;
       const hubDocs = docsPath ? await get(docsPath) : null;
-      if (hubDocs && ehDocBundle(hubDocs) === L.bundle.id && !(await get(MINE + '/docs/' + L.bundle.id + '/metadata/type'))) {
-        upd['docs/' + L.bundle.id] = { ...hubDocs, metadata: { type: 'entry', derived: true, source: docsPath, createdAt: t, updatedAt: t } };
+      let readable = null;
+      if (hubDocs) try { readable = await resolveDocs(hubDocs); } catch (e) { console.warn('Listing methods unreadable:', e.message); }
+      if (readable && ehDocBundle(readable) === L.bundle.id && !(await get(MINE + '/docs/' + L.bundle.id + '/metadata/type'))) {
+        // Identical texts name the listing's own objects (a copy reads the hub's or its own Storage).
+        upd['docs/' + L.bundle.id] = { ...(await placeDocs(hubDocs, 'copy')), metadata: { type: 'entry', derived: true, source: docsPath, createdAt: t, updatedAt: t } };
         upd['docs/metadata/type'] = 'link'; upd['docs/metadata/hidden'] = true;
       }
       const forkId = slug(L.exp) + '-' + t.toString(36);

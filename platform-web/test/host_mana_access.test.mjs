@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +24,8 @@ const EMAILS = { bob: 'bob@lab.org', carol: 'carol@lab.org', sharif: 'sharif@lab
 
 const code = esbuild.transformSync(
   fs.readFileSync(path.join(SRC, '60_helpers.js'), 'utf8') + '\n' + fs.readFileSync(path.join(SRC, 'host_mana.jsx'), 'utf8'), { loader: 'jsx' }).code;
-const NAMES = ['manaParseShareKey', 'manaListingPlace', 'manaMovePlan', 'manaShareIndexPatch', 'manaMergeListings', 'manaReadGrants', 'MANA_WRITE_LIMIT'];
+const NAMES = ['manaParseShareKey', 'manaListingPlace', 'manaMovePlan', 'manaShareIndexPatch', 'manaMergeListings', 'manaReadGrants', 'MANA_WRITE_LIMIT',
+  'manaDocStore', 'manaDocFits', 'manaDocKind', 'manaIsDocPointer', 'MANA_DOC_INLINE_MAX'];
 
 // ------------------------------------------------------------------ the in-memory Firebase
 function makeDb(initial) {
@@ -217,6 +219,7 @@ test('a person it is shared with finds it through the index, reads its docs and 
   const L = { ...wb.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' };
   assert.equal(L.title, 'kde vergence');
   let docs = null; const docErrors = []; bob.subscribeDocs(L, (v) => { docs = v; }, (e) => docErrors.push(e));
+  await flush(); // docs arrive once any stored text is fetched
   assert.equal(docs.readme, '# kde');
   assert.equal((await bob.bundleMeta(L.bundle.path)).chunkCount, 3);
   const carol = hostFor(db, 'carol', []).host;
@@ -383,5 +386,145 @@ test('publishing an Only-you listing to everyone carries its figure records and 
   assert.equal(db.at(HUB + '/docs/sharif/kde/readme'), '# kde');
   assert.equal(db.at(MINE('sharif') + '/listings/kde'), null);
   assert.equal(w.state.listings.sharif.kde._base, undefined);
+  w.off();
+});
+
+// ------------------------------------------------------------------ docs text in Storage (2026-10-22)
+const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 0)); };
+const sha = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+const DOCS_PREFIX = BUNDLE_PREFIX + '/_docs';
+const LONG = '# kde methods\n\n' + 'Saccades to a rotating cylinder. '.repeat(80); // > MANA_DOC_INLINE_MAX
+const hubPtr = (text) => ({ sha: sha(text), bytes: Buffer.byteLength(text), store: { v: 1, owner: OWNER, path: DOCS_PREFIX + '/' + sha(text) + '.txt' } });
+// Hub docs whose methods sit in the hub's public Storage, as the migration leaves them.
+function seedStored() {
+  const s = seed(); const db = makeDb(s);
+  db.objects.set(OWNER + '/' + hubPtr(LONG).store.path, LONG);
+  db.root.sharif['file-system'].Apps['alhazen-experiment-platform'].hub.docs.sharif.kde = { readme: '# kde', bundle: 'kde-2', methods: hubPtr(LONG), metadata: { type: 'entry' } };
+  return db;
+}
+const longStrings = (rec) => Object.entries(rec || {}).filter(([k, v]) => k !== 'metadata' && typeof v === 'string' && v.length > 1024).map(([k]) => k);
+
+test('docs pointers: stores, fits and kinds', () => {
+  const { api } = hostFor(makeDb(seed()), OWNER, []);
+  const h = api.manaDocStore('hub', HUB, 'bob', 'a'.repeat(64));
+  assert.deepEqual(h, { v: 1, owner: OWNER, path: DOCS_PREFIX + '/' + 'a'.repeat(64) + '.txt' });
+  const m = api.manaDocStore('mine', HUB, 'bob', 'b'.repeat(64));
+  assert.deepEqual(m, { v: 1, owner: 'bob', path: 'alhazen-experiment-platform-mine/docs/' + 'b'.repeat(64) + '.txt' });
+  const hp = { sha: 'a'.repeat(64), bytes: 1, store: h }, mp = { sha: 'b'.repeat(64), bytes: 1, store: m };
+  assert.equal(api.manaIsDocPointer(hp), true);
+  assert.equal(api.manaIsDocPointer({ sha: 'xyz', store: h }), false);
+  assert.equal(api.manaIsDocPointer('# text'), false);
+  assert.equal(api.manaDocFits(hp, 'hub', HUB, 'bob'), true);
+  assert.equal(api.manaDocFits(hp, 'mine', HUB, 'bob'), false);
+  assert.equal(api.manaDocFits(hp, 'copy', HUB, 'bob'), true);
+  assert.equal(api.manaDocFits(mp, 'copy', HUB, 'bob'), true);
+  assert.equal(api.manaDocFits(mp, 'copy', HUB, 'carol'), false);
+  assert.equal(api.manaDocFits(hp, 'inline', HUB, 'bob'), false);
+  assert.equal(api.manaDocKind('hub', { visibility: 'public' }), 'hub');
+  assert.equal(api.manaDocKind('mine', { visibility: 'private' }), 'mine');
+  assert.equal(api.manaDocKind('mine', { visibility: 'people', people: ['bob'] }), 'inline');
+});
+
+test('docs in the hub Storage read as text for the owner and for a visitor; a wrong checksum is an error', async () => {
+  const db = seedStored();
+  for (const who of [OWNER, 'bob']) {
+    const host = hostFor(db, who, []).host;
+    const w = watch(host); await flush();
+    let docs = null; const errors = [];
+    const off = host.subscribeDocs({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' }, (v) => { docs = v; }, (e) => errors.push(e));
+    await settle();
+    assert.equal(docs.methods, LONG, who);
+    assert.equal(docs.readme, '# kde');
+    assert.deepEqual(errors, []);
+    off(); w.off();
+  }
+  db.objects.set(OWNER + '/' + hubPtr(LONG).store.path, LONG + 'tampered');
+  const host = hostFor(db, 'carol', []).host;
+  const w = watch(host); await flush();
+  let docs = null; const errors = [];
+  host.subscribeDocs({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' }, (v) => { docs = v; }, (e) => errors.push(e));
+  await settle();
+  assert.equal(docs, null);
+  assert.match(String(errors[0] && errors[0].message), /checksum/);
+});
+
+test('a copy names the listing’s own doc objects; its methods read back; nothing large enters the tree', async () => {
+  const db = seedStored();
+  for (const who of [OWNER, 'bob']) {
+    const before = db.objects.size;
+    const host = hostFor(db, who, []).host;
+    const w = watch(host); await flush();
+    const L = { ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' };
+    const { record } = await host.fork(L);
+    const snap = db.at(MINE(who) + '/docs/kde-2');
+    assert.deepEqual(snap.methods, hubPtr(LONG), who + ' names the same object');
+    assert.equal(snap.readme, '# kde');
+    assert.deepEqual(longStrings(snap), []);
+    // Only the copy's bundle files were added to Storage; no doc text was copied.
+    assert.equal([...db.objects.keys()].slice(before).some((k) => k.includes('/docs/') || k.includes('/_docs/')), false);
+    let got = null;
+    host.subscribeForkDocs({ ...record, id: 'x' }, (v) => { got = v; }, (e) => { throw e; });
+    await settle();
+    assert.equal(got.docs.methods, LONG);
+    w.off();
+  }
+});
+
+test('an old inline snapshot is stored in the copier’s own Storage; an unreadable stored snapshot reads as stale', async () => {
+  const db = makeDb(seed());
+  db.root.sharif['file-system'].Apps['alhazen-experiment-platform'].hub.docs.sharif.kde = { readme: '# kde', bundle: 'kde-2', methods: LONG };
+  const host = hostFor(db, 'bob', []).host;
+  const w = watch(host); await flush();
+  const { record } = await host.fork({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' });
+  const snap = db.at(MINE('bob') + '/docs/kde-2');
+  assert.equal(snap.methods.store.owner, 'bob');
+  assert.equal(db.objects.get('bob/' + snap.methods.store.path), LONG);
+  db.objects.delete('bob/' + snap.methods.store.path);
+  const fresh = hostFor(db, 'bob', []).host; // a new page: nothing cached
+  let got = null;
+  fresh.subscribeForkDocs({ ...record, id: 'x' }, (v) => { got = v; }, (e) => { throw e; });
+  await settle();
+  assert.deepEqual(got, { stale: true });
+  w.off();
+});
+
+test('moving a listing out of the hub stores its docs in the publisher’s Storage, inline when shared with people, and removes unused hub objects', async () => {
+  const db = seedStored();
+  // Sharif's own copy of kde-1 names the same hub object, so it must survive the move.
+  const owner = hostFor(db, OWNER, []).host;
+  const w = watch(owner); await flush();
+  await owner.setAccess({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' }, { visibility: 'private', people: [] });
+  const base = MINE('sharif') + '/listings/kde';
+  const d = db.at(base + '/docs');
+  assert.equal(d.methods.store.owner, 'sharif');
+  assert.equal(d.methods.store.path, 'alhazen-experiment-platform-mine/docs/' + sha(LONG) + '.txt');
+  assert.equal(db.objects.get('sharif/' + d.methods.store.path), LONG);
+  assert.equal(db.objects.has(OWNER + '/' + hubPtr(LONG).store.path), false, 'no longer named anywhere: removed from the public store');
+  // Shared with people: inline text again (they cannot read the publisher's own Storage).
+  await owner.setAccess({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde', _base: base }, { visibility: 'people', people: ['bob'] });
+  assert.equal(db.at(base + '/docs/methods'), LONG);
+  const bob = hostFor(db, 'bob', []).host;
+  const wb = watch(bob); await flush();
+  let docs = null; const bobErrors = []; const offBob = bob.subscribeDocs({ ...wb.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' }, (v) => { docs = v; }, (e) => bobErrors.push(e));
+  await settle();
+  assert.equal(docs.methods, LONG);
+  assert.deepEqual(bobErrors, []);
+  offBob();
+  // Back to Only you: a pointer again; back to everyone: the hub store.
+  await owner.setAccess({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde', _base: base }, { visibility: 'private', people: [] });
+  assert.equal(db.at(base + '/docs/methods/sha'), sha(LONG));
+  await owner.setAccess({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde', _base: base }, { visibility: 'public', people: [] });
+  assert.deepEqual(db.at(HUB + '/docs/sharif/kde/methods'), hubPtr(LONG));
+  assert.equal(db.objects.get(OWNER + '/' + hubPtr(LONG).store.path), LONG);
+  w.off(); wb.off();
+});
+
+test('a hub object one of the mover’s copies still names is kept when its listing leaves the hub', async () => {
+  const db = seedStored();
+  db.root.sharif['file-system']['alhazen-experiment-platform-mine'] = { docs: { 'kde-2': { methods: hubPtr(LONG), metadata: { type: 'entry' } } } };
+  const owner = hostFor(db, OWNER, []).host;
+  const w = watch(owner); await flush();
+  await owner.setAccess({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' }, { visibility: 'private', people: [] });
+  assert.equal(db.objects.get(OWNER + '/' + hubPtr(LONG).store.path), LONG);
   w.off();
 });

@@ -26,6 +26,15 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## Unreleased
+
+### Changed
+- **Mana: experiment docs are stored once in Firebase Storage.** Methods, readme, tasks and the
+  task and parameter guides of each listing were long texts in the workspace tree, copied again
+  into private listings and each copy's snapshot. Texts over 1024 characters now live in Storage,
+  content-addressed by sha256, with a small pointer in the tree; a copy points at the same object.
+  Listings shared with specific people keep their texts inline. Older records still read.
+
 ## 3.8.7 - 2026-10-22
 
 ### Changed
