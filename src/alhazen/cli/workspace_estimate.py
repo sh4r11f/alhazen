@@ -87,6 +87,9 @@ class EstimateRequest(BaseModel):
     # (Launch has the same two fields); a named rig as before.
     rig: str = ""
     rig_values: dict[str, Any] | None = None
+    # Which of this machine's rig configs (id or name; empty: the default), as
+    # Launch takes it: the Run page sends the same draft to both.
+    rig_config: str = ""
     task: str | None = None
     parameter_set: str | None = None
     parameters_yaml: str | None = None
@@ -215,6 +218,7 @@ class DurationEstimator:
             mode=request.mode,
             rig=request.rig,
             rig_values=request.rig_values,
+            rig_config=request.rig_config,
             task=request.task,
             parameter_set=request.parameter_set,
             extra_args=request.extra_args,
@@ -239,7 +243,9 @@ class DurationEstimator:
         # machine's rig runs its own copy; the estimate gets one too, under
         # the workspace's state folder, named by its settings.
         values_key = hashlib.sha256(
-            json.dumps(request.rig_values, sort_keys=True, default=str).encode()
+            json.dumps(
+                [request.rig_config, request.rig_values], sort_keys=True, default=str
+            ).encode()
         ).hexdigest()[:16]
         scratch = workspace.directory / "estimate-rigs" / values_key
         launch_rig = workspace._resolve_rig(project, launch, scratch)

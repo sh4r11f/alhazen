@@ -26,6 +26,16 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## Unreleased
+
+### Fixed
+- **Dashboard: the duration estimate refused a chosen rig config.** Once a machine had a rig
+  config, the Run page sent its id with the estimate request as it does with Launch, and the
+  estimate rejected the field (`1 validation error for EstimateRequest rig_config Extra inputs
+  are not permitted`, alhazen 3.6.0 to 3.8.0). The estimate now takes `rig_config` and resolves
+  the same config the session would run on. The "no rig config yet" message points to the Rigs
+  page instead of an experiment's General page.
+
 ## 3.8.0 - 2026-10-21
 
 ### Changed
