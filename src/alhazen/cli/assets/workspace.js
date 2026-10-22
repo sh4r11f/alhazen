@@ -107,14 +107,17 @@ let runId = null;
  * defaults in its code — and which editor shows them, 'fields' or 'yaml'. */
 let values = null;
 let editor = 'fields';
-/* Which of the open experiment's pages is shown: 'general' (its notes,
- * people and rigs: #general-view), 'run' (the launch form, run output and
+/* Which of the open experiment's pages is shown: 'general' (its notes and
+ * people: #general-view), 'run' (the launch form, run output and
  * recent runs: #workspace), 'data' (#data-view, drawn by workspace_data.js)
- * or 'history' (#history-view). With no experiment open, the Experiments
- * page (#home-view). Each is an address (route()); the last page used for an
+ * or 'history' (#history-view). With no experiment open, `homePage` says
+ * which of the workspace's own pages is: 'experiments' (#home-view) or
+ * 'rigs' (#rigs-view, this machine's rig configs, which every experiment
+ * shares). Each is an address (route()); the last page used for an
  * experiment is remembered in localStorage (VIEW_KEY) for a link that names
  * none. */
 let view = 'run';
+let homePage = 'experiments';
 const VIEWS = {general: 'General', run: 'Run', data: 'Data', history: 'History'};
 /* The sidebar's glyph for each page, drawn with the page's name. */
 const VIEW_GLYPHS = {general: '◇', run: '▶', data: '▦', history: '↺'};
@@ -584,7 +587,7 @@ function machineHeader(p, choices = rigChoices(p), chosen = null) {
   const why = (problem) => RigEditorOr()?.problemText(problem) || problem;
   help.textContent = broken.length
     ? broken.map((c) => `${c.name} cannot be chosen until it loads: ${why(c.problem)}.`).join(' ')
-      + ' Fix it on the General page.'
+      + ' Fix it on the Rigs page.'
     : '';
   help.hidden = !broken.length;
 }
@@ -814,13 +817,13 @@ function developmentRigWarning(mode, name) {
     return `${label('training')} drives a real subject, and ${name} is a development rig `
       + '(real_data: false): this launch will be refused before anything is written. Tick '
       + 'Rehearse to try the stage on this machine, or choose a config that collects (or set '
-      + 'real_data: true in this one on the General page) if the monkey works here.';
+      + 'real_data: true in this one on the Rigs page) if the monkey works here.';
   }
   if (mode !== 'run' || !name) return null;
   return `${label('run')} records real data, and ${name} is a development rig `
     + '(real_data: false): this launch will be refused before anything is written. Use '
     + `${label('test')} or ${label('simulate')} to try the session on this machine, or choose a `
-    + 'config that collects (or set real_data: true in this one on the General page) if subjects '
+    + 'config that collects (or set real_data: true in this one on the Rigs page) if subjects '
     + 'are recorded here.';
 }
 
@@ -1182,7 +1185,7 @@ function updateLaunch() {
     note = 'Add a rig config for this machine first, in the Rig section: every session here runs '
       + 'on one.';
   } else if (noUsable) {
-    note = 'None of this machine’s rig configs loads; fix one on the General page to launch.';
+    note = 'None of this machine’s rig configs loads; fix one on the Rigs page to launch.';
   } else if (p?.tasks_error) {
     // Before the active-run note: this one asks the reader to fix run.py,
     // which a finished run does not change.
@@ -1603,7 +1606,7 @@ async function loadRig() {
       });
     } else {
       $('rig-setup').replaceChildren(node('p', 'help', 'This machine has no rig config yet: add one '
-        + 'on the General page.'));
+        + 'on the Rigs page.'));
     }
     return;
   }
@@ -1619,7 +1622,7 @@ async function loadRig() {
     $('rig-events').hidden = true;
     $('rig-edit').hidden = true;
     $('rig-note').textContent = 'None of this machine’s rig configs loads, so no session can '
-      + 'start. Fix one on the General page.';
+      + 'start. Fix one on the Rigs page.';
     $('rig-note').hidden = false;
     setCalibrationRig(p, {});
     measureRig = null;
@@ -1873,7 +1876,7 @@ function askSaveRig() {
       guard(refresh)();
     } catch (e) {
       problem.textContent = e.status === 409 || /changed since/.test(e.message)
-        ? `${name} was changed since this page read it (on the General page, in another tab or by a `
+        ? `${name} was changed since this page read it (on the Rigs page, in another tab or by a `
           + 'sync), so nothing was saved. Choose it again to read the new version.'
         : e.message;
       problem.hidden = false;
@@ -2427,20 +2430,23 @@ async function switchEditor(next) {
  */
 function renderState() {
   const p = project();
-  const home = !p;
+  const home = !p && homePage === 'experiments';
+  const rigs = !p && homePage === 'rigs';
   $('home-view').hidden = !home;
+  $('rigs-view').hidden = !rigs;
   $('empty').hidden = !home || state.projects.length > 0;
-  $('project-heading').hidden = home;
-  $('general-view').hidden = home || view !== 'general';
-  $('workspace').hidden = home || view !== 'run';
-  $('data-view').hidden = home || view !== 'data';
-  $('history-view').hidden = home || view !== 'history';
+  $('project-heading').hidden = !p;
+  $('general-view').hidden = !p || view !== 'general';
+  $('workspace').hidden = !p || view !== 'run';
+  $('data-view').hidden = !p || view !== 'data';
+  $('history-view').hidden = !p || view !== 'history';
   $('project-count').textContent = state.projects.filter((x) => !x.archived).length;
   // The title can change under a registered experiment (its pyproject is
   // re-read on every poll), so the heading and tab follow it here too.
   if (p) nameView(p);
+  else if (rigs) nameRigs();
   else nameHome();
-  const signature = JSON.stringify([state.projects, selected, view, state.active]);
+  const signature = JSON.stringify([state.projects, selected, view, homePage, state.active]);
   if (signature !== projectSignature) {
     projectSignature = signature;
     renderNav();
@@ -2450,8 +2456,9 @@ function renderState() {
   renderHistory();
 }
 
-/** The address of a screen: the Experiments page, or one page of one
- *  experiment. Other query parameters are kept as they are. */
+/** The address of a screen: the Experiments page, the Rigs page (`id` null,
+ *  `page` 'rigs'), or one page of one experiment. Other query parameters are
+ *  kept as they are. */
 function addressOf(id, page) {
   const query = new URLSearchParams(location.search || '');
   query.delete('project');
@@ -2460,18 +2467,21 @@ function addressOf(id, page) {
     query.set('project', id);
     query.set('view', page);
   } else {
-    query.set('view', 'experiments');
+    query.set('view', page === 'rigs' ? 'rigs' : 'experiments');
   }
   return `${location.pathname}?${query}`;
 }
 
-/** The screen the address names: {project, view}. `?view=<page>` without a
- *  project opens the experiment used last (or the first) on that page; no
- *  view at all, or `experiments`, is the Experiments page. */
+/** The screen the address names: {project, view}. `?view=rigs` is the Rigs
+ *  page, which belongs to no experiment ({project: null, view: 'rigs'});
+ *  `?view=<page>` without a project opens the experiment used last (or the
+ *  first) on that page; no view at all, or `experiments`, is the
+ *  Experiments page. */
 function route() {
   const query = new URLSearchParams(location.search || '');
   const page = query.get('view');
   const id = query.get('project');
+  if (page === 'rigs') return {project: null, view: 'rigs'};
   if (id) return {project: id, view: Object.hasOwn(VIEWS, page) ? page : null};
   if (page && Object.hasOwn(VIEWS, page)) {
     const remembered = localStorage.getItem('alhazen-workspace-project');
@@ -2483,9 +2493,9 @@ function route() {
 }
 
 /** Show the screen `target` names: an experiment's page (opening the
- *  experiment if another was open) or the Experiments page. An address
- *  naming an experiment that is not registered lands on the Experiments
- *  page and says so. Leaving a page never stops a run. */
+ *  experiment if another was open), the Rigs page or the Experiments page.
+ *  An address naming an experiment that is not registered lands on the
+ *  Experiments page and says so. Leaving a page never stops a run. */
 async function applyRoute(target) {
   if (target.project && !state.projects.some((x) => x.id === target.project)) {
     leaveExperiment();
@@ -2495,9 +2505,11 @@ async function applyRoute(target) {
     return;
   }
   if (!target.project) {
-    leaveExperiment();
+    leaveExperiment(target.view === 'rigs' ? 'rigs' : 'experiments');
     return;
   }
+  // The Rigs page is a management page too: it is told it was left.
+  if (!selected && homePage === 'rigs') window.WorkspaceManage?.hide?.();
   if (target.project !== selected) {
     await chooseProject(target.project, target.view);
   } else {
@@ -2505,14 +2517,35 @@ async function applyRoute(target) {
   }
 }
 
-/** Close the open experiment's pages and show the Experiments page. */
-function leaveExperiment() {
+/** Close the open experiment's pages and show one of the workspace's own:
+ *  `page` 'experiments' (the default) or 'rigs', drawn anew each time. */
+function leaveExperiment(page = 'experiments') {
   for (const script of [window.WorkspaceData, window.WorkspaceManage]) script?.hide?.();
   selected = null;
   people = null;
   peopleEpoch += 1;
+  homePage = page;
   projectSignature = '';
   renderState();
+  if (page === 'rigs') renderRigs();
+}
+
+/** The Rigs page, drawn by workspace_manage.js; a plain message when that
+ *  script is missing or fails, so the page is never blank. */
+function renderRigs() {
+  const target = $('rigs-view');
+  const manage = window.WorkspaceManage;
+  if (typeof manage?.showRigs !== 'function') {
+    target.replaceChildren(node('p', 'data-unavailable', 'Rig configs are not available'));
+    return;
+  }
+  try {
+    manage.showRigs(target, pageHelpers());
+  } catch (e) {
+    console.error(e);
+    target.replaceChildren(node('p', 'data-unavailable',
+      `This machine’s rig configs could not be shown: ${e.message}`));
+  }
 }
 
 /** Go to a screen: a new history entry (or the current one replaced), then
@@ -2528,7 +2561,7 @@ async function navigate(id, page, {replace = false} = {}) {
     else history.pushState(null, '', url);
   }
   error('');
-  await applyRoute(id ? {project: id, view: page} : {project: null, view: null});
+  await applyRoute(id ? {project: id, view: page} : {project: null, view: page === 'rigs' ? 'rigs' : null});
 }
 
 /** A plain left click, as opposed to one that opens a new tab or window. */
@@ -2594,9 +2627,11 @@ function storeNavExpanded(ids) {
  */
 function renderNav() {
   const p = project();
-  const home = $('nav-experiments');
-  home.classList.toggle('selected', !p);
-  home.setAttribute('aria-current', !p ? 'page' : 'false');
+  for (const [id, page] of [['nav-experiments', 'experiments'], ['nav-rigs', 'rigs']]) {
+    const here = !p && homePage === page;
+    $(id).classList.toggle('selected', here);
+    $(id).setAttribute('aria-current', here ? 'page' : 'false');
+  }
   const running = state.active ? state.runs.find((r) => r.id === state.active) : null;
   const owner = running ? state.projects.find((x) => x.id === running.project) : null;
   const pill = $('nav-running');
@@ -2750,6 +2785,13 @@ function nameHome() {
   $('breadcrumb').textContent = 'Experiments';
   $('breadcrumb-view').textContent = '';
   document.title = 'Experiments · Alhazen';
+}
+
+/** The same for the Rigs page. */
+function nameRigs() {
+  $('breadcrumb').textContent = 'Rigs';
+  $('breadcrumb-view').textContent = '';
+  document.title = 'Rigs · Alhazen';
 }
 
 /**
@@ -3275,8 +3317,7 @@ $('rig-config').addEventListener('change', guard(chooseRigConfig));
 $('rig-machine-edit').addEventListener('click', guard(async () => {
   const id = sessionRig?.config?.id;
   if (id) window.WorkspaceManage?.focusRig?.(id);
-  await navigate(selected, 'general');
-  if (!id) document.getElementById('m-machine')?.scrollIntoView?.({block: 'start'});
+  await navigate(null, 'rigs');
 }));
 // Headless simulate opens no window, so the PsychoPy warning follows it.
 $('headless').addEventListener('change', updateLaunch);
@@ -3358,7 +3399,7 @@ options($('sex'), [['', 'Not recorded'], ...SUBJECT_SEXES], '');
 
 /* Back and Forward: show the screen the address now names. */
 window.addEventListener('popstate', () => guard(() => applyRoute(route()))());
-for (const id of ['nav-experiments', 'nav-running']) {
+for (const id of ['nav-experiments', 'nav-rigs', 'nav-running']) {
   $(id).addEventListener('click', (event) => {
     if (!plainClick(event)) return;
     event.preventDefault();

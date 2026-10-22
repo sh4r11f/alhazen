@@ -6,11 +6,13 @@
   the contract with workspace.js, which finds every control by id and never
   walks the page's nesting; rename an id in both places or the script fails
   at load. Structure: a sidebar (the logo; Experiments, the workspace's home;
-  the open experiment's pages General / Run / Data / History; the colour
-  theme switch), then the main column holding one screen at a time, each a
-  real address (?view=experiments, ?project=<id>&view=general|run|data|history;
-  route() in workspace.js): the Experiments page (#home-view, drawn by
-  workspace_manage.js), or the open experiment's heading and one of its
+  Rigs, this machine's rig configs; the open experiment's pages General /
+  Run / Data / History; the colour theme switch), then the main column
+  holding one screen at a time, each a real address (?view=experiments,
+  ?view=rigs, ?project=<id>&view=general|run|data|history; route() in
+  workspace.js): the Experiments page (#home-view, drawn by
+  workspace_manage.js), the Rigs page (#rigs-view, workspace_manage.js),
+  or the open experiment's heading and one of its
   pages: General (#general-view, workspace_manage.js), Run (#workspace: the
   configuration form on the left, the run output and recent runs on the
   right), Data (#data-view, workspace_data.js) or History (#history-view,
@@ -43,7 +45,7 @@
   <!-- The juice a session delivered (History's session details). -->
   <link rel="stylesheet" href="/workspace_juice.css">
   <script src="/workspace_juice.js" defer></script>
-  <!-- This machine's rig (the Run page's Rig section, General's panel):
+  <!-- This machine's rig (the Run page's Rig section, the Rigs page):
        window.RigEditor, which workspace.js and workspace_manage.js use. -->
   <link rel="stylesheet" href="/workspace_rig.css">
   <script src="/workspace_rig.js" defer></script>
@@ -55,7 +57,7 @@
        "Data inspection is not available" when the script is missing. -->
   <link rel="stylesheet" href="/workspace_data.css">
   <script src="/workspace_data.js" defer></script>
-  <!-- The management pages: Experiments, General and History.
+  <!-- The management pages: Experiments, Rigs, General and History.
        workspace_manage.js defines window.WorkspaceManage; workspace.js
        calls it to draw those pages and says so plainly when it is missing. -->
   <link rel="stylesheet" href="/workspace_manage.css">
@@ -105,6 +107,11 @@
           <span class="nav-glyph" aria-hidden="true">▤</span>
           <span class="nav-label">Experiments</span>
           <span id="project-count" class="nav-count">0</span>
+        </a>
+        <!-- This machine's rig configs, which every experiment shares. -->
+        <a id="nav-rigs" class="nav-item" href="/?view=rigs">
+          <span class="nav-glyph" aria-hidden="true">▣</span>
+          <span class="nav-label">Rigs</span>
         </a>
       </nav>
       <!-- A run in progress, wherever the reader is: its experiment and a
@@ -186,6 +193,11 @@
       <section id="library-home" class="library-home" aria-label="Library" hidden></section>
     </section>
 
+    <!-- The Rigs page: this machine's rig configs, shared by every
+         experiment and chosen per session on the Run page (drawn by
+         workspace_manage.js, showRigs). -->
+    <section id="rigs-view" class="manage-page" hidden></section>
+
     <!-- The selected experiment's heading, above both of its views: its
          title (its pyproject's [tool.alhazen] title, else its name), then in
          small print its slug (the [project] name rig names start with) and
@@ -205,7 +217,7 @@
     </section>
 
     <!-- The General page of the open experiment: its notes and
-         registration, subjects, experimenters and rigs (workspace_manage.js). -->
+         registration, subjects and experimenters (workspace_manage.js). -->
     <div id="general-view" class="manage-page" hidden></div>
 
     <!-- The Run page of the open experiment. -->
