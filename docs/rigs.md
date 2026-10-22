@@ -614,7 +614,7 @@ A launch request that names a rig (`rig`: an experiment's file or
 development rig in run mode, copied as `rig.yaml`), for a script that drives
 the workspace's API. The page never sends one.
 
-### Decisions (2026-10-21, after alhazen 3.7.1)
+### Decisions (2026-10-21, alhazen 3.8.0)
 
 | Decision | Why |
 |---|---|
