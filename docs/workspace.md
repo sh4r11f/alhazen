@@ -104,7 +104,14 @@ The page opens on **Experiments**: every registered experiment with its
 folder, protocol version (its `pyproject.toml` version), environment (Python,
 alhazen, PsychoPy), whether it can run, and its last launch, with a search
 box and the archive below. **Register experiment** adds a folder; a folder
-already registered is refused by name. The sidebar lists every registered
+already registered is refused by name. Under Experiments, the sidebar's
+**Rigs** page holds this machine's rig configs, which every experiment's
+sessions share ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig-configs)):
+add one (from a copy, an experiment's rig or a shared rig), edit (by section
+or as YAML), rename, make default, delete, history, and their sync with the
+platform (Sync now; a refused platform edit and a conflict are shown with
+both versions); until the machine has one, the card that adds the first.
+The sidebar lists every registered
 experiment that is not archived, on every page; each expands (its title is a
 button) to its four pages, as nodes on one rail. Expanding only shows the
 pages; a page is a link, so expanding another experiment leaves the page shown
@@ -113,12 +120,12 @@ expand or collapse are remembered in the browser:
 
 | Page | What it is |
 | --- | --- |
-| **General** | The experiment's notes (description, notes), its registration (folder, interpreter, versions, whether its alhazen records the experimenter), and Project settings / Archive. Its **subjects** and **experimenters**: add, edit, archive, import from the data folders' `participants.tsv`, and read back an edited CSV copy. **This machine's rig configs**: the rigs sessions on this machine run on ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig-configs)): add one (from a copy, an experiment's rig or a shared rig), edit (by section or as YAML), rename, make default, delete, history, and their sync with the platform (Sync now; a refused platform edit and a conflict are shown with both versions); until the machine has one, the card that adds the first. |
+| **General** | The experiment's notes (description, notes), its registration (folder, interpreter, versions, whether its alhazen records the experimenter), and Project settings / Archive. Its **subjects** and **experimenters**: add, edit, archive, import from the data folders' `participants.tsv`, and read back an edited CSV copy. One line links to **Rigs**, where this machine's rig configs are. |
 | **Run** | The launch form as before, with **Subject** and **Experimenter** menus of the records on General (a subject that is not registered can still be typed under *Type an unregistered subject instead*). |
 | **Data** | The Data view ([below](#data)). |
 | **History** | Every session folder in the experiment's data folders — launched from here or from a terminal — and every launch this workspace made, joined where a launch's console names its folder. A session opens to its records, its log, its files (downloads) and its saved live monitor page; a launch to its console, `launch.json` and `run.json`. The details appear above the lists, and Open jumps the page to them. What a record does not say is "not recorded", not a guess. |
 
-Each screen is an address — `/?view=experiments`, `/?project=<id>&view=run`
+Each screen is an address — `/?view=experiments`, `/?view=rigs`, `/?project=<id>&view=run`
 (or `general`, `data`, `history`) — so Back, Forward, a reload and a link in
 a new tab land on the same screen; `/?project=<id>` alone opens the page used
 last for that experiment. Leaving a page never stops a run: a run in progress
@@ -294,7 +301,7 @@ the light theme; the dark theme is unchanged.
    listed with the reason but cannot be chosen
    ([Rigs §10](rigs.md#10-in-the-dashboard-this-machines-rig-configs)).
    Changing it starts the section again from that config. A button opens
-   the config's editor on the General page. Under it, the rig's facts as this session
+   the config's editor on the Rigs page. Under it, the rig's facts as this session
    will run it — **Screen**, **Size**, **Display**, **Live monitor**, **Reward**
    and **Rig**, which says whether the session changed it (`lab · 1 changed
    for this session`). A development rig — one whose settings say
