@@ -252,6 +252,18 @@ record as `hub/docs/<pub>/<exp>`), `bundles/<bundleId>` (`{meta}`; files in Stor
   owner's. Known limit: a person a non-public listing is shared with sees its record and methods
   but cannot open its files (they are in the publisher's own Storage). Removing a copy leaves
   its Storage files in place.
+- *Docs text is in Firebase Storage too (since 3.8.8).* A docs record's texts (methods, readme,
+  tasks, the task guide, the parameter guide, ...) were the next largest thing in the tree, copied
+  again into every private listing and every copy's snapshot. A text longer than 1024 characters is
+  stored once under its sha256 and the record keeps `{sha, bytes, store: {v: 1, owner, path}}` in
+  its place: public listings in the hub's `bundles` grant at `_docs/<sha>.txt`, private ones in the
+  owner's own Storage at `alhazen-experiment-platform-mine/docs/<sha>.txt`. Readers fetch on demand
+  and check the sha256. A copy's snapshot names the listing's objects when it can read them (the
+  hub's, or its own), so identical text is never stored twice. Listings shared with specific
+  people keep their texts inline, because those people cannot read the publisher's own Storage.
+  When a listing leaves the hub, the hub owner's page removes public doc objects no hub record and
+  none of the owner's copies still name; another person's copy of an old version may then read as
+  stale (its README stands in). Records with inline texts are still read.
 - *People* are found by email (Mana `/share/lookup-user`) and shown by email to the publisher
   (`/share/lookup-users`); people added can be sent Mana's share email (`/share/notify`).
 - *hubkit* (`run_listing`, forks made by chats) reads a listing from the hub, else from the
