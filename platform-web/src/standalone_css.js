@@ -4,7 +4,7 @@
 const STANDALONE_CSS = `
 @font-face{font-family:Manrope;font-style:normal;font-weight:200 800;font-display:swap;src:url('fonts/Manrope-latin.woff2') format('woff2')}
 html,body{margin:0;padding:0;background:#fbf9f5}
-@media (prefers-color-scheme: dark){html,body{background:#151311}}
+@media (prefers-color-scheme: dark){html,body{background:#0c0c0e}}
 #root{width:100%;min-height:100vh}
 #root>.eh{min-height:100vh}
 .eh-art svg{width:100%;height:auto;display:block}

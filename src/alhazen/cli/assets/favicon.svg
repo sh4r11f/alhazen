@@ -6,7 +6,7 @@
     .mark-ink { fill: #1f1b17; }
     .mark-face { fill: #7f1d1d; }
     @media (prefers-color-scheme: dark) {
-      .mark-ink { fill: #ece6da; }
+      .mark-ink { fill: #ececef; }
       .mark-face { fill: #d8706a; }
     }
   </style>

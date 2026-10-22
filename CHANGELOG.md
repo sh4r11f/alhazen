@@ -26,6 +26,14 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## Unreleased
+
+### Changed
+- **Dark theme is near-black, not warm brown.** The dark palette of the Experiment Platform, the
+  experiment dashboard and the live monitor now uses neutral near-black surfaces (paper `#0c0c0e`,
+  surfaces `#141416` to `#27272b`, hairlines `#2e2e33`, ink `#ececef`, muted `#a1a1aa`) instead of the
+  brown-tinted ones. Accents, state colours, the light theme and stimulus colours are unchanged.
+
 ## 3.8.6 - 2026-10-21
 
 ### Added
