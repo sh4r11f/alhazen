@@ -17,7 +17,7 @@ function PlatformApp({ host }) {
   const [dialog, setDialog] = React.useState(null);
   const [flash, setFlash] = React.useState(null);
   const [busy, setBusy] = React.useState('');
-  const [bf, setBf] = React.useState({ q: '', cat: '', hw: [], who: [], sort: 'newest', coll: '', vis: '' });
+  const [bf, setBf] = React.useState({ q: '', cat: '', hw: [], who: [], sort: 'newest', coll: '' });
   const [docs, setDocs] = React.useState({});
   const [metas, setMetas] = React.useState({});
   const [fileView, setFileView] = React.useState(null);
@@ -338,35 +338,33 @@ function PlatformApp({ host }) {
   }
 
   function Browse() {
-    const { q, cat, hw, who, sort, coll, vis } = bf;
-    const setColl = (v) => setBf({ ...bf, coll: v }), setVis = (v) => setBf({ ...bf, vis: v });
+    // Browse is the marketplace: only listings everyone can see. Private listings and listings
+    // shared with specific people live in My experiments.
+    const market = marketplaceListings(listings, viewerUid);
+    const { q, cat, hw, who, sort, coll } = bf;
+    const setColl = (v) => setBf({ ...bf, coll: v });
     const setQ = (v) => setBf({ ...bf, q: v }), setCat = (v) => setBf({ ...bf, cat: v }), setSort = (v) => setBf({ ...bf, sort: v });
     const setHw = (v) => setBf({ ...bf, hw: v }), setWho = (v) => setBf({ ...bf, who: v });
     const toggle = (list, set, k) => set(list.includes(k) ? list.filter((x) => x !== k) : [...list, k]);
     const match = (L, skip) => {
       if (skip !== 'coll' && coll && collOf(L) !== coll) return false;
-      if (skip !== 'vis' && vis && accessGroup(L, viewerUid) !== vis) return false;
       if (skip !== 'cat' && cat && !asList(L.tags).includes(cat)) return false;
       if (skip !== 'hw' && hw.length && !hw.some((k) => hwKeys(L).includes(k))) return false;
       if (skip !== 'who' && who.length && !who.some((k) => asList(L.subjects).includes(k))) return false;
       if (q) { const hay = (L.title + ' ' + (L.summary || '') + ' ' + ((L.publisher || {}).name || '') + ' ' + ((L.original || {}).citation || '')).toLowerCase(); if (!q.toLowerCase().split(/\s+/).every((w) => hay.includes(w))) return false; }
       return true;
     };
-    let list = listings.filter((L) => match(L));
+    let list = market.filter((L) => match(L));
     if (sort === 'name') list = [...list].sort((a, b) => a.title.localeCompare(b.title));
     if (sort === 'year') list = [...list].sort((a, b) => ((a.original || {}).year || 9999) - ((b.original || {}).year || 9999));
-    const catCount = (k) => listings.filter((L) => match(L, 'cat') && asList(L.tags).includes(k)).length;
+    const catCount = (k) => market.filter((L) => match(L, 'cat') && asList(L.tags).includes(k)).length;
     return (
       <div className="eh-browse">
         <aside className="eh-filters" aria-label="Filters">
           <div><h3>Category</h3><div className="eh-chips">
-            <button className="chip" aria-pressed={!cat} onClick={() => setCat('')}><span>All</span><span>{listings.filter((L) => match(L, 'cat')).length}</span></button>
+            <button className="chip" aria-pressed={!cat} onClick={() => setCat('')}><span>All</span><span>{market.filter((L) => match(L, 'cat')).length}</span></button>
             {CATEGORIES.map(([k, label]) => <button key={k} className="chip" aria-pressed={cat === k} onClick={() => setCat(cat === k ? '' : k)}><span>{label}</span><span>{catCount(k)}</span></button>)}
           </div></div>
-          {listings.some((L) => accessGroup(L, viewerUid) !== 'public') || vis ? <div><h3>Visible to</h3><div className="eh-chips">
-            <button className="chip" aria-pressed={!vis} onClick={() => setVis('')}><span>All</span><span>{listings.filter((L) => match(L, 'vis')).length}</span></button>
-            {VISIBLE_TO.map(([k, label]) => { const n = listings.filter((L) => match(L, 'vis') && accessGroup(L, viewerUid) === k).length; return n || vis === k ? <button key={k} className="chip" aria-pressed={vis === k} onClick={() => setVis(vis === k ? '' : k)}><span>{label}</span><span>{n}</span></button> : null; })}
-          </div></div> : null}
           <div><h3>Hardware</h3>{HW.map(([k, label]) => <label key={k} className="check"><input type="checkbox" checked={hw.includes(k)} onChange={() => toggle(hw, setHw, k)} />{label}</label>)}</div>
           <div><h3>Subjects</h3>{WHO.map(([k, label]) => <label key={k} className="check"><input type="checkbox" checked={who.includes(k)} onChange={() => toggle(who, setWho, k)} />{label}</label>)}</div>
         </aside>
@@ -376,10 +374,10 @@ function PlatformApp({ host }) {
             <select className="eh-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort"><option value="newest">Newest</option><option value="name">Name</option><option value="year">Year of the original</option></select>
           </div>
           <div className="eh-colls" role="group" aria-label="Collection">
-            <button className="chip" aria-pressed={!coll} onClick={() => setColl('')}><span>All</span><span>{listings.filter((L) => match(L, 'coll')).length}</span></button>
-            {COLLECTIONS.map(([k, label]) => { const n = listings.filter((L) => match(L, 'coll') && collOf(L) === k).length; return n || coll === k ? <button key={k} className="chip" aria-pressed={coll === k} onClick={() => setColl(coll === k ? '' : k)}><span>{label}</span><span>{n}</span></button> : null; })}
+            <button className="chip" aria-pressed={!coll} onClick={() => setColl('')}><span>All</span><span>{market.filter((L) => match(L, 'coll')).length}</span></button>
+            {COLLECTIONS.map(([k, label]) => { const n = market.filter((L) => match(L, 'coll') && collOf(L) === k).length; return n || coll === k ? <button key={k} className="chip" aria-pressed={coll === k} onClick={() => setColl(coll === k ? '' : k)}><span>{label}</span><span>{n}</span></button> : null; })}
           </div>
-          <p className="eh-muted" style={{ margin: '0 0 12px', fontSize: 14 }}>{list.length === listings.length ? `${list.length} experiment${list.length === 1 ? '' : 's'}` : `${list.length} of ${listings.length} experiments`}</p>
+          <p className="eh-muted" style={{ margin: '0 0 12px', fontSize: 14 }}>{list.length === market.length ? `${list.length} experiment${list.length === 1 ? '' : 's'}` : `${list.length} of ${market.length} experiments`}</p>
           {list.length ? <div className="eh-grid">{list.map((L) => card(L))}</div> : <div className="empty"><h3>No experiments match</h3><p>Clear a filter or the search.</p></div>}
         </div>
       </div>

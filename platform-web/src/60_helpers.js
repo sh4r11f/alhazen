@@ -50,6 +50,10 @@ function accessGroup(L, viewerUid) {
   if (!accessCanManage(L, viewerUid)) return 'with-you';
   return v === 'private' ? 'private' : 'by-you';
 }
+// Browse (the marketplace) shows only public listings, whoever is looking, including the publisher.
+function marketplaceListings(listings, viewerUid) {
+  return (listings || []).filter((L) => accessGroup(L, viewerUid) === 'public');
+}
 const VISIBLE_TO = [['public', 'Everyone'], ['with-you', 'Shared with you'], ['by-you', 'Shared by you'], ['private', 'Only you']];
 // The badge on cards and listing headers; none for public listings.
 function accessBadge(L, viewerUid) {

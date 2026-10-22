@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(HERE, '..', 'src', '60_helpers.js'), 'utf8');
-const H = new Function('window', 'ehFormat', source + '\nreturn { accessOf, accessCanManage, accessGroup, accessBadge, accessSummary, normalizeAccess, librarySections, VISIBLE_TO, ACCESS_CHOICES };')({}, () => '');
+const H = new Function('window', 'ehFormat', source + '\nreturn { accessOf, accessCanManage, accessGroup, accessBadge, accessSummary, normalizeAccess, librarySections, marketplaceListings, VISIBLE_TO, ACCESS_CHOICES };')({}, () => '');
 
 const listing = (uid, exp, access, extra = {}) => ({ uid, exp, key: uid + '~' + exp, title: exp, publisher: { uid, name: uid === 'pub' ? 'Sharif' : 'Other' }, ...(access ? { access } : {}), ...extra });
 
@@ -69,4 +69,12 @@ test('My experiments: not on the marketplace, shared with you, and the collapsed
   assert.deepEqual(mine.onMarketplace.map((L) => L.exp), ['o']);
   const visitor = H.librarySections(all, null);
   assert.deepEqual([visitor.notOnMarketplace.length, visitor.onMarketplace.length], [0, 0]);
+});
+
+test('Browse shows only public listings, even to their publisher', () => {
+  const all = [listing('pub', 'p', { visibility: 'private' }), listing('pub', 's', { visibility: 'people', people: ['bob'] }), listing('pub', 'o'), listing('other', 'o2')];
+  assert.deepEqual(H.marketplaceListings(all, 'pub').map((L) => L.exp), ['o', 'o2']);
+  assert.deepEqual(H.marketplaceListings(all, 'bob').map((L) => L.exp), ['o', 'o2']);
+  assert.deepEqual(H.marketplaceListings(all, null).map((L) => L.exp), ['o', 'o2']);
+  assert.deepEqual(H.marketplaceListings(null, 'pub'), []);
 });
