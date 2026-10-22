@@ -214,7 +214,7 @@ bundle reads of a listing the principal cannot see are 404.
 downward, so a non-public listing cannot live there: it lives in the publisher's own
 workspace, `<pub>/file-system/alhazen-experiment-platform-mine/listings/<exp>/` with
 `listing` (the record; its `bundle.path` and `versions` point inside this node), `docs` (same
-record as `hub/docs/<pub>/<exp>`), `bundles/<bundleId>` (`{meta, chunks}`), and
+record as `hub/docs/<pub>/<exp>`), `bundles/<bundleId>` (`{meta}`; files in Storage, below), and
 `metadata: {type: link, hidden: true, permissions: {read: {<uid>: true}}}` mirroring
 `access.people`; the field and the grants are written in one update.
 
@@ -230,10 +230,28 @@ record as `hub/docs/<pub>/<exp>`), `bundles/<bundleId>` (`{meta, chunks}`), and
   (`?ehv=exp&ehid=<pub>~<exp>`) to a listing they can read. A pointer whose listing cannot be
   read is ignored.
 - *Changing visibility* moves the records between the hub and the publisher's workspace: copy
-  bundles chunk by chunk (one write per chunk), then docs, then the listing last; read back; then
+  bundle files to the destination's Storage (below), then docs, then the listing last; read back; then
   delete the old location. A hub bundle that another of the publisher's hub listings names is not
   deleted. Copies in libraries are untouched. Publishing a copy with a different visibility moves
   the existing listing first, so its earlier versions go with it.
+- *Bundle files are in Firebase Storage, not the database (since 3.7.2).* Every device that
+  opens Mana loads the owner's whole `file-system` tree, so bundle chunks there (source plus
+  base64 stimulus images, one copy per release) made the owner's workspace too large to open on
+  a phone (488 MB in October 2026). A bundle node keeps only `meta`, with
+  `meta.store = {v: 1, owner, path}`; chunk *i* is the Storage object `<owner>/<path>/<i>.json`
+  holding the same JSON text `chunks/<i>` used to hold. Public bundles are under the hub's
+  `bundles` storage grant, `app-storage/<hub app path>/bundles/<pub>/<bundleId>` (readable by
+  everyone who can read the hub; written by the hub owner's page and by hubkit as the owner).
+  Private bundles (copies, non-public listings) are under
+  `alhazen-experiment-platform-mine/bundles/<bundleId>` in their owner's own Storage;
+  bundle ids are content hashes, so a copy and its private listing share the files. Forking
+  copies the files into the viewer's own Storage (so a copy outlives the listing), publishing
+  and changing visibility copy them where the destination keeps them, and a bundle whose files
+  already sit there is named, not copied. Bundles written before 3.7.2 (database `chunks/<i>`)
+  are still read and are moved to Storage when copied; a one-time migration moved the hub
+  owner's. Known limit: a person a non-public listing is shared with sees its record and methods
+  but cannot open its files (they are in the publisher's own Storage). Removing a copy leaves
+  its Storage files in place.
 - *People* are found by email (Mana `/share/lookup-user`) and shown by email to the publisher
   (`/share/lookup-users`); people added can be sent Mana's share email (`/share/notify`).
 - *hubkit* (`run_listing`, forks made by chats) reads a listing from the hub, else from the

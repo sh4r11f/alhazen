@@ -29,6 +29,7 @@ const NAMES = ['manaParseShareKey', 'manaListingPlace', 'manaMovePlan', 'manaSha
 function makeDb(initial) {
   const root = JSON.parse(JSON.stringify(initial));
   const listeners = new Set();
+  const objects = new Map(); // Firebase Storage: '<owner>/<path>' -> text
   const writes = [];
   let failRead = null; // (path) => Error | null: a read that fails for another reason than permissions
   const split = (p) => p.split('/').filter(Boolean);
@@ -56,6 +57,10 @@ function makeDb(initial) {
   function fsFor(uid) {
     return {
       db: {}, ref: (_db, p) => ({ path: p }),
+      // Storage: each person reads and writes only below their own uid (as Mana's rules do).
+      storage: {}, storageRef: (_s, p) => ({ path: p }),
+      uploadBytes: async (r, blob) => { if (r.path.split('/')[0] !== uid) throw denied(); objects.set(r.path, await blob.text()); return { ref: r, metadata: {} }; },
+      getDownloadURL: async (r) => { if (r.path.split('/')[0] !== uid) throw denied(); if (!objects.has(r.path)) throw new Error('storage/object-not-found'); return 'https://storage/' + r.path; },
       get: async (r) => { const broken = failRead && failRead(r.path); if (broken) throw broken; if (!canRead(r.path, uid)) throw denied(); return { val: () => JSON.parse(JSON.stringify(at(r.path))) }; },
       onValue: (r, cb, err) => { const l = { path: r.path, cb, err, uid }; if (!canRead(r.path, uid)) { if (err) err(denied()); return () => {}; } listeners.add(l); cb({ val: () => at(r.path) }); return () => listeners.delete(l); },
       update: async (r, obj) => {
@@ -76,11 +81,29 @@ function makeDb(initial) {
       auth: { currentUser: { uid, displayName: uid, email: EMAILS[uid], getIdToken: async () => 'token-' + uid } },
     };
   }
-  return { root, at, fsFor, writes, listeners, setFailRead: (fn) => { failRead = fn; } };
+  return { root, at, fsFor, writes, listeners, objects, setFailRead: (fn) => { failRead = fn; } };
+}
+
+const BUNDLE_PREFIX = 'app-storage/Apps/alhazen-experiment-platform/hub/bundles';
+// The hub's `bundles` storage grant (useStorageUrl): only the owner's page writes through it here.
+function grantFor(db) {
+  const key = (rel) => OWNER + '/' + BUNDLE_PREFIX + '/' + rel;
+  return {
+    url: 'https://grant/', encodePath: (n) => n.split('/').map(encodeURIComponent).join('/'),
+    stat: async (rel) => { const v = db.objects.get(key(rel)); if (v == null) throw new Error('404'); return { size: new Blob([v]).size }; },
+    upload: async (rel, blob) => { if (db.objects.has(key(rel))) throw new Error('exists'); db.objects.set(key(rel), await blob.text()); },
+    remove: async (rel) => { db.objects.delete(key(rel)); },
+  };
 }
 
 function hostFor(db, uid, mails) {
-  const fetch = async (url, init) => {
+  const GRANT = OWNER + '/' + BUNDLE_PREFIX + '/';
+  const fetch = async (url, init = {}) => {
+    if (url.startsWith('https://storage/') || url.startsWith('https://grant/')) {
+      const key = url.startsWith('https://grant/') ? GRANT + decodeURIComponent(url.slice('https://grant/'.length)) : url.slice('https://storage/'.length);
+      const text = db.objects.get(key);
+      return { ok: text != null, status: text != null ? 200 : 404, text: async () => text };
+    }
     const body = JSON.parse(init.body || '{}');
     const route = new URL(url).pathname;
     const reply = (status, json) => ({ ok: status < 400, status, json: async () => json, text: async () => JSON.stringify(json) });
@@ -93,7 +116,7 @@ function hostFor(db, uid, mails) {
   const window = { location: { origin: 'https://www.mana.space', href: 'https://www.mana.space/home/' + OWNER + '/Apps/alhazen-experiment-platform' } };
   const api = new Function('React', 'FS', 'mana', 'useStorageUrl', 'relPathAddress', 'userId', 'ownerId', 'openChat', 'copyText', 'useTheme', 'API_BASE_URL', 'fetch', 'window', 'PlatformApp', 'ehDocBundle', 'ehLogoKind',
     code + '\nreturn { UserDiv, ' + NAMES.join(', ') + ' };')(
-    React, db.fsFor(uid), {}, () => ({}), (...s) => [HUB, ...s].join('/'), uid, OWNER, () => {}, async () => 'copied', () => ({ theme: 'light' }), 'https://server/api', fetch, window, function PlatformApp() {}, (d) => d && d.bundle, () => 'fixation');
+    React, db.fsFor(uid), {}, (name) => (name === 'bundles' ? grantFor(db) : {}), (...s) => [HUB, ...s].join('/'), uid, OWNER, () => {}, async () => 'copied', () => ({ theme: 'light' }), 'https://server/api', fetch, window, function PlatformApp() {}, (d) => d && d.bundle, () => 'fixation');
   return { host: api.UserDiv().host, api };
 }
 
@@ -164,7 +187,10 @@ test('sharing a public listing with people moves it out of the hub, grants each 
   assert.deepEqual(db.at(base + '/metadata/permissions'), { read: { bob: true } });
   assert.equal(db.at(base + '/metadata/hidden'), true);
   assert.equal(db.at(base + '/bundles/kde-2/meta/chunkCount'), 3);
-  assert.equal(db.at(base + '/bundles/kde-1/chunks/1'), db.at(HUB + '/bundles/sharif/kde-1/chunks/1'));
+  // Files went to Sharif's own Storage, not the database; only the meta is in the tree.
+  assert.deepEqual(db.at(base + '/bundles/kde-2/meta/store'), { v: 1, owner: 'sharif', path: 'alhazen-experiment-platform-mine/bundles/kde-2' });
+  assert.equal(db.at(base + '/bundles/kde-2/chunks'), null);
+  assert.equal(db.objects.get('sharif/alhazen-experiment-platform-mine/bundles/kde-1/1.json'), db.at(HUB + '/bundles/sharif/kde-1/chunks/1'));
   assert.equal(db.at(base + '/docs/readme'), '# kde');
   assert.equal(db.at(MINE('sharif') + '/listed/kde/visibility'), 'people');
   assert.deepEqual(db.at(SHARES + '/metadata/permissions'), { per_user_read: true });
@@ -238,6 +264,10 @@ test('making a shared listing public moves it back to the hub and clears its gra
   assert.deepEqual(db.at(HUB + '/published/sharif/kde/access'), { visibility: 'public' }); // Firebase keeps no empty list
   assert.equal(db.at(HUB + '/published/sharif/kde/bundle/path'), HUB + '/bundles/sharif/kde-2');
   assert.equal(db.at(HUB + '/bundles/sharif/kde-2/meta/chunkCount'), 3);
+  // Back in the hub, its files are under the hub's public bundles grant.
+  assert.equal(db.at(HUB + '/bundles/sharif/kde-2/meta/store/path'), BUNDLE_PREFIX + '/sharif/kde-2');
+  assert.ok(db.objects.get('sharif/' + BUNDLE_PREFIX + '/sharif/kde-2/2.json'));
+  assert.equal(db.at(HUB + '/bundles/sharif/kde-2/chunks'), null);
   assert.equal(db.at(HUB + '/docs/sharif/kde/readme'), '# kde');
   assert.equal(db.at(MINE('sharif') + '/listings/kde'), null);
   assert.equal(db.at(MINE('sharif') + '/listed/kde'), null);
@@ -271,6 +301,8 @@ test('publishing a copy for Only you writes it to the publisher’s workspace; u
   assert.equal(db.at(base + '/listing/bundle/path'), base + '/bundles/b1');
   assert.equal(db.at(base + '/metadata/permissions'), null);
   assert.equal(db.at(base + '/bundles/b1/meta/chunkCount'), 2);
+  assert.equal(db.at(base + '/bundles/b1/meta/store/owner'), 'bob');
+  assert.ok(db.objects.get('bob/alhazen-experiment-platform-mine/bundles/b1/1.json'));
   assert.equal(db.at(HUB + '/published/bob'), null);
   assert.equal(db.at(MINE('bob') + '/forks/my-dots/published/visibility'), 'private');
   await flush();
@@ -282,5 +314,48 @@ test('publishing a copy for Only you writes it to the publisher’s workspace; u
   assert.equal(db.at(HUB + '/published/bob/my-dots/access/visibility'), 'public');
   await host.unpublish(fork);
   assert.equal(db.at(HUB + '/published/bob/my-dots'), null);
+  w.off();
+});
+
+test('bundle files: a hub bundle in Storage is read through the grant, a copy gets its own files, and nothing writes chunks to the database', async () => {
+  const db = makeDb(seed());
+  // kde-2 lives in Storage under the hub's grant (as after the 2026-10-21 migration); kde-1 is still a legacy database bundle.
+  const legacy = db.at(HUB + '/bundles/sharif/kde-2');
+  for (let i = 0; i < 3; i++) db.objects.set('sharif/' + BUNDLE_PREFIX + '/sharif/kde-2/' + i + '.json', legacy.chunks[i]);
+  db.root.sharif['file-system'].Apps['alhazen-experiment-platform'].hub.bundles.sharif['kde-2'] = { meta: { ...legacy.meta, store: { v: 1, owner: 'sharif', path: BUNDLE_PREFIX + '/sharif/kde-2' } } };
+  const bob = hostFor(db, 'bob', []).host;
+  const w = watch(bob); await flush();
+  const L = { ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' };
+  assert.equal((await bob.bundleMeta(L.bundle.path)).chunkCount, 3);
+  assert.deepEqual(await bob.bundleChunk(L.bundle.path, 2), JSON.parse(legacy.chunks[2]));
+  assert.deepEqual(await bob.bundleChunk(HUB + '/bundles/sharif/kde-1', 1), JSON.parse(db.at(HUB + '/bundles/sharif/kde-1/chunks/1')));
+  const before = db.writes.length;
+  const { record } = await bob.fork(L, () => {});
+  const meta = db.at(MINE('bob') + '/bundles/kde-2/meta');
+  assert.deepEqual(meta.store, { v: 1, owner: 'bob', path: 'alhazen-experiment-platform-mine/bundles/kde-2' });
+  assert.equal(meta.complete, true);
+  assert.equal(db.at(MINE('bob') + '/bundles/kde-2/chunks'), null);
+  assert.equal(db.objects.get('bob/alhazen-experiment-platform-mine/bundles/kde-2/1.json'), legacy.chunks[1]);
+  assert.deepEqual(await bob.bundleChunk(record.head.path, 0), JSON.parse(legacy.chunks[0]));
+  // No write since the fork started carried a chunk.
+  assert.ok(db.writes.slice(before).every((x) => !JSON.stringify(x).includes('/chunks/') && !JSON.stringify(x).includes('"chunks')));
+  w.off();
+});
+
+test('bundle files: moving a Storage bundle out of the hub copies it to the publisher’s Storage and removes the hub files; a recipient is told plainly it cannot open them', async () => {
+  const db = makeDb(seed());
+  const legacy = db.at(HUB + '/bundles/sharif/kde-2');
+  for (let i = 0; i < 3; i++) db.objects.set('sharif/' + BUNDLE_PREFIX + '/sharif/kde-2/' + i + '.json', legacy.chunks[i]);
+  db.root.sharif['file-system'].Apps['alhazen-experiment-platform'].hub.bundles.sharif['kde-2'] = { meta: { ...legacy.meta, store: { v: 1, owner: 'sharif', path: BUNDLE_PREFIX + '/sharif/kde-2' } } };
+  const owner = hostFor(db, OWNER, []).host;
+  const w = watch(owner); await flush();
+  await owner.setAccess({ ...w.state.listings.sharif.kde, uid: 'sharif', exp: 'kde' }, { visibility: 'people', people: ['bob'] });
+  const base = MINE('sharif') + '/listings/kde';
+  assert.equal(db.at(base + '/bundles/kde-2/meta/store/path'), 'alhazen-experiment-platform-mine/bundles/kde-2');
+  assert.equal(db.objects.get('sharif/alhazen-experiment-platform-mine/bundles/kde-2/2.json'), legacy.chunks[2]);
+  assert.equal(db.objects.has('sharif/' + BUNDLE_PREFIX + '/sharif/kde-2/0.json'), false);
+  assert.deepEqual(await owner.bundleChunk(base + '/bundles/kde-2', 1), JSON.parse(legacy.chunks[1]));
+  const bob = hostFor(db, 'bob', []).host;
+  await assert.rejects(bob.bundleChunk(base + '/bundles/kde-2', 0), /only the publisher can open them/);
   w.off();
 });
