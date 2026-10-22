@@ -89,6 +89,10 @@ function buildPage(document) {
     if (/\btype="checkbox"/.test(attributes)) {
       element.checked = /\schecked(?=[\s>]|$)/.test(attributes);
     }
+    /* A link starts at the address its markup gives it (the sidebar's
+     * Experiments and Rigs), which its click handler reads. */
+    const href = /\bhref="([^"]*)"/.exec(attributes);
+    if (href) element.href = href[1];
     document.body.appendChild(element);
     if (id[1] === 'gallery-empty') {
       element.appendChild(document.createElement('h3'));

@@ -714,6 +714,14 @@ li.m-plan-add {
   gap: 8px;
 }
 
+/* ---- the Rigs page: the heading's actions, a readable intro, and General's
+ *      one line pointing to it ------------------------------------------- */
+
+.mrc-intro { max-width: 72ch; margin: 2px 0 14px; }
+.mrc-page-actions { align-self: flex-end; }
+.m-rigs-pointer { margin: 4px 2px 0; }
+.m-rigs-pointer a { color: var(--accent); font-weight: 600; }
+
 /* ---- the Experiments page ------------------------------------------------ */
 
 .home-heading {

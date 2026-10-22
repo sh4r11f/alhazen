@@ -175,6 +175,7 @@ button { border-radius: 8px; font-weight: 600; }
 }
 
 #nav-experiments { --icon: url("/icon-experiments.svg"); }
+#nav-rigs { --icon: url("/icon-rigs.svg"); }
 .nav-item[data-view=general] { --icon: url("/icon-general.svg"); }
 .nav-item[data-view=run] { --icon: url("/icon-run.svg"); }
 .nav-item[data-view=data] { --icon: url("/icon-data.svg"); }

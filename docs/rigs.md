@@ -386,8 +386,10 @@ session it launches runs on **one of that machine's rig configs**: named,
 complete rig files such as `eyelink`, `keyboard` or `monkey-daq`, one of them
 the **default**. Which machine a session runs on is decided by where the
 dashboard is running; which of its configs, by the chooser on the Run page.
-The configs are kept in the workspace's own state folder, never in an
-experiment's repository, and can be edited on the dashboard and on your
+The configs belong to the machine, not to any experiment: every registered
+experiment's sessions choose among the same ones. They are kept in the
+workspace's own state folder, never in an experiment's repository, and can be
+edited on the dashboard's **Rigs** page and on your
 [Experiment Platform](experiment-platform/design.md#8a-rigs-the-dashboards-library),
 which keep them in sync:
 
@@ -428,7 +430,8 @@ flowchart LR
 
 ### Adding and editing configs
 
-An experiment's **General** page has **This machine's rig configs**: every
+The dashboard's **Rigs** page (in the sidebar under Experiments, at
+`?view=rigs`) has this machine's rig configs, with no experiment open: every
 config with its default mark, whether it can run (a config that fails the
 checks a launch makes is listed with the reason and cannot be chosen), its
 sync state and its last save. **Add a config** asks for a name and what it
@@ -444,8 +447,12 @@ and saves only if the file has not changed since it was opened, keeping the
 previous one in `history/`; **Rename** renames its file and the gamma and
 reward files beside it; **Make default**; **Delete** (asked first; the
 default cannot be deleted) moves it to `trash/`; **History** lists its saves
-and shows any earlier version. The same from a terminal, before anyone opens
-the page:
+and shows any earlier version. A config's data folder, when it is relative, is
+inside the folder of whichever experiment runs on it. An experiment's
+**General** page holds its notes and people only, with one line pointing to
+Rigs; the Run page's **Edit this config** opens the config it runs on there,
+its editor open, and the Run page's notes about a config that does not load
+send you there too. The same from a terminal, before anyone opens the page:
 
 ```bash
 alhazen rig init --name lab --from lab                      # alhazen's shared lab
@@ -459,7 +466,7 @@ All take `--state-dir`. The first config a machine gets is its default.
 **From alhazen 3.5.0.** A 3.5.0 workspace kept one machine rig at the top of
 `machine-rig/`. 3.6 makes it the first config, named as it was, and the
 default, where it is: nothing is moved or rewritten (its bytes, `history/`,
-gamma and reward calibration and `machine.json` stay), and the General page
+gamma and reward calibration and `machine.json` stay), and the Rigs page
 says so once. A 3.5.0 dashboard on the same state folder afterwards keeps
 working: it ignores `configs/` and `configs.json`, sees and runs exactly that
 first config whichever is the default, and what it saves to it is picked up
@@ -502,7 +509,7 @@ while it runs, after every change made on it, and on **Sync now**.
   machine since is not applied: the machine's version stays.
 - A platform without rig configs (alhazen before 3.6), one that cannot be
   reached, or no library at all leaves everything on the machine; the
-  General page says which.
+  Rigs page says which.
 
 The protocol is in
 [docs/design/machine-rig-configs.md](design/machine-rig-configs.md).
@@ -606,6 +613,13 @@ A launch request that names a rig (`rig`: an experiment's file or
 `alhazen/<name>`) still launches it as before (merged, refused on a
 development rig in run mode, copied as `rig.yaml`), for a script that drives
 the workspace's API. The page never sends one.
+
+### Decisions (2026-10-21, after alhazen 3.7.1)
+
+| Decision | Why |
+|---|---|
+| The configs have their own page, **Rigs**, beside Experiments in the sidebar, not a panel on each experiment's General page | They are the machine's and shared by every experiment; shown inside an experiment, they read as if they belonged to it. |
+| Placement only: storage, validation, sync, calibrations and the Run page's per-session choice are unchanged | The 3.6 design was already machine-wide (`<state>/machine-rig/configs.json`); only where the page shows it was wrong. |
 
 ### Decisions (2026-10-21, alhazen 3.6)
 

@@ -2702,7 +2702,7 @@ describe('a development rig in the launch form', () => {
         'Run experiment records real data, and the rig config laptop is a development '
           + 'rig (real_data: false): this launch will be refused before anything is written. '
           + 'Use Test session or Simulate to try the session on this machine, or choose a '
-          + 'config that collects (or set real_data: true in this one on the General page) if '
+          + 'config that collects (or set real_data: true in this one on the Rigs page) if '
           + 'subjects are recorded here.',
       );
       assert.equal(note(app).classList.contains('launch-warning'), true);

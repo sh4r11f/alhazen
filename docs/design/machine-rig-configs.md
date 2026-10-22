@@ -9,8 +9,8 @@ implement together.
 
 alhazen 3.5.0 kept ONE rig per dashboard state folder (`<state>/machine-rig/rig-<name>.yaml`),
 edited only on the dashboard. 3.6.0 keeps **several named rig configs per machine**, one of them
-the **default**, editable on the dashboard (General page) and on the platform (Machines /
-My machines), synced both ways over the existing library connection. A session runs on one of
+the **default**, editable on the dashboard (its **Rigs** page, §3a) and on the platform
+(Machines / My machines), synced both ways over the existing library connection. A session runs on one of
 this machine's configs, chosen on the Run page (the default preselected). Shared alhazen rigs and
 experiment rigs are offered only as a starting point when **creating** a config.
 
@@ -128,6 +128,26 @@ record without one matches by name).
 
 The page URL `?rig=<name or id>` preselects that config on the Run page; `alhazen dashboard
 --rig-config NAME` opens the page with it.
+
+## 3a. Where the dashboard shows them
+
+The configs are the machine's, shared by every registered experiment, so the page shows them on
+a page of their own that belongs to no experiment: **Rigs**, the second entry of the sidebar's
+top navigation (after Experiments), at `?view=rigs` (Back, Forward and reload work as for every
+other page; `route()` answers `{project: null, view: "rigs"}`). It holds what 3.6.0 drew as a
+panel on each experiment's General page, unchanged: the list (default mark, loads / does not
+load, sync state, last save), Add a config, Edit, Rename, Make default, Delete, History, Sync
+now, the connection line and the migration note. Add a config offers the shared rigs and every
+registered experiment's rigs labelled `<slug>/<name>` (GET /api/machine-rigs/templates was
+already workspace-wide), as starting points only. A relative `data_root` is described as inside
+each experiment's own folder, since no experiment is open.
+
+An experiment's General page keeps its notes and people, with one line linking to Rigs. Every
+place that sent the reader to the General page for a config now goes to Rigs: the Run page's
+**Edit this config** (which opens that config's editor there, `WorkspaceManage.focusRig`), and
+the Run page's notes about a config that does not load or a development rig. The Run page
+still chooses a config per session as in §3. Nothing in the API, the stored files, validation
+or sync changed with this placement.
 
 ## 4. Sync protocol (rig <-> platform)
 
