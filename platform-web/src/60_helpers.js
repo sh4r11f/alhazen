@@ -93,14 +93,16 @@ function librarySections(listings, viewerUid) {
 }
 const kb = (b) => b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB';
 
+// The address of a screen: ?ehv=&ehid=&ehtab=&ehtask=&ehset=, plus ehdev for the Configure window of
+// a paired machine (65_rigs.jsx rigWindowRoute). Other parameters (Mana's chatId) are kept.
 function readRoute() {
   const q = new URLSearchParams(window.location.search);
-  return { v: q.get('ehv') || 'home', id: q.get('ehid') || '', tab: q.get('ehtab') || '', task: q.get('ehtask') || '', set: q.get('ehset') || '' };
+  return { v: q.get('ehv') || 'home', id: q.get('ehid') || '', tab: q.get('ehtab') || '', task: q.get('ehtask') || '', set: q.get('ehset') || '', dev: q.get('ehdev') || '' };
 }
-function writeRoute(r, replace) {
+function writeRoute(r, replace, state) {
   const u = new URL(window.location.href);
-  for (const [k, v] of [['ehv', r.v === 'home' ? '' : r.v], ['ehid', r.id], ['ehtab', r.tab], ['ehtask',r.task], ['ehset',r.set]]) { if (v) u.searchParams.set(k, v); else u.searchParams.delete(k); }
-  window.history[replace ? 'replaceState' : 'pushState']({}, '', u.toString());
+  for (const [k, v] of [['ehv', r.v === 'home' ? '' : r.v], ['ehid', r.id], ['ehtab', r.tab], ['ehtask', r.task], ['ehset', r.set], ['ehdev', r.dev]]) { if (v) u.searchParams.set(k, v); else u.searchParams.delete(k); }
+  window.history[replace ? 'replaceState' : 'pushState'](state || {}, '', u.toString());
 }
 
 function fillTokens(md, tasks) {

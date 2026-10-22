@@ -36,7 +36,20 @@ function PlatformApp({ host }) {
   const [peopleNames, setPeopleNames] = React.useState({});
   const [resolved, setResolved] = React.useState({});
 
-  React.useEffect(() => { const on = () => setRoute(readRoute()); window.addEventListener('popstate', on); return () => window.removeEventListener('popstate', on); }, []);
+  // Closing the Configure window steps back past its entries (history.go(-n)); if that lands on another
+  // window entry (one opened by a link), the window is closed in place.
+  const closingRigWindow = React.useRef(false);
+  React.useEffect(() => {
+    const on = () => {
+      const r = readRoute();
+      if (closingRigWindow.current) {
+        closingRigWindow.current = false;
+        if (rigWindowFromRoute(r)) { const next = { ...r, id: '', tab: '', dev: '' }; writeRoute(next, true); setRoute(next); return; }
+      }
+      setRoute(r);
+    };
+    window.addEventListener('popstate', on); return () => window.removeEventListener('popstate', on);
+  }, []);
   React.useEffect(() => host.subscribeListings((v) => setPublished(v || {})), [host.key]);
   React.useEffect(() => host.subscribeAssets((v) => setAssets(v || {})), [host.key]);
   React.useEffect(() => host.subscribeForks((v) => setForks(v || {}), () => setForks({})), [host.key]);
@@ -44,7 +57,7 @@ function PlatformApp({ host }) {
   React.useEffect(() => { if (!caps.openDashboard || !host.subscribeDashboards) return; return host.subscribeDashboards((v) => setDashJobs(v || {}), () => setDashJobs({})); }, [host.key]);
   React.useEffect(() => { if (!caps.machineTokens || !host.subscribeMachineTokens) return; return host.subscribeMachineTokens((v) => setMachineTokens(v || { machines: [], events: [] }), () => setMachineTokens(null)); }, [host.key]);
 
-  const go = (r, replace) => { const next = { v: r.v || 'home', id: r.id || '', tab: r.tab || '', task:r.task || '', set:r.set || '' }; writeRoute(next, replace); setRoute(next); };
+  const go = (r, replace, state) => { const next = { v: r.v || 'home', id: r.id || '', tab: r.tab || '', task: r.task || '', set: r.set || '', dev: r.dev || '' }; writeRoute(next, replace, state); setRoute(next); };
 
   const listings = React.useMemo(() => {
     const out = [];
@@ -64,6 +77,19 @@ function PlatformApp({ host }) {
     return { installed: true, devices, sessions };
   }, [termData]);
 
+  // Synced rig machines (machine-rig-configs.md), matched by label to the page's paired machines: Mana
+  // Terminal devices on Mana, machine tokens on the standalone hosts.
+  const rigData = useRigMachines(host, !!caps.rigConfigs && route.v === 'machines');
+  const machineRows = React.useMemo(() => {
+    if (caps.machines) return machines.devices.slice().sort((x, y) => (y.lastSeen || 0) - (x.lastSeen || 0)).map((dv) => ({
+      key: dv.id, label: dv.label || dv.host || dv.id, device: dv,
+      wins: machines.sessions.filter((s) => s.device === dv.id).sort((x, y) => (y.startedAt || 0) - (x.startedAt || 0)) }));
+    if (caps.machineTokens && machineTokens) return (machineTokens.machines || []).map((m) => ({ key: m.id, label: m.name || m.id, token: m }));
+    return [];
+  }, [machines, machineTokens]);
+  const rigMatch = React.useMemo(() => rigMatchMachines(machineRows, (rigData && rigData.machines) || []), [machineRows, rigData]);
+  const rowsLoading = caps.machines ? termData === undefined : caps.machineTokens ? machineTokens === undefined : false;
+
   // ------------------------------------------------------------ actions
   async function forkListing(L, andThen) {
     if (!host.viewer) return;
@@ -79,8 +105,13 @@ function PlatformApp({ host }) {
 
   const startJob = (forkId, fork, kind, request, machine, options) => host.startJob({ ...fork, id: forkId }, kind, request, machine, options);
   const rigFlash = (kind, text) => setFlash({ kind, text });
-  // A rig config editor (or the new-config form) is its own screen of Machines: ?ehv=machines&ehid=<machine>&ehtab=<config|new>.
-  const rigEditor = () => (caps.rigConfigs && route.id ? <RigConfigEditor key={route.id + ':' + route.tab} host={host} mid={route.id} cid={route.tab || 'new'} go={go} onFlash={rigFlash} homeLabel={caps.machines ? 'My machines' : 'Machines'} /> : null);
+  // [3.8] Each machine's rig configs open in its Configure window over the Machines page, kept in the
+  // address (rigWindowRoute). Every step into the window is a history entry carrying its depth
+  // ({ehWin: n}), so Back leaves it step by step and Close goes back past all of them.
+  const rigWinDepth = () => { const s = window.history.state; return s && Number.isInteger(s.ehWin) && s.ehWin > 0 ? s.ehWin : 0; };
+  const openRigWindow = (target, replace) => { const d = rigWinDepth(); go(rigWindowRoute(target), !!replace, { ehWin: replace ? d : d + 1 }); };
+  const rigWindowBack = (target) => { if (rigWinDepth() > 1) window.history.back(); else openRigWindow(target, true); };
+  const closeRigWindow = () => { const n = rigWinDepth(); if (n) { closingRigWindow.current = true; window.history.go(-n); } else go({ v: 'machines' }, true); };
 
   async function newExperiment(title, request) {
     const forkId = await host.newExperiment(title, request);
@@ -609,6 +640,30 @@ function PlatformApp({ host }) {
     );
   }
 
+  // A row's rig config line and Configure button (caps.rigConfigs): folded into the machine rows, so
+  // the page has one list of machines.
+  function rigRowLine(rigs) {
+    if (!caps.rigConfigs || rigData === undefined || (rigData && rigData.error)) return null;
+    const sum = rigRowSummary(rigs);
+    return <div className="row-sub eh-machine-rigs">{sum.text || 'No rig configs synced yet'}{sum.attention ? <span className="eh-rig-problem"> · {sum.attention}</span> : null}</div>;
+  }
+  const configureButton = (target, label) => (caps.rigConfigs ? <button className="btn btn-line btn-small" onClick={() => openRigWindow(target)} aria-label={'Configure ' + label}>Configure</button> : null);
+  // Synced machines that match no row, as rows of the same list.
+  const unmatchedRigRows = (note) => rigMatch.unmatched.map((m) => (
+    <div key={'rig~' + m.id} className="row eh-machine eh-machine-rigonly">
+      <span className="dotlamp" style={{ background: 'var(--line-strong)' }} />
+      <div className="row-main"><div className="row-title">{rigMachineName(m)}</div>
+        <div className="row-sub">{[note, rigMachineMeta(m)].filter(Boolean).join(' · ')}</div>
+        {rigRowLine([m])}</div>
+      <div className="eh-machine-actions">{configureButton({ mid: m.id }, rigMachineName(m))}</div>
+    </div>));
+  // What the Configure window of a paired machine with no synced configs offers.
+  const renderUnmatchedMana = (row) => (caps.openDashboard ? <>
+    <div className="eh-actions"><button className="btn btn-primary" disabled={!row.wins.length || !!busy} onClick={() => openDashboard(row.device, row.wins[0])}>Open dashboard</button></div>
+    <p className="eh-muted">{row.wins.length ? 'Open dashboard starts the alhazen dashboard on ' + row.label + ' and connects it to your library.' : <>No terminal window is open on {row.label}. Open a terminal there and type <span className="cmd">mana</span>, then press Open dashboard.</>}</p>
+  </> : null);
+  const renderUnmatchedTokens = (row) => <p className="eh-muted">On {row.label}, start the alhazen dashboard with this library connected (the command shown when its token was made), and its configs appear here.</p>;
+
   // [2026-10-16] My machines: its own top-level page (moved off My experiments).
   const openTerminalApp = () => host.openTerminalApp();
   function Machines() {
@@ -618,32 +673,39 @@ function PlatformApp({ host }) {
     for (const f of forkList) for (const [id, j] of Object.entries(f.jobs || {})) if (j && j.kind === 'run') runs.push({ ...j, id, fork: f });
     for (const [id, j] of Object.entries(dashJobs || {})) if (id !== 'metadata' && j && j.kind === 'dashboard') runs.push({ ...j, id });
     runs.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
-    const devices = machines.devices.slice().sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+    const rows = rigMatch.rows;
+    const extra = caps.rigConfigs && rigMatch.unmatched.length ? unmatchedRigRows('not paired with Mana Terminal') : null;
     return (
       <>
         <div className="eh-sechead eh-machines-head" style={{ marginBottom: 6 }}><h1 style={{ fontSize: 34, fontWeight: 800 }}>My machines</h1>
           {machines.installed ? <button className="btn btn-line" onClick={openTerminalApp}>Pair a machine</button> : null}</div>
-        <p className="eh-muted" style={{ margin: '0 0 24px' }}>The computers paired with Mana Terminal. Open dashboard starts the alhazen dashboard on one of them, listing the experiments set up there and your library; Run on my machine on a copy does the same with that experiment ready. Session data stays on the machine.</p>
+        <p className="eh-muted" style={{ margin: '0 0 24px' }}>The computers paired with Mana Terminal. Open dashboard starts the alhazen dashboard on one of them, listing the experiments set up there and your library; Run on my machine on a copy does the same with that experiment ready.{caps.rigConfigs ? ' Configure shows the rig configs a machine runs its sessions with; every experiment on it uses them.' : ''} Session data stays on the machine.</p>
         {termData === undefined ? <p className="eh-muted">Loading…</p>
           : !machines.installed ? <div className="empty"><h3>Mana Terminal is not installed</h3><p>It is what lets Mana copy an experiment to your rig and start it there. Install it, pair the rig once, then type <span className="cmd">mana</span> in a terminal on it.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><a className="btn btn-primary" href={host.links.terminalListing}>Get Mana Terminal</a></div></div>
-          : devices.length ? <div className="list">
-            {devices.map((dv) => {
-              const wins = online.filter((s) => s.device === dv.id).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+          : rows.length ? <div className="list">
+            {rows.map((row) => {
+              const dv = row.device, wins = row.wins;
               return (
                 <div key={dv.id} className="row eh-machine">
                   <span className="dotlamp" style={{ background: wins.length ? 'var(--ok-ink)' : 'var(--line-strong)' }} />
-                  <div className="row-main"><div className="row-title">{dv.label || dv.host}</div>
+                  <div className="row-main"><div className="row-title">{row.label}</div>
                     <div className="row-sub">{[dv.os, dv.user ? 'user ' + dv.user : '', dv.pairedAt ? 'paired ' + ago(dv.pairedAt) : ''].filter(Boolean).join(' · ')}</div>
                     {wins.map((s) => <div key={s.id} className="row-sub eh-machine-win"><span className="mono">{s.shell || 'shell'}</span> · <span className="mono">{s.cwd || s.tty || s.id}</span>{s.startedAt ? ' · opened ' + ago(s.startedAt) : ''}</div>)}
+                    {rigRowLine(row.rigs)}
                   </div>
                   {wins.length ? <span className="status st-ok">{wins.length} window{wins.length === 1 ? '' : 's'} open</span> : <span className="status st-idle">{dv.lastSeen ? 'Seen ' + ago(dv.lastSeen) : 'Offline'}</span>}
-                  {caps.openDashboard ? <button className="btn btn-primary btn-small" disabled={!wins.length || !!busy} title={wins.length ? 'Open the alhazen dashboard on ' + (dv.label || dv.host) : 'Open a terminal on this machine and type mana first'} onClick={() => openDashboard(dv, wins[0])}>Open dashboard</button> : null}
+                  <div className="eh-machine-actions">
+                    {configureButton({ dev: row.key }, row.label)}
+                    {caps.openDashboard ? <button className="btn btn-primary btn-small" disabled={!wins.length || !!busy} title={wins.length ? 'Open the alhazen dashboard on ' + row.label : 'Open a terminal on this machine and type mana first'} onClick={() => openDashboard(dv, wins[0])}>Open dashboard</button> : null}
+                  </div>
                 </div>);
             })}
+            {extra}
           </div>
           : <div className="empty"><h3>No machine is paired yet</h3><p>Pair a rig in Mana Terminal, then type <span className="cmd">mana</span> in a terminal on it.</p><div className="eh-actions" style={{ justifyContent: 'center', marginTop: 14 }}><button className="btn btn-primary" onClick={openTerminalApp}>Pair a machine</button></div></div>}
-        {machines.installed && devices.length ? <p className="eh-muted" style={{ margin: '12px 0 0', fontSize: 14 }}>{online.length ? `Runs go to the newest open window unless you pick another.` : <>No terminal window is open. On the rig, open a terminal and type <span className="cmd">mana</span>.</>}</p> : null}
-        {caps.rigConfigs ? <RigConfigsSection host={host} go={go} onFlash={rigFlash} /> : null}
+        {extra && termData !== undefined && !(machines.installed && rows.length) ? <div className="list" style={{ marginTop: 16 }}>{extra}</div> : null}
+        {machines.installed && rows.length ? <p className="eh-muted" style={{ margin: '12px 0 0', fontSize: 14 }}>{online.length ? `Runs go to the newest open window unless you pick another.` : <>No terminal window is open. On the rig, open a terminal and type <span className="cmd">mana</span>.</>}</p> : null}
+        {caps.rigConfigs && rigData && rigData.error ? <p className="eh-rig-error" role="alert">The rig configs could not be read: {rigData.error}</p> : null}
         <div className="eh-sechead" style={{ marginTop: 36 }}><h2 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>Runs</h2></div>
         {forks === null ? <p className="eh-muted">Loading…</p> : runs.length ? <div className="list">
           {runs.slice(0, 30).map((j) => (
@@ -882,10 +944,11 @@ function PlatformApp({ host }) {
     };
     const copy = async (text, what) => { const r = await host.copyText(text); setFlash({ kind: r === 'failed' ? 'bad' : 'ok', text: r === 'failed' ? 'Could not copy.' : 'Copied the ' + what + '.' }); };
     const sessionsLine = (ev) => { const n = (ev.sessions || []).length; return n ? n + ' session' + (n === 1 ? '' : 's') : 'no sessions'; };
+    const extra = caps.rigConfigs && rigMatch.unmatched.length ? unmatchedRigRows('no token by this name') : null;
     return (
       <>
         <div className="eh-sechead" style={{ marginBottom: 6 }}><h1 style={{ fontSize: 34, fontWeight: 800 }}>Machines</h1></div>
-        <p className="eh-muted" style={{ margin: '0 0 24px', maxWidth: 720 }}>A machine token lets the alhazen dashboard on one rig list your library, download a copy when you run it, and tell this platform when it closes. Make one for each machine; revoke it when the machine is no longer yours to use.</p>
+        <p className="eh-muted" style={{ margin: '0 0 24px', maxWidth: 720 }}>A machine token lets the alhazen dashboard on one rig list your library, download a copy when you run it, and tell this platform when it closes. Make one for each machine; revoke it when the machine is no longer yours to use.{caps.rigConfigs ? ' Configure shows the rig configs a machine runs its sessions with; every experiment on it uses them.' : ''}</p>
         <form className="panel eh-token-form" style={{ marginBottom: 20 }} onSubmit={make}>
           <h3>Connect a machine</h3>
           <div className="eh-token-row">
@@ -906,15 +969,16 @@ function PlatformApp({ host }) {
         </div> : null}
         <h2 style={{ fontSize: 18, fontWeight: 800, margin: '8px 0 12px' }}>Connected machines</h2>
         {data === undefined ? <p className="eh-muted">Loading…</p> : data === null ? <p className="eh-muted">The machines could not be read.</p>
-          : data.machines.length ? <div className="list" style={{ marginBottom: 28 }}>{data.machines.map((m) => (
+          : data.machines.length || extra ? <div className="list" style={{ marginBottom: 28 }}>{rigMatch.rows.map((row) => { const m = row.token; return (
             <div key={m.id} className="row eh-machine">
               <div className="row-main"><div className="row-title">{m.name}</div>
-                <div className="row-sub">{['made ' + ago(m.created), m.lastUsed ? 'last used ' + ago(m.lastUsed) : 'not used yet'].join(' · ')}</div></div>
+                <div className="row-sub">{['made ' + ago(m.created), m.lastUsed ? 'last used ' + ago(m.lastUsed) : 'not used yet'].join(' · ')}</div>
+                {rigRowLine(row.rigs)}</div>
               {revoking === m.id ? <div className="eh-actions"><span className="eh-muted">Revoke this token?</span><button className="btn btn-line btn-small" onClick={() => setRevoking('')}>Keep</button><button className="btn btn-primary btn-small eh-revoke" disabled={!!busy} onClick={() => revoke(m)}>Revoke</button></div>
-                : <button className="btn btn-quiet btn-small" onClick={() => setRevoking(m.id)}>Revoke</button>}
-            </div>))}</div>
+                : <div className="eh-machine-actions">{configureButton({ dev: row.key }, m.name)}<button className="btn btn-quiet btn-small" onClick={() => setRevoking(m.id)}>Revoke</button></div>}
+            </div>); })}{extra}</div>
           : <p className="eh-muted" style={{ marginBottom: 28 }}>No machine is connected yet.</p>}
-        {caps.rigConfigs ? <RigConfigsSection host={host} go={go} onFlash={rigFlash} /> : null}
+        {caps.rigConfigs && rigData && rigData.error ? <p className="eh-rig-error" role="alert" style={{ marginBottom: 28 }}>The rig configs could not be read: {rigData.error}</p> : null}
         <h2 style={{ fontSize: 18, fontWeight: 800, margin: '0 0 12px' }}>Recent activity</h2>
         {data && data.events && data.events.length ? <div className="list">{data.events.map((ev) => (
           <div key={ev.id} className="row">
@@ -927,7 +991,8 @@ function PlatformApp({ host }) {
     );
   }
 
-  const machinesView = () => rigEditor() || (caps.machines ? Machines() : caps.machineTokens ? MachineTokens() : Home());
+  const machinesView = () => (caps.machines ? Machines() : caps.machineTokens ? MachineTokens() : Home());
+  const rigWin = caps.rigConfigs && (caps.machines || caps.machineTokens) ? rigWindowFromRoute(route) : null;
   const view = route.v === 'browse' ? Browse() : route.v === 'exp' ? Exp() : route.v === 'mine' ? Mine() : route.v === 'machines' ? machinesView() : route.v === 'fork' ? Fork() : Home();
   const navCur = route.v === 'exp' ? 'browse' : route.v === 'fork' ? 'mine' : route.v;
   return (
@@ -949,9 +1014,12 @@ function PlatformApp({ host }) {
           {caps.themeToggle ? <button className="btn btn-quiet btn-small eh-theme-toggle" aria-label={theme === 'dark' ? 'Use the light theme' : 'Use the dark theme'} onClick={toggleTheme}>{theme === 'dark' ? 'Light' : 'Dark'}</button> : null}
         </div> : null}
       </div></header>
-      <main className="eh-main"><div className="eh-wrap">{Flash()}{view}</div></main>
+      <main className="eh-main"><div className="eh-wrap">{rigWin ? null : Flash()}{view}</div></main>
       <footer className="eh-foot"><div className="eh-wrap"><span style={{ fontWeight: 800, color: 'var(--ink)' }}>Alhazen</span><span>{caps.runOnMachines ? 'Experiments run on your own machine through Mana Terminal; session data stays there.' : 'Experiments run on your own rig; session data stays there.'}</span></div></footer>
       {dialog ? Dialog() : null}
+      {rigWin && !dialog ? <RigMachineWindow host={host} win={rigWin} rows={rigMatch.rows} rowsLoading={rowsLoading} rigData={rigData}
+        onOpen={openRigWindow} onBack={rigWindowBack} onClose={closeRigWindow} onFlash={rigFlash} flash={Flash()}
+        renderUnmatched={caps.machines ? renderUnmatchedMana : renderUnmatchedTokens} /> : null}
     </div>
   );
 }

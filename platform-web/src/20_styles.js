@@ -406,15 +406,7 @@ const CSS = `
 @container (max-width:560px){.eh-mine-row .row-art{display:none}.eh-row-open{padding-left:14px}}
 
 /* [2026-10-21] Machine rig configs: the list on Machines and the config editor. */
-.eh-rigs{margin:36px 0 8px}
-.eh-rigs-title{font-size:18px;font-weight:800;margin:0 0 6px}
 .eh .eh-rig-problem{color:var(--bad-ink)}
-.eh-rigs-lede{margin:0 0 18px;max-width:72ch;font-size:14px}
-.eh-rig-machine{margin-bottom:22px}
-.eh-rig-mhead{display:flex;align-items:flex-end;justify-content:space-between;gap:10px 16px;margin:0 0 10px;flex-wrap:wrap}
-.eh-rig-mtitle{min-width:0}
-.eh-rig-mtitle h3{font-size:16px;font-weight:750;margin:0;overflow-wrap:anywhere}
-.eh-rig-mtitle p{margin:2px 0 0;color:var(--muted);font-size:13.5px}
 .eh-rig-default{display:inline-flex;align-items:center;height:20px;padding:0 7px;margin-left:8px;border-radius:5px;border:1px solid var(--line-strong);font-size:12px;font-weight:650;color:var(--muted);vertical-align:3px;letter-spacing:0}
 .eh-rig-h1 .eh-rig-default{vertical-align:6px}
 .eh-rig-row{align-items:center}
@@ -468,7 +460,7 @@ const CSS = `
 .eh-rig-brief{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .eh-rig-brief .kv{margin-top:0}
 .eh-rig-brief p{margin-top:10px}
-@container (max-width:560px){.eh-rig-row{flex-wrap:wrap;gap:6px 14px}.eh-rig-row .row-main{flex:1 1 100%}.eh-rig-field{grid-template-columns:1fr;gap:4px;padding:8px 0}.eh-rig-field>label{padding-top:0}.eh-rig-versions{grid-template-columns:1fr}.eh-rig-h1{font-size:24px}.eh-rig-spacer{display:none}.eh-rig-control input[type=text],.eh-rig-control select{max-width:none}.eh-rig-mhead{align-items:flex-start}.eh .field textarea.eh-rig-yaml{min-height:380px}}
+@container (max-width:560px){.eh-rig-row{flex-wrap:wrap;gap:6px 14px}.eh-rig-row .row-main{flex:1 1 100%}.eh-rig-field{grid-template-columns:1fr;gap:4px;padding:8px 0}.eh-rig-field>label{padding-top:0}.eh-rig-versions{grid-template-columns:1fr}.eh-rig-h1{font-size:24px}.eh-rig-spacer{display:none}.eh-rig-control input[type=text],.eh-rig-control select{max-width:none}.eh .field textarea.eh-rig-yaml{min-height:380px}}
 
 /* Who can see a listing (design.md section 5a) */
 .tag-access{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:6px;background:var(--accent-soft);color:var(--accent-ink);font-size:12px;font-weight:650;white-space:nowrap}
@@ -508,6 +500,42 @@ const CSS = `
 .eh-dialog .eh-actions .eh-access-copy{margin-right:auto}
 /* The publish dialog with a people list can be taller than the window; sticky would hide its buttons. */
 .eh-dialog{max-height:calc(100dvh - 120px);overflow-y:auto;overscroll-behavior:contain}
+
+/* [3.8] My machines / Machines: rig configs folded into the machine rows, edited in a Configure window. */
+.eh-machine-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.eh-machine-rigs{margin-top:4px}
+.eh-cfg-scrim{z-index:31}
+.eh-dialog.eh-cfg-window{width:min(900px,calc(100% - 32px));padding:0;margin-top:40px}
+.eh-cfg-window:focus{outline:none}
+.eh-cfg-window:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.eh-cfg-head{position:sticky;top:0;z-index:3;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:18px 24px 14px;background:var(--surface);border-bottom:1px solid var(--line)}
+.eh-cfg-titles{min-width:0}
+.eh-cfg-titles h2{font-size:21px;font-weight:800;margin:0;overflow-wrap:anywhere}
+.eh-cfg-titles p{margin:2px 0 0;color:var(--muted);font-size:13.5px}
+.eh-cfg-close{flex:none}
+.eh-cfg-body{padding:18px 24px 24px}
+.eh-cfg-window>.flash{margin:14px 24px 0}
+.eh-cfg-window>.eh-rig-error{margin:14px 24px 0}
+.eh-cfg-leave{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;margin:14px 24px 0;padding:10px 12px;border-radius:10px;background:var(--warn-bg);color:var(--warn-ink);font-size:14px;font-weight:600}
+.eh-cfg-leave>span{margin-right:auto}
+.eh-cfg-window .eh-actions{justify-content:flex-start;margin-top:0}
+.eh-cfg-window .eh-cfg-actions{margin-top:12px}
+.eh-cfg-window .eh-rig-actions{margin-top:14px}
+.eh-cfg-window .eh-rig-savebar{position:sticky;bottom:0;z-index:2;margin-top:22px;padding:14px 0 16px;background:var(--surface)}
+.eh-cfg-window .eh-rig-editor{max-width:none}
+.eh-cfg-window .eh-rig-h1{font-size:22px}
+.eh .eh-cfg-window .field textarea.eh-rig-yaml{min-height:420px}
+.eh-cfg-back{display:inline-flex;gap:6px;align-items:center;background:none;border:0;padding:0;margin:0 0 14px;color:var(--accent-ink);font:inherit;font-size:14px;font-weight:650;cursor:pointer}
+.eh-cfg-back:hover{text-decoration:underline}
+.eh-cfg-machine+.eh-cfg-machine{margin-top:24px}
+.eh-cfg-mtitle{display:flex;gap:4px 10px;align-items:baseline;flex-wrap:wrap;font-size:15px;font-weight:750;margin:0 0 8px}
+.eh-cfg-mtitle span{font-size:13px;font-weight:500;color:var(--muted)}
+.eh-cfg-note{margin:0 0 14px;font-size:14px}
+.eh-cfg-unmatched{padding:24px;border:1px dashed var(--line-strong);border-radius:12px}
+.eh-cfg-unmatched h3{font-size:17px;font-weight:700;margin:0 0 6px}
+.eh-cfg-unmatched p{margin:0 0 14px;color:var(--muted);font-size:14px;max-width:64ch}
+.eh-cfg-unmatched p:last-child{margin-bottom:0}
+@container (max-width: 560px){.eh-machine-actions{margin-left:22px}.eh-dialog.eh-cfg-window{width:calc(100% - 16px);margin-top:12px}.eh-cfg-head{padding:14px 16px 12px}.eh-cfg-body{padding:14px 16px 18px}.eh-cfg-window>.flash,.eh-cfg-window>.eh-rig-error,.eh-cfg-leave{margin:12px 16px 0}.eh-cfg-titles h2{font-size:19px}.eh-cfg-window .eh-rig-h1{font-size:20px}.eh .eh-cfg-window .field textarea.eh-rig-yaml{min-height:320px}.eh-cfg-unmatched{padding:18px}}
 
 @media (prefers-reduced-motion: reduce){.eh *{transition:none!important;animation:none!important}}
 `;
