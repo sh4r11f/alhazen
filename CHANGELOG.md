@@ -26,7 +26,7 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
-## Unreleased
+## 3.8.0 - 2026-10-21
 
 ### Changed
 - **Dashboard: rig configs have their own page.** This machine's rig configs live on **Rigs**, in the
