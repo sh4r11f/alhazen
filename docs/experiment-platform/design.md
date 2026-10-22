@@ -336,6 +336,7 @@ host.publish(fork, form), host.unpublish(fork), host.removeFork(fork)
 host.startJob(fork, kind, request, machine), host.newExperiment(title, request)   (Mana)
 host.uploadRevision(fork, file, message), host.archiveUrl(handle)                 (standalone)
 host.openDashboard(window, label), host.subscribeDashboards(cb)                  (Mana)
+host.shutdownDashboard(window, label)                                           (Mana)
 host.subscribeRigMachines(cb), host.subscribeRigMachine(mid, cb), host.putRigConfig(...),
 host.deleteRigConfig(...), host.setRigDefault(...), host.resolveRigConfig(...),
 host.forgetRigMachine(mid), host.loadYaml()                                      (rigConfigs)
@@ -403,6 +404,22 @@ otherwise it installs the newest alhazen release into `<home>/mana-experiments/.
 dashboard`); the library service closes it on the dashboard's closing report like a run job.
 Standalone hosts have no remote execution: a rig opens its dashboard with `alhazen dashboard` and
 reaches the library through a machine token (section 8a).
+
+**Dashboard state and Shut down (3.8).** Each machine row says what its dashboard last reported, from
+the newest run or dashboard job on that machine (a job is on the machine its `machineLabel` names,
+else the machine of the terminal window `machine` names, else `machine` taken as a label): *Starting
+the dashboard* (running), *Dashboard open since …* (done with a url, no `closedAt`: the last known
+state, since a dashboard that stopped without reporting still reads open), *Dashboard closed …*
+(`closedAt`). Runs rows and a copy's Run tab and Last run show such jobs as *Open* or *Closed*
+instead of *Done*, and the dashboard's address only while open. A row that reads open has **Shut
+down** (it needs an open terminal window there), confirmed in a small dialog; the Mana host's
+`shutdownDashboard(window, label)` writes `mine/dashboards/<jobId>` (`kind: shutdown`) and asks a
+chat to run hubkit's `shutdown_dashboard(machine, job_id)`. That refuses while a session runs
+(`DashboardBusy`, the job is left waiting with that message), otherwise stops the dashboard (its
+Shut down request, or ending the process of an older one) and marks every run and dashboard job
+still open on that machine closed (`closedAt`, `closedBy`), then finishes its own job. A refusal in
+the terminal is final (`stopped`). Standalone hosts have no Shut down: the dashboard is closed on
+the rig.
 
 ## 8a. Rigs: the dashboard's library
 
