@@ -26,6 +26,14 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## Unreleased
+
+### Fixed
+- **Experiment Platform: Browse shows only the marketplace.** Browse listed every listing the
+  viewer could see, so a publisher's private and shared-with-people listings sat among the public
+  ones on their own Browse page. Browse now shows public listings only, for everyone; private and
+  shared listings stay in My experiments. The "Visible to" filter is gone with them.
+
 ## 3.8.4 - 2026-10-21
 
 ### Fixed

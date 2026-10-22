@@ -263,14 +263,12 @@ Change button (Access dialog: Only you / Specific people / Everyone, a people pi
 `host.findPeople`, a list with Remove, on Mana an "Email them a link" box). The publish dialog
 of a copy asks who can see it first (default Everyone). My experiments shows, above the copies,
 *Not on the marketplace* (your private and shared listings) and *Shared with you*, and a
-collapsed *On the marketplace* list of your public listings. Browse shows everything the viewer
-can see with a "Visible to" filter (All, Everyone, Shared with you, Only you); Home's sections
-show public listings only, plus a *Shared with you* section when there is one.
-
-The "Visible to" filter also has *Shared by you* (the viewer's own `people` listings); without it
-those listings would be reachable only under All. Like the collection chips, an option is shown
-only when it has listings (or is selected), and the whole group only when the viewer can see a
-non-public listing.
+collapsed *On the marketplace* list of your public listings. Browse is the marketplace: it
+shows public listings only, for every viewer including the publisher (`marketplaceListings`);
+private listings and listings shared with specific people are reached from My experiments, never
+Browse. Home's sections show public listings only, plus a *Shared with you* section when there
+is one. (Until 3.8.5 Browse showed everything the viewer could see, with a "Visible to" filter;
+that put a publisher's private research experiments on their marketplace page.)
 
 Host interface additions: `host.setAccess(listing, {visibility, people, notify})` resolving to
 `{access, notified: {sent, failed}}`, `host.findPeople(query) -> [{uid, label}]`,
