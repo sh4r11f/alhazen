@@ -375,21 +375,36 @@ function RigMachineWindow({ host, win, rows, rowsLoading, rigData, onOpen, onBac
     if (ref.current) ref.current.focus({ preventScroll: true });
     return () => { if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true }); };
   }, []);
-  React.useEffect(() => { setLeaving(null); if (ref.current) ref.current.scrollTop = 0; }, [win.dev, win.mid, win.cid]);
+  // A new view inside the window starts at its top, with focus kept inside the window.
+  React.useEffect(() => {
+    setLeaving(null);
+    if (!ref.current) return;
+    ref.current.scrollTop = 0;
+    if (!ref.current.contains(document.activeElement)) ref.current.focus({ preventScroll: true });
+  }, [win.dev, win.mid, win.cid]);
 
   const leave = (what) => { if (dirty) { setLeaving(what); return; } if (what === 'close') onClose(); else onBack(listTarget); };
-  function onKeyDown(e) {
-    if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); leave('close'); return; }
-    if (e.key !== 'Tab' || !ref.current) return;
-    const items = [...ref.current.querySelectorAll(RIG_FOCUSABLE)].filter((el) => el.offsetParent !== null || el === document.activeElement);
-    if (!items.length) { e.preventDefault(); return; }
-    const first = items[0], last = items[items.length - 1];
-    if (e.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-  }
+  // Escape closes and Tab stays inside, wherever focus is (a view change can drop it to the page).
+  const leaveRef = React.useRef(leave); leaveRef.current = leave;
+  React.useEffect(() => {
+    function onKeyDown(e) {
+      const box = ref.current;
+      if (!box) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); leaveRef.current('close'); return; }
+      if (e.key !== 'Tab') return;
+      const items = [...box.querySelectorAll(RIG_FOCUSABLE)].filter((el) => el.getClientRects().length > 0);
+      if (!items.length) { e.preventDefault(); box.focus(); return; }
+      const first = items[0], last = items[items.length - 1], at = document.activeElement;
+      if (!box.contains(at)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+      else if (e.shiftKey && (at === first || at === box)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+    }
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, []);
 
-  const single = !win.dev && record;
-  const meta = single ? [record.alhazen ? 'alhazen ' + record.alhazen : '', record.seenAt ? 'synced ' + rigAgo(record.seenAt) : 'not synced yet'].filter(Boolean).join(' · ') : '';
+  const metaOf = !win.dev ? record : rigs.length === 1 ? rigs[0] : null;
+  const meta = metaOf ? [metaOf.alhazen ? 'alhazen ' + metaOf.alhazen : '', metaOf.seenAt ? 'synced ' + rigAgo(metaOf.seenAt) : 'not synced yet'].filter(Boolean).join(' · ') : '';
   let body;
   if (win.cid) {
     body = <>
@@ -412,7 +427,7 @@ function RigMachineWindow({ host, win, rows, rowsLoading, rigData, onOpen, onBac
   </>;
 
   return <div className="eh-scrim eh-cfg-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) leave('close'); }}>
-    <div ref={ref} className="eh-dialog eh-cfg-window" role="dialog" aria-modal="true" aria-labelledby="eh-cfg-title" tabIndex={-1} onKeyDown={onKeyDown}>
+    <div ref={ref} className="eh-dialog eh-cfg-window" role="dialog" aria-modal="true" aria-labelledby="eh-cfg-title" tabIndex={-1}>
       <div className="eh-cfg-head">
         <div className="eh-cfg-titles"><h2 id="eh-cfg-title">{title}</h2>
           <p>{['Rig configs', meta].filter(Boolean).join(' · ')}</p></div>

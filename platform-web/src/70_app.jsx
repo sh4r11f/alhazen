@@ -111,7 +111,7 @@ function PlatformApp({ host }) {
   const rigWinDepth = () => { const s = window.history.state; return s && Number.isInteger(s.ehWin) && s.ehWin > 0 ? s.ehWin : 0; };
   const openRigWindow = (target, replace) => { const d = rigWinDepth(); go(rigWindowRoute(target), !!replace, { ehWin: replace ? d : d + 1 }); };
   const rigWindowBack = (target) => { if (rigWinDepth() > 1) window.history.back(); else openRigWindow(target, true); };
-  const closeRigWindow = () => { const n = rigWinDepth(); if (n) { closingRigWindow.current = true; window.history.go(-n); } else go({ v: 'machines' }, true); };
+  const closeRigWindow = () => { setFlash(null); const n = rigWinDepth(); if (n) { closingRigWindow.current = true; window.history.go(-n); } else go({ v: 'machines' }, true); };
 
   async function newExperiment(title, request) {
     const forkId = await host.newExperiment(title, request);
@@ -649,9 +649,9 @@ function PlatformApp({ host }) {
   }
   const configureButton = (target, label) => (caps.rigConfigs ? <button className="btn btn-line btn-small" onClick={() => openRigWindow(target)} aria-label={'Configure ' + label}>Configure</button> : null);
   // Synced machines that match no row, as rows of the same list.
-  const unmatchedRigRows = (note) => rigMatch.unmatched.map((m) => (
+  const unmatchedRigRows = (note, lamp) => rigMatch.unmatched.map((m) => (
     <div key={'rig~' + m.id} className="row eh-machine eh-machine-rigonly">
-      <span className="dotlamp" style={{ background: 'var(--line-strong)' }} />
+      {lamp ? <span className="dotlamp" style={{ background: 'var(--line-strong)' }} /> : null}
       <div className="row-main"><div className="row-title">{rigMachineName(m)}</div>
         <div className="row-sub">{[note, rigMachineMeta(m)].filter(Boolean).join(' · ')}</div>
         {rigRowLine([m])}</div>
@@ -659,8 +659,8 @@ function PlatformApp({ host }) {
     </div>));
   // What the Configure window of a paired machine with no synced configs offers.
   const renderUnmatchedMana = (row) => (caps.openDashboard ? <>
+    <p>{row.wins.length ? 'Open dashboard starts the alhazen dashboard on ' + row.label + ' and connects it to your library.' : <>No terminal window is open on {row.label}. Open a terminal there and type <span className="cmd">mana</span>, then press Open dashboard.</>}</p>
     <div className="eh-actions"><button className="btn btn-primary" disabled={!row.wins.length || !!busy} onClick={() => openDashboard(row.device, row.wins[0])}>Open dashboard</button></div>
-    <p className="eh-muted">{row.wins.length ? 'Open dashboard starts the alhazen dashboard on ' + row.label + ' and connects it to your library.' : <>No terminal window is open on {row.label}. Open a terminal there and type <span className="cmd">mana</span>, then press Open dashboard.</>}</p>
   </> : null);
   const renderUnmatchedTokens = (row) => <p className="eh-muted">On {row.label}, start the alhazen dashboard with this library connected (the command shown when its token was made), and its configs appear here.</p>;
 
@@ -674,7 +674,7 @@ function PlatformApp({ host }) {
     for (const [id, j] of Object.entries(dashJobs || {})) if (id !== 'metadata' && j && j.kind === 'dashboard') runs.push({ ...j, id });
     runs.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
     const rows = rigMatch.rows;
-    const extra = caps.rigConfigs && rigMatch.unmatched.length ? unmatchedRigRows('not paired with Mana Terminal') : null;
+    const extra = caps.rigConfigs && rigMatch.unmatched.length ? unmatchedRigRows('Not paired with Mana Terminal', true) : null;
     return (
       <>
         <div className="eh-sechead eh-machines-head" style={{ marginBottom: 6 }}><h1 style={{ fontSize: 34, fontWeight: 800 }}>My machines</h1>
@@ -944,7 +944,7 @@ function PlatformApp({ host }) {
     };
     const copy = async (text, what) => { const r = await host.copyText(text); setFlash({ kind: r === 'failed' ? 'bad' : 'ok', text: r === 'failed' ? 'Could not copy.' : 'Copied the ' + what + '.' }); };
     const sessionsLine = (ev) => { const n = (ev.sessions || []).length; return n ? n + ' session' + (n === 1 ? '' : 's') : 'no sessions'; };
-    const extra = caps.rigConfigs && rigMatch.unmatched.length ? unmatchedRigRows('no token by this name') : null;
+    const extra = caps.rigConfigs && rigMatch.unmatched.length ? unmatchedRigRows('No machine token by this name', false) : null;
     return (
       <>
         <div className="eh-sechead" style={{ marginBottom: 6 }}><h1 style={{ fontSize: 34, fontWeight: 800 }}>Machines</h1></div>
