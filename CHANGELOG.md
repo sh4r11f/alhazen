@@ -26,6 +26,13 @@ changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
 
+## Unreleased
+
+### Fixed
+- **Experiment Platform: the My experiments count.** The number beside *My experiments* in the top
+  bar counted only your copies. It now counts everything that page lists: your listings not on
+  the marketplace, listings shared with you, your listings on the marketplace, and your copies.
+
 ## 3.8.9 - 2026-10-22
 
 ### Changed

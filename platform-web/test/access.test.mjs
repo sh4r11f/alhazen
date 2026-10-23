@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(HERE, '..', 'src', '60_helpers.js'), 'utf8');
-const H = new Function('window', 'ehFormat', source + '\nreturn { accessOf, accessCanManage, accessGroup, accessBadge, accessSummary, normalizeAccess, librarySections, marketplaceListings, VISIBLE_TO, ACCESS_CHOICES };')({}, () => '');
+const H = new Function('window', 'ehFormat', source + '\nreturn { accessOf, accessCanManage, accessGroup, accessBadge, accessSummary, normalizeAccess, librarySections, libraryCount, marketplaceListings, VISIBLE_TO, ACCESS_CHOICES };')({}, () => '');
 
 const listing = (uid, exp, access, extra = {}) => ({ uid, exp, key: uid + '~' + exp, title: exp, publisher: { uid, name: uid === 'pub' ? 'Sharif' : 'Other' }, ...(access ? { access } : {}), ...extra });
 
@@ -69,6 +69,10 @@ test('My experiments: not on the marketplace, shared with you, and the collapsed
   assert.deepEqual(mine.onMarketplace.map((L) => L.exp), ['o']);
   const visitor = H.librarySections(all, null);
   assert.deepEqual([visitor.notOnMarketplace.length, visitor.onMarketplace.length], [0, 0]);
+  // The top-bar count covers every row on My experiments, not only the copies.
+  assert.equal(H.libraryCount(all, 'pub', 3), 7);
+  assert.equal(H.libraryCount(all, 'pub', 0), 4);
+  assert.equal(H.libraryCount([], 'pub', 2), 2);
 });
 
 test('Browse shows only public listings, even to their publisher', () => {
