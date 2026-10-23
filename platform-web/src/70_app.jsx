@@ -68,6 +68,7 @@ function PlatformApp({ host }) {
     return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }, [published]);
   const forkList = React.useMemo(() => Object.entries(forks || {}).filter(([k, v]) => k !== 'metadata' && v && v.title).map(([id, f]) => ({ ...f, id })).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)), [forks]);
+  const mineCount = React.useMemo(() => libraryCount(listings, viewerUid, forkList.length), [listings, viewerUid, forkList]);
   const forkedFrom = React.useMemo(() => { const m = {}; for (const f of forkList) if (f.origin) m[f.origin.publisherUid + '~' + f.origin.exp] = f.id; return m; }, [forkList]);
 
   const machines = React.useMemo(() => {
@@ -1088,7 +1089,7 @@ function PlatformApp({ host }) {
           <span className="eh-word">Alhazen</span><span className="eh-sub">Experiment Platform</span>
         </button>
         <nav className="eh-nav" aria-label="Hub">
-          {[['home', 'Home'], ['browse', 'Browse'], ['mine', 'My experiments'], ['machines', caps.machines ? 'My machines' : 'Machines']].filter(([k]) => k !== 'machines' || caps.machines || (caps.machineTokens && viewerUid)).map(([k, label]) => <button key={k} aria-current={navCur === k ? 'page' : undefined} onClick={() => go({ v: k })}>{label}{k === 'mine' && forkList.length ? <span className="eh-count">{forkList.length}</span> : null}{k === 'machines' && machines.sessions.length ? <span className="eh-count" title="Terminal windows open">{machines.sessions.length}</span> : null}</button>)}
+          {[['home', 'Home'], ['browse', 'Browse'], ['mine', 'My experiments'], ['machines', caps.machines ? 'My machines' : 'Machines']].filter(([k]) => k !== 'machines' || caps.machines || (caps.machineTokens && viewerUid)).map(([k, label]) => <button key={k} aria-current={navCur === k ? 'page' : undefined} onClick={() => go({ v: k })}>{label}{k === 'mine' && mineCount ? <span className="eh-count" title="Your listings, listings shared with you and your copies">{mineCount}</span> : null}{k === 'machines' && machines.sessions.length ? <span className="eh-count" title="Terminal windows open">{machines.sessions.length}</span> : null}</button>)}
         </nav>
         {caps.themeToggle || caps.signIn ? <div className="eh-host-tools">
           {caps.signIn && host.viewer ? <span className="eh-viewer">{host.viewer.name}</span> : null}

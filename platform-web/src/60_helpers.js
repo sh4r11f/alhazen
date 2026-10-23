@@ -95,6 +95,12 @@ function librarySections(listings, viewerUid) {
   }
   return out;
 }
+// The My experiments count in the top bar: every row the page lists, i.e. the viewer's listings in
+// all three sections plus every copy (copies shown under their listing count too).
+function libraryCount(listings, viewerUid, copies) {
+  const sec = librarySections(listings, viewerUid);
+  return sec.notOnMarketplace.length + sec.sharedWithYou.length + sec.onMarketplace.length + (copies || 0);
+}
 const kb = (b) => b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB';
 
 // Dashboards on machines (Mana, design.md section 8). Which machine a run, dashboard or shutdown job is
